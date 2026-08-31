@@ -1,0 +1,44 @@
+# 13 — Decision Log
+
+Every place this analysis **deviates from the inherited spec**, in one table, with the rationale and where it's argued in full. The spec marks many of these as "locked"; you explicitly asked for them to be challenged, so each deviation is justified rather than assumed. Decisions that **uphold** the spec are listed at the end so it's clear what *isn't* changing.
+
+Status legend: **CHANGE** (reverse the spec) · **ADD** (new, not in spec) · **CLARIFY** (spec is misleading/overstated; correct it) · **KEEP** (explicitly retain).
+
+| # | Topic | Spec says | Decision | Rationale | Detail |
+|---|-------|-----------|----------|-----------|--------|
+| D-01 | **Platform** | macOS only (one MacBook) | **REFINE** → macOS-first, cross-platform-capable | Target & test macOS (your incoming dev+show Mac); keep code OS-agnostic via hardware abstractions so Windows stays a low-cost future option. Demo mode still runnable on Windows in the interim. *Updated 2026-06.* | [07](07_CROSSPLATFORM_STRATEGY.md) |
+| D-02 | **Python version** | 3.14 target | **CHANGE** → 3.12 (3.11 OK) | `python-rtmidi` has no 3.13/3.14 wheels (2026); high-res `sleep` fix already in 3.11; `netifaces` fragile on new Python. One decision retires two top risks | [06 §2](06_TECH_STACK_EVALUATION.md) |
+| D-03 | **UI toolkit** | tkinter | **CHANGE** → PySide6 (Dear PyGui backup) | tkinter's retained-mode Canvas + dated cross-platform look cap exactly where this needs headroom (60 Hz console + smooth visualizer); Qt already in tree via python-prodj-link | [06 §3](06_TECH_STACK_EVALUATION.md) |
+| D-04 | **Language** | Python | **KEEP** | Ecosystem lock-in (python-prodj-link, mido, pyserial) decisively favors Python even under "challenge everything" | [06 §1](06_TECH_STACK_EVALUATION.md) |
+| D-05 | **DMX output** | Enttec serial only | **ADD** → output-backend interface w/ Enttec + Art-Net/sACN + Null | OS-agnostic, enables hardware-free visualizer testing, escape hatch for Ethernet-DMX nodes | [05 §5.5](05_ARCHITECTURE_REVIEW.md), [07 §6](07_CROSSPLATFORM_STRATEGY.md) |
+| D-06 | **ShowState concurrency** | dataclass + RLock + snapshot | **ADD/CLARIFY** → immutable one-lock snapshot + single-writer-per-field + queue inputs | Makes the spec's own worst bugs (read-then-overwrite, multi-field tearing) structurally impossible | [05 §4](05_ARCHITECTURE_REVIEW.md) |
+| D-07 | **DMX universe handoff** | engines → buffer → writer | **ADD** → double-buffered publish/consume + keep-last-frame | Writer never sees a half-frame, never blocks on logic; "writer never stops" becomes real | [05 §5.1](05_ARCHITECTURE_REVIEW.md) |
+| D-08 | **Timing** | "don't write faster than 44 Hz" | **ADD** → drift-corrected absolute-deadline loop + spin tail; require ≥3.11 | Steady cadence on Windows; the spec didn't address Windows timer granularity at all | [07 §3](07_CROSSPLATFORM_STRATEGY.md) |
+| D-09 | **Testing** | demo mode + some pytest | **ADD** → injected `Clock`/`FakeClock`, fake serial sink, synthetic input messages | Deterministic, instant tests of real-time logic without hardware or real time | [05 §5.2](05_ARCHITECTURE_REVIEW.md) |
+| D-10 | **Frequency→color rationale** | "neuroscience: brain pairs bass with red; non-negotiable" | **CLARIFY** → keep the rule for *consistency*; energy→brightness/saturation is the grounded axis; band→hue is convention | Perception research supports pitch/energy→brightness, **not** a specific hue; don't encode a false claim | [08 §1](08_LIGHTING_DESIGN_AND_SAFETY.md) |
+| D-11 | **"Phrase Engine"** | implies phrase detection | **CLARIFY** → it rotates on *inferred bar counts*; PDL transmits no phrase data | Avoids designing features expecting phrase semantics that the hardware never sends | [04 §4](04_HARDWARE_AND_PROTOCOLS.md) |
+| D-12 | **`track_position_seconds`** | present in ShowState | **CLARIFY** → unavailable on XDJ-XZ; mark unreliable | Absolute position is a CDJ-3000 feature; don't build on it | [04 §4](04_HARDWARE_AND_PROTOCOLS.md) |
+| D-13 | **MIDI map** | confident CC table | **CLARIFY** → treat as hypothesis; ship MIDI-learn tool; remap empirically | XDJ-XZ MIDI is under-documented, firmware/mode-dependent, possibly HID | [04 §6](04_HARDWARE_AND_PROTOCOLS.md) |
+| D-14 | **`python-prodj-link`** | turnkey | **CLARIFY/ADD** → harden (interface override, netifaces swap, vendor/pin); keep beat-link sidecar as escape hatch | Lightly maintained, git-only, weak interface auto-detection | [06 §4](06_TECH_STACK_EVALUATION.md) |
+| D-15 | **Enttec driver** | use a driver | **ADD** → roll your own ~30-line sender | Trivial frame; removes a dependency-health risk; gives loop control | [06 §4](06_TECH_STACK_EVALUATION.md) |
+| D-16 | **`audio/` package name** | kept "for historical reasons" | **CHANGE** → `inputs/` | No audio in v2; the name is actively misleading | [05 §8](05_ARCHITECTURE_REVIEW.md) |
+| D-17 | **Persistence** | stateless across runs | **ADD** → tiny optional `config.json` | Iteration loses scene tuning/MIDI map every restart; doesn't violate the "no cloud/presets" non-goal | [10 C1](10_OPEN_QUESTIONS_AND_ASSUMPTIONS.md) |
+| D-18 | **Launchers / setup** | `.command` + brew/portaudio | **CHANGE** → macOS `.command` (primary) + a portable run script; drop portaudio/sounddevice | Audio path removed in v2; macOS-first but don't hard-code mac-only paths (keep portable) | [07 §7](07_CROSSPLATFORM_STRATEGY.md) |
+| D-19 | **Concurrency model** | threads (implied) | **KEEP** (+ justify) → threads + queues; **not** asyncio, **not** no-GIL for v1 | Correct for soft-real-time I/O; asyncio hurts the serial writer; no-GIL extensions unvalidated in 2026 | [05 §6](05_ARCHITECTURE_REVIEW.md) |
+| D-20 | **Schedule** | 2.5 weeks | **CLARIFY** → plan by phase, not calendar | The deadline assumed full-time work + guaranteed hardware; you've confirmed neither | [10 C3](10_OPEN_QUESTIONS_AND_ASSUMPTIONS.md) |
+
+## Spec decisions explicitly KEPT (not changing)
+- The **v1→v2 pivot** from audio FFT to PDL+MIDI (correct, research-confirmed).
+- The **shared-bus + 3-parallel-engines + additive merge** architecture shape.
+- **Automation-by-default; manual = bias/cap, not override** (no manual mode, no pause).
+- **Engines never call each other**; all inter-engine state via shared state.
+- **Local interpolated metronome** for visual timing; resync to PDL, never raw packets.
+- **Frequency→color rule itself** (kept; only the rationale corrected — D-10).
+- **Laser & strobe safety rules** (confirmed correct against regulation — D-11 is the only laser-adjacent change, and it's about phrase data, not safety).
+- **Demo mode as a first-class development substrate.**
+- **Role/side fixture addressing**, the **rig-file format**, and the **anti-pattern catalog**.
+- **Code conventions:** type hints, dataclasses, one-class-per-file majors, logging-not-print, small dependency set, no global mutable state.
+- All stated **non-goals** (multi-universe, web-as-primary, cloud/accounts, audio FFT, plugins, mobile/remote, timeline cues).
+
+## How to use this log
+When implementing, if you hit something that contradicts the spec, check here first — the deviation is probably already reasoned. If you decide to revert a deviation (e.g. you *do* get hardware and want tkinter for speed), record it here with your reason so the trail stays intact.

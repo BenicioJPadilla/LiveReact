@@ -1,0 +1,14 @@
+{
+  "name": "LiveReact default rig",
+  "description": "8 fixtures, 74 DMX channels, one universe (docs/04 §2). Channel modes to set on hardware: moving heads 15CH, lasers 12CH, wash bars 6CH.",
+  "slots": [
+    {"slot_id": "mh_l",    "fixture_type": "shehds_180w_mh",  "dmx_address": 1,  "label": "MH Left",    "role": "spot",  "side": "left"},
+    {"slot_id": "mh_r",    "fixture_type": "shehds_180w_mh",  "dmx_address": 16, "label": "MH Right",   "role": "spot",  "side": "right"},
+    {"slot_id": "laser_l", "fixture_type": "shehds_3w_laser", "dmx_address": 31, "label": "Laser Left", "role": "laser", "side": "left"},
+    {"slot_id": "laser_r", "fixture_type": "shehds_3w_laser", "dmx_address": 43, "label": "Laser Right","role": "laser", "side": "right"},
+    {"slot_id": "par_l",   "fixture_type": "rgbw_par",        "dmx_address": 55, "label": "Par Left",   "role": "wash",  "side": "left"},
+    {"slot_id": "par_r",   "fixture_type": "rgbw_par",        "dmx_address": 59, "label": "Par Right",  "role": "wash",  "side": "right"},
+    {"slot_id": "bar_l",   "fixture_type": "ok103_wash_bar",  "dmx_address": 63, "label": "Bar Left",   "role": "wash",  "side": "left"},
+    {"slot_id": "bar_r",   "fixture_type": "ok103_wash_bar",  "dmx_address": 69, "label": "Bar Right",  "role": "wash",  "side": "right"}
+  ]
+}

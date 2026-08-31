@@ -1,0 +1,202 @@
+"""The starter scene catalog — 8 scenes across breakdown/build/drop/hold.
+
+Adapted from docs/08 §3. Colors follow the two-axis rule (energy->brightness,
+band->hue) except where a scene deliberately sets a mood color (e.g. the deep-blue
+breakdown). Lasers appear only in DROP scenes, as static manual patterns above head
+height (docs/08 §5).
+"""
+
+from __future__ import annotations
+
+import math
+
+from ..color import hsv_to_rgb
+from ..dynamics import beat_pulse, musical_bar_position
+from ..core.show_state import ShowSnapshot
+from ..engines.color import two_axis_color
+from ..fixtures.rig import Rig
+from ..merge.merge import Contribution
+from .base import EnergyBucket, Scene, paint_spots, paint_wash
+
+
+# --- breakdown / low energy (lasers OFF, strobe OFF) -----------------------
+
+class DeepWashBreathe(Scene):
+    """Whole room one deep saturated color, slowly breathing; MHs dim, tilted up."""
+
+    name = "Deep Wash Breathe"
+    bucket = EnergyBucket.BREAKDOWN
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        breathe = 0.85 + 0.15 * math.sin(musical_bar_position(snap) * math.pi)
+        level = 0.32 * intensity * breathe
+        r, g, b = 0.1, 0.1, 0.9  # deep blue
+        paint_wash(c, rig, r, g, b, level)
+        paint_spots(c, rig, r, g, b, 0.12 * intensity)
+        for fx in rig.by_role("spot"):
+            fx.set_position(c, 0.5, 0.85)  # tilted up
+        return c
+
+
+class SlowColorCycleAmbient(Scene):
+    """Soft full-rig wash whose hue drifts one step per bar; never hits white."""
+
+    name = "Slow Color Cycle"
+    bucket = EnergyBucket.BREAKDOWN
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        hue = (snap.bar * 0.1) % 1.0
+        r, g, b = hsv_to_rgb(hue, 0.8, 1.0)
+        level = 0.35 * intensity
+        paint_wash(c, rig, r, g, b, level)
+        paint_spots(c, rig, r, g, b, 0.15 * intensity)
+        return c
+
+
+# --- build / rising energy (lasers OFF; strobe ramps, capped elsewhere) -----
+
+class RisingTide(Scene):
+    """Wash ramps with energy, warming toward white; MH movement climbing."""
+
+    name = "Rising Tide"
+    bucket = EnergyBucket.BUILD
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))  # hue from bands, full value
+        # Desaturate toward white as energy climbs.
+        warm = snap.energy
+        r = r + (1 - r) * warm
+        g = g + (1 - g) * warm
+        b = b + (1 - b) * warm
+        level = (0.4 + 0.5 * snap.energy) * intensity
+        paint_wash(c, rig, r, g, b, level)
+        paint_spots(c, rig, r, g, b, (0.5 + 0.5 * snap.energy) * intensity)
+        pos = musical_bar_position(snap)
+        for fx in rig.by_role("spot"):
+            mirror = 1.0 if fx.side == "left" else -1.0
+            fx.set_position(c, 0.5 + 0.3 * math.sin(pos * 1.5) * mirror, 0.5)
+        return c
+
+
+class Converge(Scene):
+    """Both MHs pan from outward toward center as the build rises; wash mid."""
+
+    name = "Converge"
+    bucket = EnergyBucket.BUILD
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b, 0.45 * intensity)
+        paint_spots(c, rig, 1.0, 1.0, 1.0, (0.5 + 0.5 * snap.energy) * intensity)
+        prog = max(0.0, min(1.0, snap.energy))
+        for fx in rig.by_role("spot"):
+            if fx.side == "left":
+                pan = 0.15 + 0.35 * prog       # outward -> center
+            else:
+                pan = 0.85 - 0.35 * prog
+            fx.set_position(c, pan, 0.45)
+        return c
+
+
+# --- drop / peak energy (lasers MAY enable; strobe within cap) ---------------
+
+class FullSpectrumHit(Scene):
+    """Everything full; white punch on each kick, returns to band hue between;
+    big fast MH moves; lasers on."""
+
+    name = "Full Spectrum Hit"
+    bucket = EnergyBucket.DROP
+    uses_lasers = True
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        pulse = beat_pulse(snap)
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        # White punch on the beat: lerp toward white by the pulse.
+        r = r + (1 - r) * pulse
+        g = g + (1 - g) * pulse
+        b = b + (1 - b) * pulse
+        paint_wash(c, rig, r, g, b, intensity)
+        paint_spots(c, rig, r, g, b, intensity)
+        pos = musical_bar_position(snap)
+        for fx in rig.by_role("spot"):
+            mirror = 1.0 if fx.side == "left" else -1.0
+            fx.set_position(c, 0.5 + 0.45 * math.sin(pos * 4.0) * mirror, 0.4 + 0.2 * math.sin(pos * 2.0))
+        for fx in rig.by_role("laser"):
+            fx.set_pattern(c, pattern=40, color=200, scale=0.9)
+        return c
+
+
+class BeamFanLaserTunnel(Scene):
+    """MHs in a symmetric mirror pan-fan on the beat; lasers static; wash low so
+    the beams read."""
+
+    name = "Beam Fan + Laser Tunnel"
+    bucket = EnergyBucket.DROP
+    uses_lasers = True
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b, 0.2 * intensity)  # low wash, beams dominate
+        paint_spots(c, rig, 1.0, 1.0, 1.0, intensity)
+        pos = musical_bar_position(snap)
+        for fx in rig.by_role("spot"):
+            mirror = 1.0 if fx.side == "left" else -1.0
+            fx.set_position(c, 0.5 + 0.3 * math.sin(pos * 2.0) * mirror, 0.5)
+        for fx in rig.by_role("laser"):
+            fx.set_pattern(c, pattern=80, color=120, scale=1.0)
+        return c
+
+
+# --- hold / sustain (loops, post-transition, plateaus) ----------------------
+
+class PulseAndDriftSustain(Scene):
+    """Steady mid-energy groove: wash ~65%, slow MH drift, hue holds; no strobe/laser."""
+
+    name = "Pulse & Drift Sustain"
+    bucket = EnergyBucket.HOLD
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b, 0.65 * intensity)
+        paint_spots(c, rig, r, g, b, 0.6 * intensity)
+        pos = musical_bar_position(snap)
+        for fx in rig.by_role("spot"):
+            mirror = 1.0 if fx.side == "left" else -1.0
+            fx.set_position(c, 0.5 + 0.2 * math.sin(pos * 0.5) * mirror, 0.5)
+        return c
+
+
+class LockedHold(Scene):
+    """A calm steady look: single hue, minimal movement. Used during loops and the
+    mandatory post-transition hold."""
+
+    name = "Locked Hold"
+    bucket = EnergyBucket.HOLD
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b, 0.5 * intensity)
+        paint_spots(c, rig, r, g, b, 0.4 * intensity)
+        for fx in rig.by_role("spot"):
+            fx.set_position(c, 0.5, 0.5)
+        return c
+
+
+ALL_SCENES: list[type[Scene]] = [
+    DeepWashBreathe,
+    SlowColorCycleAmbient,
+    RisingTide,
+    Converge,
+    FullSpectrumHit,
+    BeamFanLaserTunnel,
+    PulseAndDriftSustain,
+    LockedHold,
+]

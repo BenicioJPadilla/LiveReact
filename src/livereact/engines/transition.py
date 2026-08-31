@@ -1,0 +1,40 @@
+"""Transition Engine — the during-mix visual treatment (docs/02 FR-2.3, docs/08 §4).
+
+Detection of ``in_transition`` lives in the metronome (the single state writer), so
+both this engine and the Phrase Engine can react to it via the shared snapshot. This
+engine handles the *look* during a mix: a gentle white "lift" across the rig so the
+moment reads as deliberate. It deliberately does NOT pick scenes — the Phrase Engine
+holds the current look during the mix and settles into a new one on the next downbeat.
+"""
+
+from __future__ import annotations
+
+from ..core.show_state import ShowSnapshot
+from ..fixtures.profiles import Par, WashBar
+from ..fixtures.rig import Rig
+from ..merge.merge import Contribution
+
+LIFT = 0.22  # white floor added during a mix (max-merges over the held look)
+
+
+class TransitionEngine:
+    @property
+    def name(self) -> str:
+        return "transition"
+
+    def tick(self, snap: ShowSnapshot, rig: Rig) -> Contribution:
+        c = Contribution()
+        if not snap.in_transition:
+            return c  # nothing to add outside a mix
+        # A subtle white lift: max-merge raises anything dimmer than LIFT and warms
+        # the whole rig toward white, without stopping the underlying look.
+        for fx in rig.by_role("wash"):
+            if isinstance(fx, Par):
+                fx.set_color(c, LIFT, LIFT, LIFT)
+            elif isinstance(fx, WashBar):
+                fx.set_intensity(c, LIFT)
+                fx.set_color(c, 1.0, 1.0, 1.0)
+        for fx in rig.by_role("spot"):
+            fx.set_intensity(c, LIFT)
+            fx.set_color(c, 1.0, 1.0, 1.0)
+        return c

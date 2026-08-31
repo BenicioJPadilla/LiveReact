@@ -1,0 +1,12 @@
+# Normalize line endings. Source/text files use LF in the repo.
+* text=auto eol=lf
+
+# Shell launchers MUST be LF (CRLF breaks bash on macOS) and stay executable.
+*.command text eol=lf
+*.sh      text eol=lf
+
+# Windows batch files use CRLF.
+*.bat text eol=crlf
+
+# Treat these as binary (no EOL conversion).
+*.pdf binary
