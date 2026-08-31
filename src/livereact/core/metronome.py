@@ -22,13 +22,14 @@ import threading
 from collections import deque
 
 from ..clock import Clock, LoopTimer
-from .messages import BeatMessage, MidiControlMessage, StatusMessage, TransitionMessage
+from .messages import AudioLevelMessage, BeatMessage, MidiControlMessage, StatusMessage, TransitionMessage
 from .show_state import ShowSnapshot, ShowState
 
 log = logging.getLogger(__name__)
 
-PDL_STALE_AFTER = 1.0   # seconds without a PDL message -> not fresh
-MIDI_STALE_AFTER = 1.0  # seconds without a MIDI message -> not fresh
+PDL_STALE_AFTER = 1.0    # seconds without a PDL message -> not fresh
+MIDI_STALE_AFTER = 1.0   # seconds without a MIDI message -> not fresh
+AUDIO_STALE_AFTER = 1.0  # seconds without an AudioLevelMessage -> not fresh
 ENERGY_SMOOTHING = 0.05  # EMA factor per tick (~0.2 s time constant at 100 Hz)
 
 # Transition detection (Phase 6): a crossfader that moves more than CROSS_MOVE
@@ -83,10 +84,19 @@ class Metronome(threading.Thread):
         }
         self._energy = 0.0
 
+        # real audio (docs/14) — kept separate from _midi's fields; see
+        # AudioLevelMessage's docstring for why band_low_abs stays un-normalized
+        self._audio_band_low = 0.333
+        self._audio_band_mid = 0.333
+        self._audio_band_high = 0.334
+        self._audio_band_low_abs = 0.0
+        self._audio_rms = 0.0
+
         # freshness tracking
         self._last_beat_time: float | None = None
         self._last_pdl_time: float | None = None
         self._last_midi_time: float | None = None
+        self._last_audio_time: float | None = None
         self._last_log = clock.monotonic()
 
     # ------------------------------------------------------------------ run loop
@@ -105,7 +115,7 @@ class Metronome(threading.Thread):
         now = self.clock.monotonic()
         self._drain_queue()
         self._advance_clock(now)
-        self._derive_energy()
+        self._derive_energy(now)
         snap = self._build_snapshot(now)
         self.show_state.publish(snap)
         self._maybe_log(now, snap)
@@ -127,6 +137,8 @@ class Metronome(threading.Thread):
             self._on_status(msg)
         elif isinstance(msg, MidiControlMessage):
             self._on_midi(msg)
+        elif isinstance(msg, AudioLevelMessage):
+            self._on_audio(msg)
         elif isinstance(msg, TransitionMessage):
             # An explicit transition signal (demo/manual). Detection is the main
             # path; this just nudges the same timer so both sources agree.
@@ -171,6 +183,14 @@ class Metronome(threading.Thread):
             if msg.control == "crossfader":
                 self._note_crossfader(msg.timestamp, value)
 
+    def _on_audio(self, msg: AudioLevelMessage) -> None:
+        self._last_audio_time = msg.timestamp
+        self._audio_band_low = msg.band_low
+        self._audio_band_mid = msg.band_mid
+        self._audio_band_high = msg.band_high
+        self._audio_band_low_abs = msg.band_low_abs
+        self._audio_rms = msg.rms
+
     def _note_crossfader(self, t: float, value: float) -> None:
         """Detect a transition from crossfader motion over a rolling window."""
         history = self._cross_history
@@ -208,18 +228,25 @@ class Metronome(threading.Thread):
             self._bar += 1
 
     # ------------------------------------------------------------------ derive
-    def _derive_energy(self) -> None:
-        # Louder deck's fader + how "open" its EQ is -> a coarse energy proxy.
-        if self._midi["fader_a"] >= self._midi["fader_b"]:
-            fader, prefix = self._midi["fader_a"], "a"
+    def _derive_energy(self, now: float) -> None:
+        # VERIFIED preference order (docs/14): real audio loudness when fresh —
+        # it's actually measuring the sound, not a mixer-knob proxy. Falls back
+        # to the MIDI fader/EQ estimate when audio isn't available, same
+        # graceful-degradation pattern as every other input in this project.
+        if self._is_audio_fresh(now):
+            raw = self._audio_rms
         else:
-            fader, prefix = self._midi["fader_b"], "b"
-        eq_open = (
-            self._midi[f"eq_low_{prefix}"]
-            + self._midi[f"eq_mid_{prefix}"]
-            + self._midi[f"eq_high_{prefix}"]
-        ) / 3.0
-        raw = 0.6 * fader + 0.4 * eq_open
+            # Louder deck's fader + how "open" its EQ is -> a coarse energy proxy.
+            if self._midi["fader_a"] >= self._midi["fader_b"]:
+                fader, prefix = self._midi["fader_a"], "a"
+            else:
+                fader, prefix = self._midi["fader_b"], "b"
+            eq_open = (
+                self._midi[f"eq_low_{prefix}"]
+                + self._midi[f"eq_mid_{prefix}"]
+                + self._midi[f"eq_high_{prefix}"]
+            ) / 3.0
+            raw = 0.6 * fader + 0.4 * eq_open
         self._energy += ENERGY_SMOOTHING * (raw - self._energy)
 
     # ------------------------------------------------------------------ health
@@ -228,6 +255,9 @@ class Metronome(threading.Thread):
 
     def _is_midi_fresh(self, now: float) -> bool:
         return self._last_midi_time is not None and (now - self._last_midi_time) < MIDI_STALE_AFTER
+
+    def _is_audio_fresh(self, now: float) -> bool:
+        return self._last_audio_time is not None and (now - self._last_audio_time) < AUDIO_STALE_AFTER
 
     # ------------------------------------------------------------------ output
     def _build_snapshot(self, now: float) -> ShowSnapshot:
@@ -250,11 +280,17 @@ class Metronome(threading.Thread):
             eq_low_b=self._midi["eq_low_b"],
             eq_mid_b=self._midi["eq_mid_b"],
             eq_high_b=self._midi["eq_high_b"],
+            audio_energy=self._audio_rms,
+            audio_band_low=self._audio_band_low,
+            audio_band_mid=self._audio_band_mid,
+            audio_band_high=self._audio_band_high,
+            audio_band_low_abs=self._audio_band_low_abs,
             energy=self._energy,
             in_transition=now < self._transition_until,
             free_running=not self._is_pdl_fresh(now),
             pdl_fresh=self._is_pdl_fresh(now),
             midi_fresh=self._is_midi_fresh(now),
+            audio_fresh=self._is_audio_fresh(now),
         )
 
     def _maybe_log(self, now: float, snap: ShowSnapshot) -> None:

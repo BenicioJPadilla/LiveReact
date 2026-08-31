@@ -1,0 +1,10 @@
+{
+  "name": "Josh's rig (2026-08-31)",
+  "description": "4 fixtures, VERIFIED ON HARDWARE by isolated channel probing (not assumed from a spec): laser@1, par@21, moving head@36, wash bar@69. Par is 4CH dimmer+RGB (no white) — a different layout than the packaged default_rig.json's rgb_par assumption, confirmed empirically. Wash bar's 6CH layout matches the packaged assumption (dimmer/strobe/R/G/B/W), but note: R/G/B light a different physical LED zone (\"outer\") than White (\"center\") — not a true RGBW mixing pixel, confirmed empirically. Update this file (or make a new one) as the rig changes.",
+  "slots": [
+    {"slot_id": "laser", "fixture_type": "shehds_3w_laser", "dmx_address": 1,  "label": "Laser",       "role": "laser", "side": "left"},
+    {"slot_id": "par",   "fixture_type": "rgb_par",         "dmx_address": 21, "label": "Par",         "role": "wash",  "side": "left"},
+    {"slot_id": "mh",    "fixture_type": "shehds_180w_mh",  "dmx_address": 36, "label": "Moving Head", "role": "spot",  "side": "left"},
+    {"slot_id": "bar",   "fixture_type": "ok103_wash_bar",  "dmx_address": 69, "label": "Wash Bar",    "role": "wash",  "side": "right"}
+  ]
+}

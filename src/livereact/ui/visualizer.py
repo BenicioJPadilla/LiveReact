@@ -31,7 +31,14 @@ _FIXTURE_R = 34
 
 
 def _layout(fx) -> tuple[float, float, float, float]:
-    """Return (x, y, w, h) for a fixture based on role + side."""
+    """Return (x, y, w, h) for a fixture: a custom dragged/loaded position
+    (``fx.layout_x``/``layout_y``, normalized center 0..1) if set, else the
+    default role/side schematic layout."""
+    is_bar = isinstance(fx, WashBar)
+    w, h = (260, 34) if is_bar else (_FIXTURE_R * 2, _FIXTURE_R * 2)
+    if fx.layout_x is not None and fx.layout_y is not None:
+        cx, cy = fx.layout_x * _SCENE_W, fx.layout_y * _SCENE_H
+        return cx - w / 2, cy - h / 2, w, h
     if isinstance(fx, MovingHead):
         row = "spot"
     elif isinstance(fx, Laser):
@@ -60,29 +67,75 @@ class RigView(QtWidgets.QGraphicsView):
         self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         self._bodies: dict[str, QtWidgets.QAbstractGraphicsShapeItem] = {}
         self._beams: dict[str, QtWidgets.QGraphicsLineItem] = {}
+        self._labels: dict[str, QtWidgets.QGraphicsTextItem] = {}  # keep a Python ref — see _build_items
         self._build_items()
 
     def _build_items(self) -> None:
         pen = QtGui.QPen(QtGui.QColor(60, 60, 70))
+        movable = (
+            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+            | QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+        )
         for fx in self.rig.fixtures:
             x, y, w, h = _layout(fx)
             is_bar = isinstance(fx, WashBar)
             item: QtWidgets.QAbstractGraphicsShapeItem = (
                 self._scene.addRect(x, y, w, h, pen) if is_bar else self._scene.addEllipse(x, y, w, h, pen)
             )
+            # Draggable, so the operator can arrange the virtual rig to match a
+            # real venue's physical layout (Save Layout persists it to the rig
+            # file). Beam/label positions are derived live from wherever the
+            # body actually is on screen, not recomputed from the original
+            # layout, so they track a drag automatically.
+            item.setFlag(movable, True)
+            item.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
             self._bodies[self._key(fx)] = item
             # Beam line for moving heads (shows pan/tilt).
             if isinstance(fx, MovingHead):
                 cx, cy = x + w / 2, y + h / 2
                 beam = self._scene.addLine(cx, cy, cx, cy + 60, QtGui.QPen(QtGui.QColor(80, 80, 90), 2))
                 self._beams[self._key(fx)] = beam
-            label = self._scene.addText(fx.label, QtGui.QFont("Arial", 8))
+            # Parented to the body -> moves with it automatically when dragged
+            # (child position is in the parent's own local coordinate frame,
+            # which starts at the body's un-dragged origin, so this places it
+            # in the same spot as before and keeps tracking on every drag).
+            label = QtWidgets.QGraphicsTextItem(fx.label, item)
+            label.setFont(QtGui.QFont("Arial", 8))
             label.setDefaultTextColor(QtGui.QColor(150, 150, 160))
             label.setPos(x, y + h + 2)
+            self._labels[self._key(fx)] = label  # keep a Python ref (parent alone isn't enough — PySide6 GC gotcha)
 
     @staticmethod
     def _key(fx) -> str:
         return getattr(fx, "slot_id", fx.label)
+
+    def fixture_positions(self) -> dict[str, tuple[float, float]]:
+        """Each fixture's current on-screen center, normalized 0..1 — reflects
+        drags, so this is what "Save Layout" persists to the rig file."""
+        out = {}
+        for fx in self.rig.fixtures:
+            item = self._bodies.get(self._key(fx))
+            if item is None:
+                continue
+            center = item.sceneBoundingRect().center()
+            out[self._key(fx)] = (center.x() / _SCENE_W, center.y() / _SCENE_H)
+        return out
+
+    def reset_layout(self) -> None:
+        """Clear custom positions and snap every fixture back to the default
+        role/side schematic layout."""
+        for fx in self.rig.fixtures:
+            fx.layout_x = None
+            fx.layout_y = None
+            item = self._bodies.get(self._key(fx))
+            if item is None:
+                continue
+            x, y, w, h = _layout(fx)
+            item.setPos(0, 0)
+            item.setRect(x, y, w, h)
+            label = self._labels.get(self._key(fx))
+            if label is not None:
+                label.setPos(x, y + h + 2)
 
     def update_from_universe(self, uni: bytes) -> None:
         for fx in self.rig.fixtures:
@@ -95,8 +148,8 @@ class RigView(QtWidgets.QGraphicsView):
             item.setPen(QtGui.QPen(glow, 2 if vs.active else 1))
             beam = self._beams.get(self._key(fx))
             if beam is not None:
-                x, y, w, h = _layout(fx)
-                cx, cy = x + w / 2, y + h / 2
+                center = item.sceneBoundingRect().center()  # live position, tracks drags
+                cx, cy = center.x(), center.y()
                 # pan 0..1 -> -60..60 px horizontally; tilt 0..1 -> 30..90 px down.
                 dx = (vs.pan - 0.5) * 120
                 dy = 30 + vs.tilt * 60
@@ -172,9 +225,7 @@ def build_demo_universe(rig: Rig, t: float) -> bytes:
     r, g, b = _hsv_to_rgb(hue, 0.85, 1.0)
 
     for fx in rig.by_role("wash"):
-        if isinstance(fx, Par):
-            fx.set_color(c, r * level, g * level, b * level)
-        elif isinstance(fx, WashBar):
+        if isinstance(fx, (Par, WashBar)):
             fx.set_intensity(c, level)
             fx.set_color(c, r, g, b)
 

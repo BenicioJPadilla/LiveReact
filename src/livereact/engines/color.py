@@ -22,7 +22,15 @@ HUE_HIGH = 0.5   # cyan
 
 
 def band_levels(snap: ShowSnapshot) -> tuple[float, float, float]:
-    """EQ (low, mid, high) of the louder deck — the band intent driving hue."""
+    """Band dominance (low, mid, high) driving hue.
+
+    VERIFIED preference order (docs/14): real audio band analysis when fresh —
+    it's the actual sound, not a mixer-knob proxy. Falls back to "EQ of the
+    louder deck" (the old MIDI-only estimate) when audio isn't available —
+    same graceful-degradation pattern as everywhere else in this project.
+    """
+    if snap.audio_fresh:
+        return snap.audio_band_low, snap.audio_band_mid, snap.audio_band_high
     if snap.fader_a >= snap.fader_b:
         return snap.eq_low_a, snap.eq_mid_a, snap.eq_high_a
     return snap.eq_low_b, snap.eq_mid_b, snap.eq_high_b

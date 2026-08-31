@@ -16,8 +16,8 @@ def test_warm_bias_boosts_red_relative_to_blue():
     warm = render_universe([c], rig, ManualParams(warm_cool_bias=-1.0))
     cool = render_universe([c], rig, ManualParams(warm_cool_bias=1.0))
 
-    assert warm[par.offset + 0] > warm[par.offset + 2]   # warm: R > B
-    assert cool[par.offset + 2] > cool[par.offset + 0]   # cool: B > R
+    assert warm[par.offset + 1] > warm[par.offset + 3]   # warm: R (ch2) > B (ch4)
+    assert cool[par.offset + 3] > cool[par.offset + 1]   # cool: B (ch4) > R (ch2)
 
 
 def test_strobe_burst_engages_strobe_within_cap():

@@ -20,12 +20,20 @@ log = logging.getLogger(__name__)
 
 
 def find_midi_port(port_names: list[str], match: str = "XDJ") -> str | None:
-    """Pick the first input port whose name contains ``match`` (case-insensitive)."""
+    """Pick the input port whose name contains ``match`` (case-insensitive).
+
+    VERIFIED ON HARDWARE: the XDJ-XZ exposes *two* USB-MIDI ports — only one
+    (named "... (2)" on macOS) actually carries mixer/deck control-change data;
+    the other ("... (1)") stayed silent through repeated isolated capture. Relying
+    on OS enumeration order to land on the right one was luck, not guaranteed
+    stable across reconnects — so when both match, prefer "(2)" explicitly.
+    """
     match = match.lower()
-    for name in port_names:
-        if match in name.lower():
-            return name
-    return port_names[0] if port_names else None
+    matches = [name for name in port_names if match in name.lower()]
+    if not matches:
+        return port_names[0] if port_names else None
+    preferred = [name for name in matches if "(2)" in name]
+    return preferred[0] if preferred else matches[0]
 
 
 class MidiListener(InputSource):

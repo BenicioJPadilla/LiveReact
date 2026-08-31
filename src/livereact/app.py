@@ -44,6 +44,8 @@ class AppConfig:
     pdl_interface: str | None = None          # explicit NIC for Pro DJ Link
     record: bool = False                      # record this session for analysis
     session_dir: str | None = None            # where to record (set by the CLI)
+    rig_path: str | None = None               # custom rig JSON; None = packaged default_rig.json
+    audio_device: str | int | None = None     # explicit audio input device; None = auto-detect "XDJ"
 
 
 class App:
@@ -77,7 +79,7 @@ class App:
         self.sources = self._build_sources()
 
         # --- show pipeline (Phases 3-4): snapshot -> engines -> merge -> frame buffer ---
-        self.rig: Rig = load_rig()
+        self.rig: Rig = load_rig(self.config.rig_path)
         self.manual = ManualParams()
         if self.config.config_path:
             app_config.load_into(self.manual, self.config.config_path)
@@ -144,6 +146,7 @@ class App:
         if self.config.demo:
             return [DemoDataSource(self.input_queue, self.clock, self.stop_event)]
 
+        from .inputs.audio import AudioAnalyzer
         from .inputs.midi import MidiListener
         from .inputs.midi_map import CcMap
         from .inputs.prodj import ProDjLinkListener
@@ -158,6 +161,8 @@ class App:
             ProDjLinkListener(self.input_queue, self.clock, self.stop_event,
                               interface=self.config.pdl_interface),
             MidiListener(self.input_queue, self.clock, cc_map),
+            AudioAnalyzer(self.input_queue, self.clock, self.stop_event,
+                          device=self.config.audio_device),
         ]
 
     # ------------------------------------------------------------------ lifecycle

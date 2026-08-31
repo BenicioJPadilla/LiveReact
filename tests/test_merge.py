@@ -22,11 +22,11 @@ def test_color_and_dimmer_merge_by_max():
     rig = _rig()
     par = rig.fixture("par_l")
     c1, c2 = Contribution(), Contribution()
-    par.set_color(c1, 0.2, 1.0, 0.0)  # R=51,  G=255
+    par.set_color(c1, 0.2, 1.0, 0.0)  # R=51,  G=255 (ch2=R, ch3=G)
     par.set_color(c2, 0.8, 0.1, 0.0)  # R=204, G=25
     merged = merge_contributions([c1, c2], rig)
-    assert merged[par.offset + 0] == 204  # max red
-    assert merged[par.offset + 1] == 255  # max green
+    assert merged[par.offset + 1] == 204  # max red
+    assert merged[par.offset + 2] == 255  # max green
 
 
 def test_movement_is_last_write_wins():

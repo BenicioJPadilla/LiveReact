@@ -124,6 +124,14 @@ class Fixture:
         self.label = label
         self.role = role        # 'spot' | 'wash' | 'laser'
         self.side = side        # 'left' | 'right'
+        # Optional custom position on the virtual rig canvas (normalized 0..1,
+        # the fixture's on-screen center). None -> the visualizer's default
+        # role/side layout. Set by the rig loader from a slot's "x"/"y", or
+        # live by dragging the fixture in the console's Show tab, so an
+        # operator can arrange the virtual rig to match a real venue's
+        # physical layout per event.
+        self.layout_x: float | None = None
+        self.layout_y: float | None = None
 
     # --- geometry ---
     @property
@@ -268,54 +276,61 @@ class Laser(Fixture):
 
 
 class Par(Fixture):
-    """RGBW Par — 4CH (docs/04 §3.3). No master dimmer, no strobe channel:
-    dim by scaling RGB(W); strobe (if ever needed) is done in software."""
+    """RGB Par — 4CH, VERIFIED ON HARDWARE (real fixture, 2026-08-31) by isolated
+    channel probing: 1 Dimmer · 2 Red · 3 Green · 4 Blue. No White channel — a
+    5th channel was tested and produced no additional effect. This replaces an
+    earlier written-spec guess (R/G/B/W, no dimmer channel at all) that didn't
+    match this fixture: color-only with the dimmer at 0 produced nothing, and
+    dimmer-only with color at 0 also produced nothing (confirmed both ways) —
+    it's a genuine two-part gate like the WashBar's, not a scale-in-software
+    model."""
 
-    type_name = "rgbw_par"
+    type_name = "rgb_par"
     channel_count = 4
 
     def channel_kinds(self) -> list[ChannelKind]:
-        return [ChannelKind.COLOR] * 4
+        return [ChannelKind.DIMMER, ChannelKind.COLOR, ChannelKind.COLOR, ChannelKind.COLOR]
 
     def boot_defaults(self, buf: Buffer) -> None:
         for ch in range(1, 5):
             self._set(buf, ch, 0)
 
     def set_color(self, buf: Buffer, r: float, g: float, b: float, w: float = 0.0) -> None:
-        self._set(buf, 1, _to8(r))
-        self._set(buf, 2, _to8(g))
-        self._set(buf, 3, _to8(b))
-        self._set(buf, 4, _to8(w))
+        # No white channel on this fixture; fold any white intent into R/G/B.
+        self._set(buf, 2, _to8(min(1.0, r + w)))
+        self._set(buf, 3, _to8(min(1.0, g + w)))
+        self._set(buf, 4, _to8(min(1.0, b + w)))
 
     def set_intensity(self, buf: Buffer, level01: float) -> None:
-        # No dimmer channel; modeled as scaling whatever color is present is done
-        # at finalize. As a standalone intent, set a white level.
-        v = _to8(level01)
-        for ch in range(1, 5):
-            self._set(buf, ch, v)
+        self._set(buf, 1, _to8(level01))  # ch1 dimmer
 
     def apply_master_brightness(self, uni: bytearray, factor01: float) -> None:
-        for i in range(self.offset, self.offset + 4):  # scale R,G,B,W together
-            uni[i] = _clamp8(uni[i] * factor01)
+        i = self.offset  # ch1 dimmer
+        uni[i] = _clamp8(uni[i] * factor01)
 
     def apply_color_bias(self, uni: bytearray, bias: float) -> None:
         if bias == 0.0:
             return
         rf, bf = _bias_factors(bias)
-        uni[self.offset + 0] = _clamp8(uni[self.offset + 0] * rf)  # R
-        uni[self.offset + 2] = _clamp8(uni[self.offset + 2] * bf)  # B
+        uni[self.offset + 1] = _clamp8(uni[self.offset + 1] * rf)  # R ch2
+        uni[self.offset + 3] = _clamp8(uni[self.offset + 3] * bf)  # B ch4
 
     def visual_state(self, uni: bytes) -> VisualState:
-        r, g, b, w = (uni[self.offset + k] for k in range(4))
-        # Fold white into RGB for display.
-        rr, gg, bb = min(255, r + w), min(255, g + w), min(255, b + w)
-        brightness = max(rr, gg, bb) / 255
-        return VisualState(self.label, self.role, self.side, rr, gg, bb, brightness, 0.5, 0.5, brightness > 0)
+        dim = uni[self.offset + 0] / 255
+        r, g, b = (uni[self.offset + k] for k in range(1, 4))
+        return VisualState(self.label, self.role, self.side, r, g, b, dim, 0.5, 0.5, dim > 0 and max(r, g, b) > 0)
 
 
 class WashBar(Fixture):
     """OK-103-288WL Wash Bar — 6CH (docs/04 §3.4).
-    1 Master Dimmer · 2 Strobe · 3 Red · 4 Green · 5 Blue · 6 White."""
+    1 Master Dimmer · 2 Strobe · 3 Red · 4 Green · 5 Blue · 6 White.
+
+    VERIFIED ON HARDWARE (real fixture, 2026-08-31): this channel layout is
+    correct, but note a real physical quirk — R/G/B light a different LED zone
+    ("outer") than White ("center"). This is not a true RGBW mixing pixel;
+    it's discrete single-color LED clusters along the bar. Mixed colors won't
+    blend into one smooth hue the way a Par's RGBW pixel does — worth knowing
+    when designing scenes/color logic for this fixture specifically."""
 
     type_name = "ok103_wash_bar"
     channel_count = 6

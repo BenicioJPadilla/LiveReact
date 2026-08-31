@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from livereact.core.show_state import ShowSnapshot
-from livereact.fixtures.rig import load_rig
+from livereact.fixtures.rig import _rig_from_dict, load_rig
 from livereact.scenes.base import EnergyBucket
 from livereact.scenes.catalog import SceneCatalog, bucket_for_energy
-from livereact.scenes.library import ALL_SCENES, BeamFanLaserTunnel, DeepWashBreathe
+from livereact.scenes.library import ALL_SCENES, BeamFanLaserTunnel, Converge, DeepWashBreathe
 
 
 def _snap(**kw) -> ShowSnapshot:
@@ -61,3 +61,36 @@ def test_round_robin_avoids_repeating_current():
     first = cat.pick(EnergyBucket.DROP)
     second = cat.pick(EnergyBucket.DROP, exclude=first)
     assert second is not first
+
+
+def test_converge_two_spots_matches_original_spread():
+    """Converge was generalized from a hardcoded 2-fixture L/R split to any
+    fixture count — this pins down that the N=2 case still reduces to
+    exactly the original 0.15/0.85 spread math."""
+    rig = load_rig()  # packaged default: mh_l (left) + mh_r (right)
+    prog = 0.6
+    snap = _snap(energy=prog)
+    c = Converge().render(rig, snap, 1.0)
+    mh_l, mh_r = rig.fixture("mh_l"), rig.fixture("mh_r")
+    assert c.values[mh_l.offset] == round((0.15 + 0.35 * prog) * 255)
+    assert c.values[mh_r.offset] == round((0.85 - 0.35 * prog) * 255)
+
+
+def test_converge_single_spot_narrows_to_center_as_energy_rises():
+    """The old Converge was broken on a 1-fixture rig: both branches of
+    `if side == "left"` collapse to the same one, so "converge from the
+    other side" never happened. The fix expresses the same arc as a sweep
+    that narrows to stillness at center instead."""
+    rig = _rig_from_dict({
+        "name": "single-mh",
+        "slots": [{"slot_id": "mh", "fixture_type": "shehds_180w_mh",
+                   "dmx_address": 1, "role": "spot", "side": "left"}],
+    })
+    mh = rig.fixture("mh")
+    # bar=2, beat 1, phase 0 -> musical_bar_position == 2.0, away from a sin() zero-crossing
+    low = _snap(energy=0.0, bar=2, beat_in_bar=1, beat_phase=0.0)
+    high = _snap(energy=1.0, bar=2, beat_in_bar=1, beat_phase=0.0)
+    pan_low = Converge().render(rig, low, 1.0).values[mh.offset]
+    pan_high = Converge().render(rig, high, 1.0).values[mh.offset]
+    assert pan_high == 128            # full energy -> amplitude 0 -> dead center
+    assert abs(pan_low - 128) > 20    # low energy -> meaningfully off-center, still sweeping

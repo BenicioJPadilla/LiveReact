@@ -49,6 +49,19 @@ class ShowSnapshot:
     eq_mid_b: float = 0.5
     eq_high_b: float = 0.5
 
+    # --- real audio (measured, docs/14) — kept SEPARATE from the MIDI-intent
+    # fields above deliberately (provenance): these come from actually analyzing
+    # the sound, not mixer-knob position. band_low/mid/high are normalized
+    # fractions for color; band_low_abs is the low band's un-normalized energy,
+    # for the laser onset trigger specifically — VERIFIED these must stay two
+    # separate signals (tools/simulations/audio_pipeline_sim_v2.py), not one
+    # derived from the other.
+    audio_energy: float = 0.0
+    audio_band_low: float = 0.333
+    audio_band_mid: float = 0.333
+    audio_band_high: float = 0.334
+    audio_band_low_abs: float = 0.0
+
     # --- derived ---
     energy: float = 0.0                  # inferred 0.0-1.0
     in_transition: bool = False          # inferred / synthetic
@@ -57,6 +70,7 @@ class ShowSnapshot:
     free_running: bool = True            # clock free-running (no recent master beat)
     pdl_fresh: bool = False              # a PDL message arrived recently
     midi_fresh: bool = False             # a MIDI message arrived recently
+    audio_fresh: bool = False            # an AudioLevelMessage arrived recently
 
     def summary(self) -> str:
         """One-line human summary for periodic logging."""
@@ -66,7 +80,8 @@ class ShowSnapshot:
             f"phase={self.beat_phase:.2f} energy={self.energy:.2f} "
             f"transition={'Y' if self.in_transition else 'n'} "
             f"clock={clock} pdl={'fresh' if self.pdl_fresh else 'STALE'} "
-            f"midi={'fresh' if self.midi_fresh else 'stale'}"
+            f"midi={'fresh' if self.midi_fresh else 'stale'} "
+            f"audio={'fresh' if self.audio_fresh else 'stale'}"
         )
 
     def replace(self, **changes) -> "ShowSnapshot":

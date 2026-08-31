@@ -113,5 +113,9 @@ def _rig_from_dict(data: dict) -> Rig:
         )
         # Stash slot_id for fixture() lookups.
         fx.slot_id = slot.get("slot_id", fx.label)  # type: ignore[attr-defined]
+        # Optional custom canvas position (normalized 0..1) — see Fixture.layout_x/y.
+        if "x" in slot and "y" in slot:
+            fx.layout_x = float(slot["x"])
+            fx.layout_y = float(slot["y"])
         fixtures.append(fx)
     return Rig(name=data.get("name", "rig"), fixtures=fixtures)

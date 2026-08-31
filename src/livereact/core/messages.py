@@ -55,6 +55,28 @@ class MidiControlMessage:
 
 
 @dataclass(frozen=True)
+class AudioLevelMessage:
+    """One analysis block from the real audio pipeline (docs/14).
+
+    ``band_low/mid/high`` are normalized fractions (sum to ~1.0) for color —
+    band dominance, same shape as the MIDI-derived EQ concept.
+    ``band_low_abs`` is the SAME low band's *absolute* (non-normalized) energy,
+    for the laser onset trigger specifically — VERIFIED these need to be two
+    separate signals (tools/simulations/audio_pipeline_sim_v2.py): the
+    normalized fraction saturates near-constant whenever any continuous bass
+    is present, losing the contrast an onset trigger needs, while the
+    absolute version keeps it. Don't derive one from the other downstream.
+    """
+
+    timestamp: float
+    rms: float           # smoothed, VU-meter-style loudness (0..~1, unbounded above clipping)
+    band_low: float
+    band_mid: float
+    band_high: float
+    band_low_abs: float
+
+
+@dataclass(frozen=True)
 class TransitionMessage:
     """A synthetic transition marker from the demo source.
 

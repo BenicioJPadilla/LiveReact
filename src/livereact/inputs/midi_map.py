@@ -1,11 +1,21 @@
 """XDJ-XZ MIDI CC map — translate raw (channel, CC) to semantic control names.
 
-⚠️ The default map is the spec's "verified on Josh's unit" table (docs/04 §6),
-reproduced as a HYPOTHESIS. The XDJ-XZ's USB-MIDI mapping is poorly documented,
-firmware/mode-dependent, and may use HID for some controls — so this MUST be
-re-verified on hardware with the MIDI monitor (`--midi-monitor`) and the discovered
-map persisted. Channels here are 0-indexed (as mido reports them); the spec's
-"MIDI channel 6" is mido channel 5.
+VERIFIED ON HARDWARE (real XDJ-XZ, 2026-08-31) — full map, every control
+below confirmed by isolated capture (moving exactly one control at a time;
+crossfader/fader_a/fader_b retested twice for consistency). Replaces the old
+written-spec guess entirely, which assumed a different channel (5) and
+different CC numbers (23/24/31/etc.) that never matched this unit at all.
+
+Everything lands on the **same mido channel (4)** — MIDI channel does NOT
+encode which deck you're on here; deck identity comes from the CC number
+instead. The two decks' CCs follow a clean, consistent sequential pattern
+(high/mid/low ascending by CC within each deck, deck B offset from deck A),
+which is good independent evidence the numbers are real and not noise:
+
+    deck A: fader=17, eq_high=2, eq_mid=3, eq_low=4
+    deck B: fader=18, eq_high=7, eq_mid=8, eq_low=9
+
+Channels are 0-indexed (as mido reports them).
 """
 
 from __future__ import annotations
@@ -17,9 +27,10 @@ log = logging.getLogger(__name__)
 
 # (mido_channel, cc) -> semantic control name.
 DEFAULT_CC_MAP: dict[tuple[int, int], str] = {
-    (5, 23): "fader_a", (5, 24): "fader_b", (5, 31): "crossfader",
-    (5, 15): "eq_low_a", (5, 16): "eq_mid_a", (5, 17): "eq_high_a",
-    (5, 19): "eq_low_b", (5, 20): "eq_mid_b", (5, 21): "eq_high_b",
+    (4, 11): "crossfader",
+    (4, 17): "fader_a", (4, 18): "fader_b",
+    (4, 2): "eq_high_a", (4, 3): "eq_mid_a", (4, 4): "eq_low_a",
+    (4, 7): "eq_high_b", (4, 8): "eq_mid_b", (4, 9): "eq_low_b",
 }
 
 

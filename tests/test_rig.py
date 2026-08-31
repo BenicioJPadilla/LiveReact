@@ -31,8 +31,9 @@ def test_channel_kind_map_matches_addresses():
     assert rig.kind_at(5) == ChannelKind.DIMMER
     # Laser Left at address 31: all channels are LASER-kind.
     assert rig.kind_at(30) == ChannelKind.LASER
-    # Par Left at address 55 (index 54): COLOR.
-    assert rig.kind_at(54) == ChannelKind.COLOR
+    # Par Left at address 55 (index 54): ch1 is the dimmer, ch2 is COLOR (R).
+    assert rig.kind_at(54) == ChannelKind.DIMMER
+    assert rig.kind_at(55) == ChannelKind.COLOR
 
 
 def test_boot_universe_has_moving_heads_centered():
@@ -48,8 +49,8 @@ def test_overlapping_addresses_raise():
     bad = {
         "name": "bad",
         "slots": [
-            {"slot_id": "a", "fixture_type": "rgbw_par", "dmx_address": 1, "role": "wash", "side": "left"},
-            {"slot_id": "b", "fixture_type": "rgbw_par", "dmx_address": 3, "role": "wash", "side": "right"},
+            {"slot_id": "a", "fixture_type": "rgb_par", "dmx_address": 1, "role": "wash", "side": "left"},
+            {"slot_id": "b", "fixture_type": "rgb_par", "dmx_address": 3, "role": "wash", "side": "right"},
         ],
     }
     with pytest.raises(RigError):

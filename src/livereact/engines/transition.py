@@ -29,9 +29,10 @@ class TransitionEngine:
         # A subtle white lift: max-merge raises anything dimmer than LIFT and warms
         # the whole rig toward white, without stopping the underlying look.
         for fx in rig.by_role("wash"):
-            if isinstance(fx, Par):
-                fx.set_color(c, LIFT, LIFT, LIFT)
-            elif isinstance(fx, WashBar):
+            if isinstance(fx, (Par, WashBar)):
+                # VERIFIED ON HARDWARE: the real Par has a separate dimmer gate,
+                # same as WashBar — color alone with dimmer=0 shows nothing, so
+                # both channels must be set together (not color-only, as before).
                 fx.set_intensity(c, LIFT)
                 fx.set_color(c, 1.0, 1.0, 1.0)
         for fx in rig.by_role("spot"):

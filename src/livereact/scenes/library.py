@@ -82,7 +82,18 @@ class RisingTide(Scene):
 
 
 class Converge(Scene):
-    """Both MHs pan from outward toward center as the build rises; wash mid."""
+    """Spot fixtures pan from spread positions toward center as the build rises.
+
+    GENERALIZED for any spot-fixture count (was hardcoded to exactly 2,
+    side=="left"/else — broken on a 1-fixture rig, since it always took the
+    same branch and the "converge from the other side" half never happened).
+    With 2+ moving heads, they spread evenly outward and close in toward one
+    point — same math as before for exactly 2 (verified: reduces to the
+    original 0.15/0.85 spread). With exactly 1 (nothing to converge WITH),
+    the same "spread/searching -> locked/still" arc is expressed instead as
+    a sweep whose amplitude narrows to stillness at center — same emotional
+    shape, no special hardware needed to make it read as intentional.
+    """
 
     name = "Converge"
     bucket = EnergyBucket.BUILD
@@ -93,12 +104,19 @@ class Converge(Scene):
         paint_wash(c, rig, r, g, b, 0.45 * intensity)
         paint_spots(c, rig, 1.0, 1.0, 1.0, (0.5 + 0.5 * snap.energy) * intensity)
         prog = max(0.0, min(1.0, snap.energy))
-        for fx in rig.by_role("spot"):
-            if fx.side == "left":
-                pan = 0.15 + 0.35 * prog       # outward -> center
-            else:
-                pan = 0.85 - 0.35 * prog
-            fx.set_position(c, pan, 0.45)
+        spots = rig.by_role("spot")
+        n = len(spots)
+        if n == 1:
+            pos = musical_bar_position(snap)
+            amplitude = 0.35 * (1.0 - prog)  # wide search -> still, as prog rises
+            pan = 0.5 + amplitude * math.sin(pos)
+            spots[0].set_position(c, pan, 0.45)
+        else:
+            for i, fx in enumerate(spots):
+                spread = (i / (n - 1)) - 0.5   # -0.5 .. +0.5, evenly across all spots
+                outward = 0.5 + spread * 0.7
+                pan = outward + (0.5 - outward) * prog
+                fx.set_position(c, pan, 0.45)
         return c
 
 

@@ -8,13 +8,17 @@ brightness/strobe-cap/color, arms lasers, or hits the hard switches
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..core.messages import BeatMessage
 from ..engines.color import band_levels
+from ..fixtures.rig import RigError, _rig_from_dict
 from ..tap_tempo import TapTempo
+from .rig_config import RigConfigTab
 from .visualizer import RigView
 
 log = logging.getLogger(__name__)
@@ -27,6 +31,21 @@ def _slider(lo: int, hi: int, value: int) -> QtWidgets.QSlider:
     return s
 
 
+_DOT_OK = "color:#3c6; font-weight:bold;"
+_DOT_BAD = "color:#c33; font-weight:bold;"
+
+
+def _status_dot(label: str) -> QtWidgets.QLabel:
+    """A glanceable red/green connection indicator (● label)."""
+    dot = QtWidgets.QLabel(f"● {label}")
+    dot.setStyleSheet(_DOT_BAD)
+    return dot
+
+
+def _set_dot(dot: QtWidgets.QLabel, ok: bool) -> None:
+    dot.setStyleSheet(_DOT_OK if ok else _DOT_BAD)
+
+
 class ConsoleWindow(QtWidgets.QMainWindow):
     def __init__(self, app) -> None:
         super().__init__()
@@ -36,18 +55,93 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("LiveReact — Operator Console")
 
         self.rig_view = RigView(app.rig)
+        rig_view_container = self._build_rig_view_container()
         panel = self._build_panel()
 
         split = QtWidgets.QSplitter()
-        split.addWidget(self.rig_view)
+        split.addWidget(rig_view_container)
         split.addWidget(panel)
         split.setSizes([800, 380])
-        self.setCentralWidget(split)
+
+        tabs = QtWidgets.QTabWidget()
+        tabs.addTab(split, "Show")
+        tabs.addTab(RigConfigTab(app.rig, getattr(app.config, "rig_path", None)), "Rig Config")
+        self.setCentralWidget(tabs)
         self.resize(1240, 640)
 
         self._install_shortcuts()
 
     # ------------------------------------------------------------------ build
+    def _build_rig_view_container(self) -> QtWidgets.QWidget:
+        """The rig view plus a small toolbar for arranging the virtual rig to
+        match a real venue's physical layout — drag fixtures around, then
+        Save Layout persists positions to the rig file (Reset Layout clears
+        back to the default role/side schematic)."""
+        w = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+
+        bar = QtWidgets.QHBoxLayout()
+        bar.addWidget(QtWidgets.QLabel("Drag fixtures to match your venue's layout:"))
+        bar.addStretch(1)
+        reset_btn = QtWidgets.QPushButton("Reset Layout")
+        reset_btn.clicked.connect(self._reset_layout)
+        save_btn = QtWidgets.QPushButton("Save Layout…")
+        save_btn.clicked.connect(self._save_layout)
+        bar.addWidget(reset_btn)
+        bar.addWidget(save_btn)
+        v.addLayout(bar)
+        v.addWidget(self.rig_view)
+
+        self.l_layout_status = QtWidgets.QLabel("")
+        v.addWidget(self.l_layout_status)
+        return w
+
+    def _reset_layout(self) -> None:
+        self.rig_view.reset_layout()
+        self.l_layout_status.setText("")
+
+    def _save_layout(self) -> None:
+        positions = self.rig_view.fixture_positions()
+        slots = []
+        for fx in self.app.rig.fixtures:
+            key = getattr(fx, "slot_id", fx.label)
+            x, y = positions.get(key, (0.5, 0.5))
+            slots.append({
+                "slot_id": key,
+                "label": fx.label,
+                "fixture_type": fx.type_name,
+                "dmx_address": fx.address,
+                "role": fx.role,
+                "side": fx.side,
+                "x": round(x, 4),
+                "y": round(y, 4),
+            })
+        data = {
+            "name": self.app.rig.name,
+            "description": "Positions edited via the LiveReact console's Show tab (drag layout).",
+            "slots": slots,
+        }
+        try:
+            _rig_from_dict(data)  # same overlap/overflow/unknown-type validation the loader uses
+        except RigError as exc:
+            self.l_layout_status.setText(f"Not saved — {exc}")
+            self.l_layout_status.setStyleSheet(_DOT_BAD)
+            return
+
+        default_path = getattr(self.app.config, "rig_path", None) or os.path.join("rigs", "custom_rig.json")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save rig layout", default_path, "JSON (*.json)")
+        if not path:
+            return
+        dirname = os.path.dirname(path)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        log.info("Saved rig layout to %s", path)
+        self.l_layout_status.setText(f"Saved to {path} — restart with --rig \"{path}\" to apply.")
+        self.l_layout_status.setStyleSheet(_DOT_OK)
+
     def _build_panel(self) -> QtWidgets.QWidget:
         m = self.app.manual
         w = QtWidgets.QWidget()
@@ -56,6 +150,19 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         banner = QtWidgets.QLabel("● AUTOMATION RUNNING")
         banner.setStyleSheet("color:#3c6; font-weight:bold;")
         v.addWidget(banner)
+
+        # --- connection status (red/green — is the rig actually hooked up?) ---
+        conn = QtWidgets.QGroupBox("Connections")
+        cf = QtWidgets.QHBoxLayout(conn)
+        self.dot_pdl = _status_dot("DJ BOARD (Link)")
+        self.dot_midi = _status_dot("DJ BOARD (MIDI)")
+        self.dot_audio = _status_dot("DJ BOARD (Audio)")
+        self.dot_dmx = _status_dot("LIGHTS (DMX)")
+        cf.addWidget(self.dot_pdl)
+        cf.addWidget(self.dot_midi)
+        cf.addWidget(self.dot_audio)
+        cf.addWidget(self.dot_dmx)
+        v.addWidget(conn)
 
         # --- readouts ---
         ro = QtWidgets.QGroupBox("Show")
@@ -167,6 +274,16 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         pdl = "fresh" if snap.pdl_fresh else "STALE"
         midi = "fresh" if snap.midi_fresh else "stale"
         self.l_health.setText(f"clock {clock} · PDL {pdl} · MIDI {midi}{trans}")
+
+        # connection dots: PDL/MIDI green only once real beat data is flowing (not
+        # just a device seen on the wire); DMX green only once a real hardware
+        # backend (not the null/log fallback) has successfully opened.
+        _set_dot(self.dot_pdl, snap.pdl_fresh)
+        _set_dot(self.dot_midi, snap.midi_fresh)
+        _set_dot(self.dot_audio, snap.audio_fresh)
+        writer = self.app.writer
+        dmx_ok = writer.is_open and writer.backend.name != "null-log"
+        _set_dot(self.dot_dmx, dmx_ok)
 
 
 def run_console(app, fps: int = 30) -> int:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from livereact.color import hsv_to_rgb
 from livereact.core.show_state import ShowSnapshot
-from livereact.engines.color import two_axis_color
+from livereact.engines.color import band_levels, two_axis_color
 
 
 def test_hsv_primaries():
@@ -43,3 +43,22 @@ def test_brightness_tracks_energy():
     bright = max(two_axis_color(_snap(energy=1.0, eq_low_a=1.0)))
     dim = max(two_axis_color(_snap(energy=0.3, eq_low_a=1.0)))
     assert bright > dim
+
+
+def test_band_levels_prefers_fresh_real_audio_over_midi_eq():
+    """docs/14: real audio band analysis wins over the MIDI-EQ proxy when fresh."""
+    snap = ShowSnapshot(
+        eq_low_a=0.9, eq_mid_a=0.1, eq_high_a=0.1,  # MIDI says "bass"...
+        audio_band_low=0.1, audio_band_mid=0.1, audio_band_high=0.8,  # ...audio says "high"
+        audio_fresh=True,
+    )
+    assert band_levels(snap) == (0.1, 0.1, 0.8)
+
+
+def test_band_levels_falls_back_to_midi_eq_when_audio_stale():
+    snap = ShowSnapshot(
+        eq_low_a=0.9, eq_mid_a=0.1, eq_high_a=0.1,
+        audio_band_low=0.1, audio_band_mid=0.1, audio_band_high=0.8,
+        audio_fresh=False,
+    )
+    assert band_levels(snap) == (0.9, 0.1, 0.1)

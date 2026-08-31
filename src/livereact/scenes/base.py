@@ -39,9 +39,9 @@ class Scene:
 def paint_wash(c: Contribution, rig: Rig, r: float, g: float, b: float, level: float) -> None:
     """Set all wash fixtures to an RGB at a brightness ``level`` (0..1)."""
     for fx in rig.by_role("wash"):
-        if isinstance(fx, Par):  # no dimmer channel -> bake level into color
-            fx.set_color(c, r * level, g * level, b * level)
-        elif isinstance(fx, WashBar):
+        if isinstance(fx, (Par, WashBar)):
+            # VERIFIED ON HARDWARE: Par has a real dimmer channel, same as
+            # WashBar (not "baked into color" as previously assumed).
             fx.set_intensity(c, level)
             fx.set_color(c, r, g, b)
 

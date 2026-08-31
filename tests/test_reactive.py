@@ -28,13 +28,13 @@ def test_pulse_peaks_on_the_beat_and_decays_across_it():
 def test_color_follows_band_dominance():
     rig = load_rig()
     eng = ReactiveLayerEngine()
-    par = rig.fixture("par_l")  # R,G,B,W at offset..offset+3
+    par = rig.fixture("par_l")  # ch1=dimmer, R,G,B at offset+1..offset+3
 
     red = eng.tick(_snap(beat_phase=0.0, eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2), rig)
-    assert red.values[par.offset] > red.values[par.offset + 2]  # R > B
+    assert red.values[par.offset + 1] > red.values[par.offset + 3]  # R > B
 
     cyan = eng.tick(_snap(beat_phase=0.0, eq_high_a=1.0, eq_low_a=0.2, eq_mid_a=0.2), rig)
-    assert cyan.values[par.offset + 2] > cyan.values[par.offset]  # B > R
+    assert cyan.values[par.offset + 3] > cyan.values[par.offset + 1]  # B > R
 
 
 def test_moving_heads_mirror_left_and_right():

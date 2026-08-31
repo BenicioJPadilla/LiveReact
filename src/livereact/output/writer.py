@@ -47,6 +47,11 @@ class DmxWriter(threading.Thread):
     def frames_sent(self) -> int:
         return self._frames_sent
 
+    @property
+    def is_open(self) -> bool:
+        """True once the backend's ``open()`` has succeeded (console health indicator)."""
+        return self._is_open
+
     def run(self) -> None:  # pragma: no cover - thin wrapper around _run_loop
         # Outer guard: even an unexpected error in the loop scaffolding itself
         # must not kill the thread silently without a trace.

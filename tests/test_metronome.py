@@ -14,6 +14,7 @@ import pytest
 
 from livereact.clock import FakeClock
 from livereact.core.messages import (
+    AudioLevelMessage,
     BeatMessage,
     MidiControlMessage,
     StatusMessage,
@@ -86,6 +87,45 @@ def test_energy_follows_fader_and_eq():
         snap = m.tick()
     assert snap.energy == pytest.approx(0.8, abs=0.01)
     assert snap.midi_fresh
+
+
+def test_energy_prefers_fresh_audio_over_midi_proxy():
+    """docs/14: real audio should win over the MIDI fader/EQ estimate when
+    both are present — it's the actual sound, not a mixer-knob proxy."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    # MIDI would derive energy=0.8 (see test_energy_follows_fader_and_eq)...
+    m.queue.put(MidiControlMessage(0.0, "fader_a", 1.0))
+    for ctrl in ("eq_low_a", "eq_mid_a", "eq_high_a"):
+        m.queue.put(MidiControlMessage(0.0, ctrl, 0.5))
+    # ...but real audio says the room is much quieter -> that should win.
+    m.queue.put(AudioLevelMessage(0.0, rms=0.2, band_low=0.5, band_mid=0.3, band_high=0.2, band_low_abs=10.0))
+    snap = None
+    for _ in range(300):
+        snap = m.tick()
+    assert snap.audio_fresh
+    assert snap.energy == pytest.approx(0.2, abs=0.01)  # audio's 0.2, not MIDI's 0.8
+    assert snap.audio_band_low == 0.5
+    assert snap.audio_band_low_abs == 10.0
+
+
+def test_energy_falls_back_to_midi_when_audio_goes_stale():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m.queue.put(AudioLevelMessage(0.0, rms=0.2, band_low=0.5, band_mid=0.3, band_high=0.2, band_low_abs=10.0))
+    m.queue.put(MidiControlMessage(0.0, "fader_a", 1.0))
+    for ctrl in ("eq_low_a", "eq_mid_a", "eq_high_a"):
+        m.queue.put(MidiControlMessage(0.0, ctrl, 0.5))
+    for _ in range(50):
+        m.tick()
+    assert m.tick().audio_fresh
+
+    clock.advance(2.0)  # past AUDIO_STALE_AFTER, MIDI stays fresh (no separate staleness test needed here)
+    snap = None
+    for _ in range(300):
+        snap = m.tick()
+    assert not snap.audio_fresh
+    assert snap.energy == pytest.approx(0.8, abs=0.01)  # falls back to the MIDI proxy
 
 
 def test_midi_and_transition_and_status_update_state():

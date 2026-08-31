@@ -47,6 +47,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--duration", type=float, default=None, help="Run for N seconds then exit (default: until Ctrl-C).")
     p.add_argument("--visualize", action="store_true", help="Open the operator console + virtual rig (PySide6).")
     p.add_argument("--pdl-interface", default=None, help="Explicit network interface/IP for Pro DJ Link.")
+    p.add_argument("--rig", default=None, help="Path to a custom rig JSON (default: the packaged 8-fixture default_rig.json).")
+    p.add_argument("--audio-device", default=None, help="Explicit audio input device name/index for real audio analysis (default: auto-detect the XDJ).")
     p.add_argument("--log-level", default="INFO", help="DEBUG, INFO, WARNING, ERROR (default: INFO).")
     # Recording / feedback (capture a session to hand back for analysis).
     p.add_argument("--record", action="store_true", help="Record this session (logs + state + notes) to recordings/.")
@@ -151,14 +153,15 @@ def main(argv: list[str] | None = None) -> int:
         from .clock import RealClock
         from .fixtures.rig import load_rig
         from .ui.fixture_test import run_fixture_test
-        rig = load_rig()
+        rig = load_rig(args.rig)
         backend = _bringup_backend(demo, args.rate)
         log.info("Fixture test using backend: %s", backend.name)
         run_fixture_test(rig, backend, RealClock(), dmx_rate_hz=args.rate)
         return 0
 
     config = AppConfig(demo=demo, dmx_rate_hz=args.rate, duration=args.duration,
-                       pdl_interface=args.pdl_interface,
+                       pdl_interface=args.pdl_interface, rig_path=args.rig,
+                       audio_device=args.audio_device,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)
 

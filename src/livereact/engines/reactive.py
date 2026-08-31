@@ -38,13 +38,13 @@ class ReactiveLayerEngine:
 
         # --- washes: pulse on the beat, hue from the bands ---
         for fx in rig.by_role("wash"):
-            if isinstance(fx, Par):
-                # Pars have no dimmer channel -> bake level into the color.
-                fx.set_color(c, r * wash_level, g * wash_level, b * wash_level)
-            elif isinstance(fx, WashBar):
+            if isinstance(fx, (Par, WashBar)):
+                # VERIFIED ON HARDWARE: Par has a real dimmer channel, same as
+                # WashBar (not "baked into color" as previously assumed — that
+                # left the dimmer at 0 and the real fixture never lit).
                 fx.set_intensity(c, wash_level)
                 fx.set_color(c, r, g, b)
-                if strobe > 0:
+                if strobe > 0 and isinstance(fx, WashBar):  # Par has no strobe channel
                     fx.set_strobe(c, strobe)
 
         # --- moving heads: steady-ish dimmer, mirrored BPM-locked sweep ---

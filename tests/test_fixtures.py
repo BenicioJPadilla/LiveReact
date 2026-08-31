@@ -52,13 +52,13 @@ def test_moving_head_boot_defaults():
     assert uni[5] == 0    # dimmer off
 
 
-def test_par_dims_by_scaling_rgbw():
+def test_par_master_brightness_scales_only_the_dimmer_channel():
     par = Par(55, "Par", "wash", "left")
     uni = _uni()
-    for i, v in enumerate([200, 100, 50, 40]):
+    for i, v in enumerate([200, 100, 50, 40]):  # dimmer, R, G, B
         uni[par.offset + i] = v
     par.apply_master_brightness(uni, 0.5)
-    assert [uni[par.offset + i] for i in range(4)] == [100, 50, 25, 20]
+    assert [uni[par.offset + i] for i in range(4)] == [100, 100, 50, 40]  # only ch1 scaled
 
 
 def test_wash_bar_strobe_cap():
@@ -93,10 +93,9 @@ def test_laser_safety_leaves_channels_when_enabled():
 def test_visual_state_reads_back_color_and_brightness():
     par = Par(55, "Par", "wash", "left")
     uni = _uni()
-    par.set_color(
-        type("B", (), {"set": lambda self, ch, v: uni.__setitem__(ch - 1, v)})(),
-        1.0, 0.0, 0.0,
-    )
+    buf = type("B", (), {"set": lambda self, ch, v: uni.__setitem__(ch - 1, v)})()
+    par.set_intensity(buf, 1.0)   # ch1 dimmer — needed for this fixture to be "active"
+    par.set_color(buf, 1.0, 0.0, 0.0)
     vs = par.visual_state(bytes(uni))
     assert vs.r == 255 and vs.g == 0 and vs.b == 0
     assert vs.active and vs.brightness == 1.0
