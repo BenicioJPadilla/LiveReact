@@ -196,10 +196,15 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.s_warm = _slider(-100, 100, int(m.warm_cool_bias * 100))
         self.cb_laser = QtWidgets.QCheckBox("Arm lasers")
         self.cb_laser.setChecked(m.laser_enable)
+        # docs/14 §3: shows when a real detected onset has the flash gate open —
+        # armed+eligible alone isn't enough to see the laser anymore, it only
+        # shows through during a flash (and needs real audio connected at all).
+        self.l_laser_flash = QtWidgets.QLabel("")
         cl.addRow("Master brightness", self.s_bright)
         cl.addRow("Strobe cap", self.s_strobe)
         cl.addRow("Warm ← → Cool", self.s_warm)
         cl.addRow("Lasers", self.cb_laser)
+        cl.addRow("", self.l_laser_flash)
         v.addWidget(ctl)
 
         self.s_bright.valueChanged.connect(lambda x: setattr(m, "master_brightness", x / 100))
@@ -215,9 +220,14 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.b_skip = QtWidgets.QPushButton("Skip scene (→)")
         self.b_tap = QtWidgets.QPushButton("Tap tempo (T)")
         self.b_burst = QtWidgets.QPushButton("Strobe burst (Space)")
+        # docs/14 §2: distinguishes the system's auto-blackout (no music detected)
+        # from the operator's manual toggle above — they're independent triggers,
+        # so the manual button's own checked-state won't reflect the auto one.
+        self.l_auto_blackout = QtWidgets.QLabel("")
         bl.addWidget(self.b_black, 0, 0); bl.addWidget(self.b_freeze, 0, 1)
         bl.addWidget(self.b_skip, 1, 0); bl.addWidget(self.b_tap, 1, 1)
         bl.addWidget(self.b_burst, 2, 0, 1, 2)
+        bl.addWidget(self.l_auto_blackout, 3, 0, 1, 2)
         v.addWidget(btns)
         v.addStretch(1)
 
@@ -284,6 +294,18 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         writer = self.app.writer
         dmx_ok = writer.is_open and writer.backend.name != "null-log"
         _set_dot(self.dot_dmx, dmx_ok)
+
+        if self.app.show_engine.silence.active:
+            self.l_auto_blackout.setText("● AUTO-BLACKOUT — no music detected")
+            self.l_auto_blackout.setStyleSheet(_DOT_BAD)
+        else:
+            self.l_auto_blackout.setText("")
+
+        if self.app.show_engine.laser_trigger.active:
+            self.l_laser_flash.setText("● LASER FLASH")
+            self.l_laser_flash.setStyleSheet(_DOT_OK)
+        else:
+            self.l_laser_flash.setText("")
 
 
 def run_console(app, fps: int = 30) -> int:

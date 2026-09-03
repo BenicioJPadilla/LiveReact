@@ -40,16 +40,32 @@ from .base import InputSource
 log = logging.getLogger(__name__)
 
 BLOCK = 1024               # samples/block (~23ms @44.1kHz) — low latency over frequency resolution
+                           # MEASURED (2026-09-03): BLOCK size turned out NOT to be the real
+                           # latency lever -- sounddevice/PortAudio's own default stream latency
+                           # for this device was a fixed ~472ms regardless of blocksize (128 to
+                           # 1024 all measured identical). The actual fix was requesting
+                           # `latency="low"` on the InputStream below, which dropped real
+                           # measured latency to ~31ms with a live callback stream, 0 dropouts
+                           # over a 5s check -- a driver-default problem, not a block-size one.
 CHANNELS = (5, 6)          # 1-based device channels carrying the live master/booth mix (VERIFIED)
 LOW_HZ = (20, 250)
 MID_HZ = (250, 2000)
 HIGH_HZ = (2000, 16000)
 ATTACK_S = 0.015           # VU-meter-style smoothing: fast attack
 RELEASE_S = 0.250          #                            slower release
-ENERGY_GAIN = 20.0         # CALIBRATED ON HARDWARE (2026-08-31) against real playback: raw
-                           # smoothed RMS on this XDJ-XZ ranges ~0.009-0.047, 90th-percentile
-                           # ~0.03 — gain=20 puts typical loud moments around energy~0.6, with
-                           # headroom before clipping at 1.0. Still tunable by ear per rig/venue.
+ENERGY_GAIN = 5.0          # RECALIBRATED ON HARDWARE (2026-09-01): the 2026-08-31 calibration
+                           # (raw smoothed RMS ~0.009-0.047, p90~0.03, gain=20) was measured
+                           # against a quieter setup than tonight's — this session's raw RMS
+                           # ran ~0.05-0.13, so gain=20 was clipping the 1.0 ceiling almost
+                           # continuously (confirmed live: snap.energy pinned at 1.000 for an
+                           # entire playing section instead of tracking the song, which then
+                           # cascaded into wrong scene-bucket selection and the wash bar's
+                           # hardware strobe firing near-continuously — docs/14 §5). gain=5.0
+                           # puts this session's p90 (~0.12) at ~0.6, matching the original
+                           # target ratio with headroom for real drops above it. Input level
+                           # depends on the mixer's actual gain staging, not just the track, so
+                           # this will likely need re-checking again at a different venue/setup
+                           # — see tools/simulations or docs/14 §5 for the raw-RMS check script.
 
 
 class AudioInputError(RuntimeError):
@@ -116,10 +132,14 @@ class AudioAnalyzer(InputSource):
             samplerate=self._sr,
             blocksize=BLOCK,
             dtype="float32",
+            latency="low",
             callback=_callback,
         )
         self._stream.start()
-        log.info("Audio analyzer listening on device %r (%d Hz, channels %s)", device, self._sr, CHANNELS)
+        log.info(
+            "Audio analyzer listening on device %r (%d Hz, channels %s, stream latency %.0fms)",
+            device, self._sr, CHANNELS, self._stream.latency * 1000,
+        )
 
         self._thread = threading.Thread(target=self._run, name="audio-analyzer", daemon=False)
         self._thread.start()

@@ -91,7 +91,7 @@ class App:
         self.phrase_engine = PhraseEngine()
         # Order matters: Reactive base, then Phrase (scene movement/laser win via
         # last-write), then Transition (its lift max-merges over the held look).
-        self.engines = [ReactiveLayerEngine(), self.phrase_engine, TransitionEngine()]
+        self.engines = [ReactiveLayerEngine(self.clock), self.phrase_engine, TransitionEngine()]
         self.show_engine = ShowEngine(
             self.show_state, self.rig, self.frame_buffer, self.engines,
             self.manual, self.clock, self.stop_event,

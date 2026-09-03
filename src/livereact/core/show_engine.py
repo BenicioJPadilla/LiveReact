@@ -22,7 +22,9 @@ from ..merge.merge import (
     merge_contributions,
 )
 from .frame_buffer import DmxFrameBuffer
+from .laser_trigger import LaserOnsetDetector
 from .show_state import ShowState
+from .silence import SilenceDetector
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +51,8 @@ class ShowEngine(threading.Thread):
         self.stop_event = stop_event
         self.hz = hz
         self._last: dict[str, Contribution] = {}
+        self.silence = SilenceDetector(clock)  # docs/14 §2; .active exposed for the console
+        self.laser_trigger = LaserOnsetDetector(clock)  # docs/14 §3; .active exposed for the console
 
     def run(self) -> None:  # pragma: no cover - thin wrapper around tick()
         timer = LoopTimer(self.clock, self.hz)
@@ -77,6 +81,9 @@ class ShowEngine(threading.Thread):
         if self.manual.freeze:
             return None  # hold the last published frame
 
-        frame = finalize(merge_contributions(contributions, self.rig), self.rig, self.manual)
+        auto_blackout = self.silence.update(snap)
+        laser_flash = self.laser_trigger.update(snap)
+        frame = finalize(merge_contributions(contributions, self.rig), self.rig, self.manual,
+                          auto_blackout, laser_flash)
         self.frame_buffer.publish(frame)
         return frame

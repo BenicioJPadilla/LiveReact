@@ -237,12 +237,17 @@ def build_demo_universe(rig: Rig, t: float) -> bytes:
         fx.set_color(c, r, g, b)
 
     in_drop = (t % 16.0) < 4.0  # a 4-second "drop" every 16 seconds
+    # docs/14 §3: no real audio in this hand-set demo, so simulate a flash near
+    # each beat-like pulse peak rather than holding the laser on the whole
+    # drop — keeps the demo an honest small-scale stand-in for the real
+    # onset-gated behavior, not a return to the old "held on" look.
+    laser_flash = in_drop and pulse > 0.9
     if in_drop:
         for fx in rig.by_role("laser"):
             fx.set_pattern(c, pattern=40, color=200, scale=0.8)
 
     manual = ManualParams(master_brightness=1.0, laser_enable=in_drop)
-    return render_universe([c], rig, manual)
+    return render_universe([c], rig, manual, laser_flash_active=laser_flash)
 
 
 def run(frame_buffer: DmxFrameBuffer, rig: Rig, fps: int = 30, status=None) -> int:

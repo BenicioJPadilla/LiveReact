@@ -22,17 +22,21 @@ from .base import EnergyBucket, Scene, paint_spots, paint_wash
 # --- breakdown / low energy (lasers OFF, strobe OFF) -----------------------
 
 class DeepWashBreathe(Scene):
-    """Whole room one deep saturated color, slowly breathing; MHs dim, tilted up."""
+    """Whole room one deep saturated color; MHs dim, tilted up.
+
+    NOTE (2026-09-02, docs/14 §5): the wash no longer "breathes" — wash
+    intensity is now owned exclusively by the Reactive layer's beat pulse
+    (see paint_wash's docstring), so this scene only sets color/mood now.
+    Renaming/redesigning is a separate future call, not made yet.
+    """
 
     name = "Deep Wash Breathe"
     bucket = EnergyBucket.BREAKDOWN
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        breathe = 0.85 + 0.15 * math.sin(musical_bar_position(snap) * math.pi)
-        level = 0.32 * intensity * breathe
         r, g, b = 0.1, 0.1, 0.9  # deep blue
-        paint_wash(c, rig, r, g, b, level)
+        paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.12 * intensity)
         for fx in rig.by_role("spot"):
             fx.set_position(c, 0.5, 0.85)  # tilted up
@@ -49,8 +53,7 @@ class SlowColorCycleAmbient(Scene):
         c = Contribution()
         hue = (snap.bar * 0.1) % 1.0
         r, g, b = hsv_to_rgb(hue, 0.8, 1.0)
-        level = 0.35 * intensity
-        paint_wash(c, rig, r, g, b, level)
+        paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.15 * intensity)
         return c
 
@@ -71,8 +74,7 @@ class RisingTide(Scene):
         r = r + (1 - r) * warm
         g = g + (1 - g) * warm
         b = b + (1 - b) * warm
-        level = (0.4 + 0.5 * snap.energy) * intensity
-        paint_wash(c, rig, r, g, b, level)
+        paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, (0.5 + 0.5 * snap.energy) * intensity)
         pos = musical_bar_position(snap)
         for fx in rig.by_role("spot"):
@@ -101,7 +103,7 @@ class Converge(Scene):
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
         r, g, b = two_axis_color(snap.replace(energy=1.0))
-        paint_wash(c, rig, r, g, b, 0.45 * intensity)
+        paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, 1.0, 1.0, 1.0, (0.5 + 0.5 * snap.energy) * intensity)
         prog = max(0.0, min(1.0, snap.energy))
         spots = rig.by_role("spot")
@@ -138,7 +140,7 @@ class FullSpectrumHit(Scene):
         r = r + (1 - r) * pulse
         g = g + (1 - g) * pulse
         b = b + (1 - b) * pulse
-        paint_wash(c, rig, r, g, b, intensity)
+        paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, intensity)
         pos = musical_bar_position(snap)
         for fx in rig.by_role("spot"):
@@ -160,7 +162,7 @@ class BeamFanLaserTunnel(Scene):
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
         r, g, b = two_axis_color(snap.replace(energy=1.0))
-        paint_wash(c, rig, r, g, b, 0.2 * intensity)  # low wash, beams dominate
+        paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, 1.0, 1.0, 1.0, intensity)
         pos = musical_bar_position(snap)
         for fx in rig.by_role("spot"):
@@ -182,7 +184,7 @@ class PulseAndDriftSustain(Scene):
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
         r, g, b = two_axis_color(snap.replace(energy=1.0))
-        paint_wash(c, rig, r, g, b, 0.65 * intensity)
+        paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.6 * intensity)
         pos = musical_bar_position(snap)
         for fx in rig.by_role("spot"):
@@ -201,7 +203,7 @@ class LockedHold(Scene):
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
         r, g, b = two_axis_color(snap.replace(energy=1.0))
-        paint_wash(c, rig, r, g, b, 0.5 * intensity)
+        paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.4 * intensity)
         for fx in rig.by_role("spot"):
             fx.set_position(c, 0.5, 0.5)

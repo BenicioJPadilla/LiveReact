@@ -52,6 +52,55 @@ def test_moving_head_boot_defaults():
     assert uni[5] == 0    # dimmer off
 
 
+def test_apply_home_position_is_a_noop_when_uncalibrated():
+    """docs/14 §4: an uncalibrated fixture (home_pan/tilt still None) keeps
+    the old raw 0.5-centered sweep behavior unchanged."""
+    mh = MovingHead(1, "MH", "spot", "left")
+    uni = _uni()
+    uni[mh.offset + 0] = 200  # pan
+    uni[mh.offset + 2] = 30   # tilt
+    mh.apply_home_position(uni)
+    assert uni[mh.offset + 0] == 200
+    assert uni[mh.offset + 2] == 30
+
+
+def test_apply_home_position_bounds_around_the_calibrated_home():
+    mh = MovingHead(1, "MH", "spot", "left")
+    mh.home_pan, mh.home_tilt = 0.7, 0.3
+    uni = _uni()
+    # A scene's raw sweep at its extreme (pan=1.0, i.e. byte 255) should land
+    # at home + 0.5*bound, not at the raw extreme itself.
+    uni[mh.offset + 0] = 255
+    uni[mh.offset + 2] = 0
+    mh.apply_home_position(uni, bound=0.20)
+    assert uni[mh.offset + 0] == round((0.7 + 0.5 * 0.20) * 255)  # 0.8 -> 204
+    assert uni[mh.offset + 2] == round((0.3 - 0.5 * 0.20) * 255)  # 0.2 -> 51
+
+
+def test_apply_home_position_at_raw_center_lands_exactly_on_home():
+    mh = MovingHead(1, "MH", "spot", "left")
+    mh.home_pan, mh.home_tilt = 0.65, 0.4
+    uni = _uni()
+    uni[mh.offset + 0] = 128  # raw pan ~0.5 (center, no offset from home)
+    uni[mh.offset + 2] = 128
+    mh.apply_home_position(uni, bound=0.20)
+    assert uni[mh.offset + 0] == round(0.65 * 255)
+    assert uni[mh.offset + 2] == round(0.4 * 255)
+
+
+def test_apply_home_position_clamps_within_0_1():
+    """A home near the edge (e.g. 0.95) plus a wide-swinging raw sweep must
+    still clamp into a valid DMX byte, not wrap or overflow."""
+    mh = MovingHead(1, "MH", "spot", "left")
+    mh.home_pan, mh.home_tilt = 0.95, 0.05
+    uni = _uni()
+    uni[mh.offset + 0] = 255  # raw pan at its extreme, pushing further past 0.95
+    uni[mh.offset + 2] = 0
+    mh.apply_home_position(uni, bound=0.5)
+    assert 0 <= uni[mh.offset + 0] <= 255
+    assert 0 <= uni[mh.offset + 2] <= 255
+
+
 def test_par_master_brightness_scales_only_the_dimmer_channel():
     par = Par(55, "Par", "wash", "left")
     uni = _uni()
@@ -88,6 +137,24 @@ def test_laser_safety_leaves_channels_when_enabled():
     uni[laser.offset] = Laser.MANUAL_PATTERN_MODE
     laser.apply_safety(uni, laser_enabled=True)
     assert uni[laser.offset] == Laser.MANUAL_PATTERN_MODE  # untouched when enabled
+
+
+def test_laser_onset_gate_zeros_when_not_flashing():
+    """docs/14 §3: additive to apply_safety — armed+enabled alone (which the
+    two tests above already cover) isn't enough to show the laser now."""
+    laser = Laser(31, "Laser", "laser", "left")
+    uni = _uni()
+    uni[laser.offset] = Laser.MANUAL_PATTERN_MODE
+    laser.apply_onset_gate(uni, flash_active=False)
+    assert all(uni[laser.offset + i] == 0 for i in range(12))
+
+
+def test_laser_onset_gate_leaves_channels_when_flashing():
+    laser = Laser(31, "Laser", "laser", "left")
+    uni = _uni()
+    uni[laser.offset] = Laser.MANUAL_PATTERN_MODE
+    laser.apply_onset_gate(uni, flash_active=True)
+    assert uni[laser.offset] == Laser.MANUAL_PATTERN_MODE
 
 
 def test_visual_state_reads_back_color_and_brightness():

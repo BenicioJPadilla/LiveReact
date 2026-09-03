@@ -117,5 +117,9 @@ def _rig_from_dict(data: dict) -> Rig:
         if "x" in slot and "y" in slot:
             fx.layout_x = float(slot["x"])
             fx.layout_y = float(slot["y"])
+        # Optional calibrated "facing the stage" position — see Fixture.home_pan/tilt.
+        if "home_pan" in slot and "home_tilt" in slot:
+            fx.home_pan = float(slot["home_pan"])
+            fx.home_tilt = float(slot["home_tilt"])
         fixtures.append(fx)
     return Rig(name=data.get("name", "rig"), fixtures=fixtures)

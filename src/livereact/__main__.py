@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         rig = load_rig(args.rig)
         backend = _bringup_backend(demo, args.rate)
         log.info("Fixture test using backend: %s", backend.name)
-        run_fixture_test(rig, backend, RealClock(), dmx_rate_hz=args.rate)
+        run_fixture_test(rig, backend, RealClock(), dmx_rate_hz=args.rate, rig_path=args.rig)
         return 0
 
     config = AppConfig(demo=demo, dmx_rate_hz=args.rate, duration=args.duration,

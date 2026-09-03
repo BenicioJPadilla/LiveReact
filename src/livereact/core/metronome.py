@@ -11,7 +11,11 @@ Behaviors:
   - Re-anchor to each master beat (hard resync); infer the bar from downbeats.
   - Free-run at the last known BPM if master beats stop arriving (graceful
     degradation, NFR-5) and flag low confidence.
-  - Derive a smoothed energy estimate from MIDI fader/EQ intent (docs/10 B8).
+  - Derive an energy estimate: real audio RMS passed through as-is (AudioAnalyzer
+    already applies its own tuned attack/release envelope — smoothing it again
+    here just adds latency, found by measuring real lights-vs-audio lag, docs/14
+    §5), MIDI fader/EQ intent smoothed here instead, since that raw proxy is
+    genuinely noisy/jumpy and has no smoothing of its own (docs/10 B8).
 """
 
 from __future__ import annotations
@@ -30,7 +34,9 @@ log = logging.getLogger(__name__)
 PDL_STALE_AFTER = 1.0    # seconds without a PDL message -> not fresh
 MIDI_STALE_AFTER = 1.0   # seconds without a MIDI message -> not fresh
 AUDIO_STALE_AFTER = 1.0  # seconds without an AudioLevelMessage -> not fresh
-ENERGY_SMOOTHING = 0.05  # EMA factor per tick (~0.2 s time constant at 100 Hz)
+ENERGY_SMOOTHING = 0.05  # EMA factor per tick (~0.2 s time constant at 100 Hz) —
+                         # MIDI-proxy fallback only; real audio bypasses this,
+                         # see _derive_energy
 
 # Transition detection (Phase 6): a crossfader that moves more than CROSS_MOVE
 # within CROSS_WINDOW seconds — or a master-deck handoff — marks a transition,
@@ -233,8 +239,20 @@ class Metronome(threading.Thread):
         # it's actually measuring the sound, not a mixer-knob proxy. Falls back
         # to the MIDI fader/EQ estimate when audio isn't available, same
         # graceful-degradation pattern as every other input in this project.
+        #
+        # FOUND BY LIVE MEASUREMENT (docs/14 §5, 2026-09-01): real audio was
+        # getting smoothed TWICE — once by AudioAnalyzer's own attack/release
+        # envelope (already tuned to feel responsive to real transients), then
+        # again here by ENERGY_SMOOTHING's ~0.2s time constant. That stacked
+        # smoothing showed up as a measured ~120ms of extra lag on the moving
+        # head's dimmer (which reads snap.energy directly, no beat_pulse of its
+        # own) beyond the audio path's already-unavoidable capture latency.
+        # Fix: real audio is already appropriately smoothed by the time it gets
+        # here — pass it through as-is. Only the MIDI proxy (raw fader/EQ
+        # positions, genuinely noisy/jumpy, no smoothing of its own) still
+        # needs ENERGY_SMOOTHING applied here.
         if self._is_audio_fresh(now):
-            raw = self._audio_rms
+            self._energy = self._audio_rms
         else:
             # Louder deck's fader + how "open" its EQ is -> a coarse energy proxy.
             if self._midi["fader_a"] >= self._midi["fader_b"]:
@@ -247,7 +265,7 @@ class Metronome(threading.Thread):
                 + self._midi[f"eq_high_{prefix}"]
             ) / 3.0
             raw = 0.6 * fader + 0.4 * eq_open
-        self._energy += ENERGY_SMOOTHING * (raw - self._energy)
+            self._energy += ENERGY_SMOOTHING * (raw - self._energy)
 
     # ------------------------------------------------------------------ health
     def _is_pdl_fresh(self, now: float) -> bool:

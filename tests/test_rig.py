@@ -25,6 +25,26 @@ def test_role_and_side_lookups():
     assert rig.fixture("mh_l").label == "MH Left"
 
 
+def test_rig_loads_optional_layout_and_home_position_fields():
+    data = {
+        "name": "test",
+        "slots": [
+            {"slot_id": "mh", "fixture_type": "shehds_180w_mh", "dmx_address": 1,
+             "role": "spot", "side": "left", "x": 0.3, "y": 0.4,
+             "home_pan": 0.65, "home_tilt": 0.4},
+            {"slot_id": "mh2", "fixture_type": "shehds_180w_mh", "dmx_address": 20,
+             "role": "spot", "side": "right"},  # no layout/home fields at all
+        ],
+    }
+    rig = _rig_from_dict(data)
+    calibrated = rig.fixture("mh")
+    uncalibrated = rig.fixture("mh2")
+    assert calibrated.layout_x == 0.3 and calibrated.layout_y == 0.4
+    assert calibrated.home_pan == 0.65 and calibrated.home_tilt == 0.4
+    assert uncalibrated.layout_x is None and uncalibrated.layout_y is None
+    assert uncalibrated.home_pan is None and uncalibrated.home_tilt is None
+
+
 def test_channel_kind_map_matches_addresses():
     rig = load_rig()
     # MH Left at address 1: ch6 (index 5) is the dimmer.

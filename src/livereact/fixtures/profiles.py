@@ -132,6 +132,13 @@ class Fixture:
         # physical layout per event.
         self.layout_x: float | None = None
         self.layout_y: float | None = None
+        # Calibrated "facing the stage" pan/tilt (normalized 0..1), docs/14 §4.
+        # None -> apply_home_position() is a no-op, keeping the old raw
+        # 0.5-centered sweep behavior until a fixture is calibrated. Set by the
+        # rig loader from a slot's "home_pan"/"home_tilt", or via the
+        # fixture-test panel's "Save as Home Position" button.
+        self.home_pan: float | None = None
+        self.home_tilt: float | None = None
 
     # --- geometry ---
     @property
@@ -167,6 +174,8 @@ class Fixture:
     def apply_safety(self, uni: bytearray, laser_enabled: bool) -> None: ...
     def apply_color_bias(self, uni: bytearray, bias: float) -> None: ...
     def apply_strobe_burst(self, uni: bytearray, cap01: float) -> None: ...
+    def apply_home_position(self, uni: bytearray, bound: float = 0.20) -> None: ...
+    def apply_onset_gate(self, uni: bytearray, flash_active: bool) -> None: ...
 
     # --- visualization ---
     def visual_state(self, uni: bytes) -> VisualState:  # pragma: no cover - overridden
@@ -226,6 +235,27 @@ class MovingHead(Fixture):
     def apply_strobe_burst(self, uni: bytearray, cap01: float) -> None:
         uni[self.offset + 6] = _to8(cap01)  # ch7 strobe at the capped rate
 
+    def apply_home_position(self, uni: bytearray, bound: float = 0.20) -> None:
+        """Remap whatever raw pan/tilt a scene/engine set (all of them assume a
+        0.5-centered convention) around this fixture's calibrated "facing the
+        stage" position, scaled into a bounded range — docs/14 §4. A no-op
+        until calibrated (home_pan/home_tilt are None), so uncalibrated rigs
+        keep the old raw sweep behavior.
+
+        Deliberately a finalize-stage transform, not a rewrite of every
+        scene's position math: it preserves each scene's relative motion
+        *shape* (Converge's spread-to-center, FullSpectrumHit's big fast
+        moves, etc.) while re-centering and re-scaling the *output* uniformly.
+        """
+        if self.home_pan is None or self.home_tilt is None:
+            return
+        raw_pan = uni[self.offset + 0] / 255
+        raw_tilt = uni[self.offset + 2] / 255
+        new_pan = self.home_pan + (raw_pan - 0.5) * bound
+        new_tilt = self.home_tilt + (raw_tilt - 0.5) * bound
+        uni[self.offset + 0] = _to8(max(0.0, min(1.0, new_pan)))
+        uni[self.offset + 2] = _to8(max(0.0, min(1.0, new_tilt)))
+
     def visual_state(self, uni: bytes) -> VisualState:
         dim = uni[self.offset + 5] / 255
         r, g, b = color_wheel_to_rgb(uni[self.offset + 7])
@@ -264,6 +294,17 @@ class Laser(Fixture):
         # Fail-safe: unless explicitly enabled this run, the entire fixture is zeroed
         # (CH1=0 => laser off). Drop-scene gating is layered on top in Phase 4.
         if not laser_enabled:
+            for i in range(self.offset, self.offset + self.channel_count):
+                uni[i] = 0
+
+    def apply_onset_gate(self, uni: bytearray, flash_active: bool) -> None:
+        """docs/14 §3: additive to (not a replacement for) apply_safety above —
+        a scene can be armed and eligible (uses_lasers + laser_enable) and the
+        laser still only shows through during a real detected onset flash
+        window, instead of held on for the whole scene. Deliberately a
+        SEPARATE method rather than folded into apply_safety, so the already-
+        verified-on-hardware safety-critical arm/disarm path stays untouched."""
+        if not flash_active:
             for i in range(self.offset, self.offset + self.channel_count):
                 uni[i] = 0
 

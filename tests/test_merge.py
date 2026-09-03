@@ -67,15 +67,17 @@ def test_master_brightness_scales_dimmers():
 
 
 def test_lasers_cannot_be_nonzero_unless_enabled():
+    """Isolates the arm gate specifically — laser_flash_active=True so the
+    docs/14 §3 onset gate (tested separately above) doesn't also zero it."""
     rig = _rig()
     laser = rig.fixture("laser_l")
     c = Contribution()
     laser.set_pattern(c, pattern=40, color=200)
 
-    off = render_universe([c], rig, ManualParams(laser_enable=False))
+    off = render_universe([c], rig, ManualParams(laser_enable=False), laser_flash_active=True)
     assert all(off[laser.offset + i] == 0 for i in range(12))  # fail-safe
 
-    on = render_universe([c], rig, ManualParams(laser_enable=True))
+    on = render_universe([c], rig, ManualParams(laser_enable=True), laser_flash_active=True)
     assert on[laser.offset] == Laser.MANUAL_PATTERN_MODE  # CH1 enabled
 
 
@@ -86,6 +88,52 @@ def test_strobe_capped_on_finalize():
     bar.set_strobe(c, 1.0)  # ch2 strobe full
     out = render_universe([c], rig, ManualParams(strobe_cap=0.2))
     assert out[bar.offset + 1] == 51  # ~0.2 * 255
+
+
+def test_auto_blackout_zeros_the_frame_independently_of_manual():
+    """docs/14 §2: auto_blackout and manual.blackout are independent triggers
+    — the operator's switch must not need to be flipped for the automatic
+    one to work, and vice versa."""
+    rig = _rig()
+    mh = rig.fixture("mh_l")
+    c = Contribution()
+    mh.set_intensity(c, 1.0)
+    lit = render_universe([c], rig, ManualParams())
+    assert any(lit)
+
+    merged = merge_contributions([c], rig)
+    blacked = finalize(merged, rig, ManualParams(), auto_blackout=True)
+    assert blacked == bytes(len(blacked))
+    assert not any(blacked)
+
+
+def test_finalize_bounds_movement_around_a_calibrated_home_position():
+    """docs/14 §4, end-to-end through finalize(): a scene's raw wide sweep
+    gets remapped around the fixture's calibrated home once set."""
+    rig = _rig()
+    mh = rig.fixture("mh_l")
+    mh.home_pan, mh.home_tilt = 0.7, 0.3
+    c = Contribution()
+    mh.set_position(c, 1.0, 0.0)  # a scene sweeping to its raw extreme
+    out = render_universe([c], rig, ManualParams())
+    assert out[mh.offset + 0] == round((0.7 + 0.5 * 0.20) * 255)  # bounded near home, not raw 255
+    assert out[mh.offset + 2] == round((0.3 - 0.5 * 0.20) * 255)
+
+
+def test_laser_flash_gate_zeros_the_laser_independently_of_scene_and_arm():
+    """docs/14 §3: even armed + an eligible scene set a pattern, the laser
+    stays off through finalize() unless a real onset flash is active."""
+    rig = _rig()
+    laser = rig.fixture("laser_l")
+    c = Contribution()
+    laser.set_pattern(c, pattern=60)
+    armed = ManualParams(laser_enable=True)
+
+    not_flashing = render_universe([c], rig, armed, laser_flash_active=False)
+    assert all(not_flashing[laser.offset + i] == 0 for i in range(12))
+
+    flashing = render_universe([c], rig, armed, laser_flash_active=True)
+    assert flashing[laser.offset] != 0
 
 
 def test_one_engine_movement_does_not_clobber_another_engines_color():

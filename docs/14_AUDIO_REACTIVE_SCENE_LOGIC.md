@@ -227,6 +227,33 @@ DROP-bucket + armed) rather than replacing it — this changes lasers from
 - **OPEN:** flash duration/decay shape — hard cut vs. a quick exponential decay
   like the existing beat-pulse.
 
+### Idea captured, next step after this one (Josh, 2026-09-01): wub-driven laser speed
+
+Distinct from onset detection above, not a variant of it. A "wub" bassline
+(dubstep/bass-house wobble) isn't a transient spike — it's *sustained*
+low-band energy that rhythmically oscillates in amplitude (an LFO-style
+wobble). The spike-vs-rolling-average approach that works for kicks doesn't
+detect this at all; it needs a different technique:
+
+```
+audio_band_low_abs (already real, from step 1)
+  -> track its envelope over a longer window (~1 bar)
+  -> estimate the envelope's OWN modulation rate — autocorrelation or a
+     small FFT of the envelope itself, not the raw signal
+  -> a detected wobble rate -> drives the laser's pattern/movement SPEED
+     channel (CH9 "scale" or a rate-mapped pattern value — verify which
+     channel actually controls perceived movement speed vs. shape, laser's
+     own channel semantics are still only partially mapped, see docs/14 §1)
+```
+
+Josh's own framing is the right caution here: this needs real training/
+tuning against a variety of real "sounds" and explicit criteria for what
+counts as a wub vs. just bass — a genuinely bigger scope than a threshold
+check. Natural next step after the onset-flash trigger above is built and
+verified (same `core/laser_trigger.py` foundation, extended rather than
+replaced), not a replacement for it — the onset flash still solves "lasers
+running constantly," which was the original, more urgent ask.
+
 ## 4. Moving heads aimed at the stage, not roaming
 
 Current: pan/tilt sweeps use an arbitrary center (`0.5`) with wide amplitude
@@ -250,6 +277,19 @@ Two options, not mutually exclusive:
   height, distance to target) and 3D math the current 2D schematic canvas
   doesn't capture yet.
 
+  **Idea captured 2026-09-01, not yet built:** Josh's suggestion for making
+  the layout canvas venue-aware, rather than an unscaled abstract schematic —
+  let the operator set a base venue shape/size (e.g. a 100ft×100ft square, or
+  a 50ft-diameter circle) on the main UI, so fixture positions on the canvas
+  carry real-world scale instead of just relative arrangement. This is
+  actually the missing piece for option B above (true trigonometric aim needs
+  real distances, which a scaled floor plan would provide) — and generalizes
+  the layout tool to different venue shapes/sizes, which fits Josh's stated
+  "many people's rigs" platform goal too. Bigger than step 3's actual scope
+  (fixing "pointing randomly"), so deliberately deferred rather than built
+  alongside it — worth returning to once B (or venue planning generally)
+  becomes the active goal.
+
 **Recommendation:** build A first — it directly fixes "pointing in random
 directions" with a same-session-sized change, and doesn't block B later if
 precise aiming turns out to matter.
@@ -271,9 +311,50 @@ precise aiming turns out to matter.
    MIDI-proxy value. 132 tests passing (9 new: `test_audio.py` +
    audio-preference tests in `test_metronome.py`/`test_color.py`, including a
    regression test pinning down the bin-count band bias so it can't return).
-2. Silence → auto-blackout, gated on "deck actually playing" (not raw RMS) —
-   small, reuses the existing blackout path.
-3. MH home-position calibration + bounded movement (fixes "random direction").
+2. ✅ **DONE, confirmed live on real hardware.** Silence → auto-blackout
+   (`core/silence.py`, `SilenceDetector`), gated on "deck actually playing"
+   (`pdl_fresh`) as primary signal, real audio as secondary confirmation only
+   when audio is available, 3s hold to survive brief PDL hiccups — matches
+   the stress-tested design exactly. `finalize()` gained an independent
+   `auto_blackout` param (kept separate from `manual.blackout` so the
+   operator's switch and the automatic one never fight over shared state).
+   New console indicator distinguishes auto- from manual blackout. **Verified
+   live**: paused the real track → `pdl=STALE`, `audio=fresh` confirmed
+   `energy=0.00`, output genuinely zeroed (0/512 channels active, sustained)
+   after the hold; resumed → relit instantly, no lag, no lingering blackout.
+   7 new tests (`test_silence.py` + 2 ShowEngine integration tests + 1 merge
+   test) — 139 passing total.
+3. ✅ **DONE, confirmed live on real hardware.** MH home-position calibration
+   + bounded movement — built as a finalize-stage transform
+   (`Fixture.apply_home_position`, no-op default on the base class,
+   overridden on `MovingHead`), not a rewrite of every scene's position math:
+   it remaps whatever raw pan/tilt a scene set (all assume the old
+   0.5-centered convention) around a calibrated `home_pan`/`home_tilt`,
+   scaled into a ±10% bound (`bound=0.20`). Calibration UX reuses the
+   existing `--fixture-test` panel (already proven for live jogging) rather
+   than building a new live-jog UI — jog pan/tilt/dimmer live, hit "Save as
+   Home Position," which persists `home_pan`/`home_tilt` into the rig JSON
+   alongside the layout `x`/`y` from step-adjacent work. Uncalibrated
+   fixtures (`home_pan is None`) keep the old raw sweep unchanged — fully
+   backward compatible. **Verified live**: calibrated to an arbitrary test
+   reference point (pan=0.0, tilt=0.0 — no real venue available this
+   session, see note below), forced `FullSpectrumHit` (one of the widest
+   raw sweeps in the catalog), measured actual DMX bytes going to the real
+   fixture — pan stayed within 0-23 and tilt within 0-18 (out of 0-255),
+   tightly bounded around home instead of the raw sweep's ~13-242 range —
+   then confirmed visually by Josh: "sweep was relatively narrow... would
+   cover a stage. It looked good." 9 new tests (4 in `test_fixtures.py`, 1 in
+   `test_rig.py`, 1 in `test_merge.py`) — 148 tests passing (was 139).
+
+   **Idea captured, not yet built** (Josh, 2026-09-01): a venue-aware floor
+   plan for the rig-layout canvas — let the operator set a base venue
+   shape/size (e.g. a 100ft×100ft square or a 50ft-diameter circle) so
+   fixture positions carry real-world scale instead of being an unscaled
+   abstract schematic. This is also the missing piece for option B above
+   (true trigonometric aim needs real distances) and fits the "many
+   people's rigs" platform goal. Deliberately deferred — bigger than step
+   3's actual scope, no real venue was available this session to calibrate
+   against anyway.
 4. Laser onset-triggered flashing (the audio pipeline it needs is now real).
 
 Each step is independently testable on real hardware before moving to the next —

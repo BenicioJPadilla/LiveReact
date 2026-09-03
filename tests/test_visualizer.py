@@ -41,10 +41,14 @@ def test_window_constructs_and_updates(qapp):
     assert win.inspector.rowCount() == 74
 
 
-def test_demo_universe_enables_lasers_only_in_drop_window(qapp):
+def test_demo_universe_lasers_flash_within_the_drop_window_not_held_on(qapp):
+    """docs/14 §3: within a drop window the laser should flash near beat-like
+    pulse peaks, not stay continuously on for the whole window (the old,
+    pre-onset-gate behavior this test used to check for)."""
     rig = load_rig()
     laser = rig.fixture("laser_l")
-    in_drop = build_demo_universe(rig, 1.0)     # t%16 < 4 -> drop
-    out_of_drop = build_demo_universe(rig, 10.0)  # not a drop
-    assert in_drop[laser.offset] != 0       # laser enabled during drop
-    assert out_of_drop[laser.offset] == 0   # laser off otherwise
+    samples = [build_demo_universe(rig, i * 0.05)[laser.offset] for i in range(80)]  # t = 0..4s
+    assert any(v != 0 for v in samples), "laser never flashed within the drop window"
+    assert any(v == 0 for v in samples), "laser held on for the whole drop window"
+    out_of_drop = build_demo_universe(rig, 10.0)  # not a drop at all
+    assert out_of_drop[laser.offset] == 0

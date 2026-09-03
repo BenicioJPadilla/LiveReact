@@ -71,14 +71,23 @@ def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearra
     return out
 
 
-def finalize(merged: bytearray, rig: Rig, manual: ManualParams) -> bytes:
+def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: bool = False,
+             laser_flash_active: bool = False) -> bytes:
     """Apply manual biases/caps + safety clamps and return the wire-ready universe.
 
     ``freeze`` is intentionally not handled here — holding the last frame is the
-    show engine's job (it simply doesn't publish a new frame). ``blackout`` is hard
-    and wins over everything.
+    show engine's job (it simply doesn't publish a new frame). ``blackout`` (the
+    operator's hard switch) and ``auto_blackout`` (docs/14 §2: no music detected —
+    see core/silence.py) both win over everything, kept as two independent
+    triggers rather than one shared flag so the operator's manual switch and the
+    system's automatic one never fight over the same piece of state.
+
+    ``laser_flash_active`` (docs/14 §3: core/laser_trigger.py) additionally
+    gates the laser specifically — armed + an eligible scene is still required
+    (apply_safety, unchanged), this only controls whether that's currently
+    showing through as a brief flash on a real detected onset, vs. held on.
     """
-    if manual.blackout:
+    if manual.blackout or auto_blackout:
         return bytes(UNIVERSE_SIZE)
 
     out = bytearray(merged)
@@ -89,11 +98,15 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams) -> bytes:
             fx.apply_strobe_burst(out, manual.strobe_cap)  # within the cap
         fx.cap_strobe(out, manual.strobe_cap)              # safety: always cap
         fx.apply_safety(out, manual.laser_enable)          # laser fail-safe
+        fx.apply_home_position(out)                        # docs/14 §4: bound around a calibrated home
+        fx.apply_onset_gate(out, laser_flash_active)        # docs/14 §3: flash on real hits, not held on
     return bytes(out)
 
 
 def render_universe(
-    contributions: list[Contribution], rig: Rig, manual: ManualParams | None = None
+    contributions: list[Contribution], rig: Rig, manual: ManualParams | None = None,
+    auto_blackout: bool = False, laser_flash_active: bool = False,
 ) -> bytes:
     """Convenience: merge + finalize in one call."""
-    return finalize(merge_contributions(contributions, rig), rig, manual or ManualParams())
+    return finalize(merge_contributions(contributions, rig), rig, manual or ManualParams(),
+                     auto_blackout, laser_flash_active)

@@ -36,13 +36,22 @@ class Scene:
 
 # --- painting helpers shared by scenes -------------------------------------
 
-def paint_wash(c: Contribution, rig: Rig, r: float, g: float, b: float, level: float) -> None:
-    """Set all wash fixtures to an RGB at a brightness ``level`` (0..1)."""
+def paint_wash(c: Contribution, rig: Rig, r: float, g: float, b: float) -> None:
+    """Set all wash fixtures to an RGB color (mood/hue only).
+
+    Intensity is deliberately NOT set here (2026-09-02, docs/14 §5): it used
+    to be, and competed via max-merge against the Reactive layer's own
+    always-on beat pulse on the same channel — two independently-timed
+    signals (a scene's slow/ambient level vs. the Reactive layer's fast
+    per-beat ramp) fighting over which was higher each tick produced a
+    jagged, stuttering composite instead of one clean rhythm (found by
+    Josh live-testing: "doesn't feel like a continuous steady pulse").
+    Wash dimmer is now owned exclusively by the Reactive layer, which
+    already scales its pulse by the song's real energy — scenes don't need
+    to separately set an ambient level on top of that.
+    """
     for fx in rig.by_role("wash"):
         if isinstance(fx, (Par, WashBar)):
-            # VERIFIED ON HARDWARE: Par has a real dimmer channel, same as
-            # WashBar (not "baked into color" as previously assumed).
-            fx.set_intensity(c, level)
             fx.set_color(c, r, g, b)
 
 
