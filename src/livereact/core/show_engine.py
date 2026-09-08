@@ -51,6 +51,7 @@ class ShowEngine(threading.Thread):
         self.stop_event = stop_event
         self.hz = hz
         self._last: dict[str, Contribution] = {}
+        self._last_tick_t: float | None = None  # for dt -> movement slew-limiting (LIGHTING_BIBLE.md §6.6)
         self.silence = SilenceDetector(clock)  # docs/14 §2; .active exposed for the console
         self.laser_trigger = LaserOnsetDetector(clock)  # docs/14 §3; .active exposed for the console
 
@@ -81,9 +82,13 @@ class ShowEngine(threading.Thread):
         if self.manual.freeze:
             return None  # hold the last published frame
 
+        now = self.clock.monotonic()
+        dt = (now - self._last_tick_t) if self._last_tick_t is not None else 1.0 / self.hz
+        self._last_tick_t = now
+
         auto_blackout = self.silence.update(snap)
         laser_flash = self.laser_trigger.update(snap)
         frame = finalize(merge_contributions(contributions, self.rig), self.rig, self.manual,
-                          auto_blackout, laser_flash)
+                          auto_blackout, laser_flash, dt)
         self.frame_buffer.publish(frame)
         return frame

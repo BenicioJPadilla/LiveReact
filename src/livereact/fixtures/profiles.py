@@ -54,6 +54,33 @@ def _to8(level01: float) -> int:
     return _clamp8(round(level01 * 255))
 
 
+# Dimmer/intensity-specific curve (LIGHTING_BIBLE.md §3.7, [VERIFIED]): budget
+# LED pars shift hue and show visible discrete "steps" on a raw linear fade
+# below ~10-15% output, so a straight `_to8` (used everywhere else — color,
+# position, strobe, scale) is the wrong mapping specifically for dimmer
+# channels. Two things, both from the Bible, not guessed:
+#   - gamma/square-law curve (perceived brightness relates to measured output
+#     by roughly a square law: ~1% measured looks like ~10% perceived), so a
+#     linear fade dumps nearly all visible change into the bottom of the
+#     range; `output = 255 * level^2.2` spreads it evenly instead.
+#   - a hard floor at 12% (DMX 31): never dwell in the DMX 1-30 "stepping
+#     zone" — any level intent above true zero (however dim) still shows at
+#     AT LEAST the floor, and only a genuine zero intent produces true 0, so a
+#     fade passing near zero cuts straight to black instead of crawling
+#     visibly through the broken low range.
+DIMMER_GAMMA = 2.2
+DIMMER_FLOOR_DMX = 31  # 12% of 255
+
+
+def _intensity_to8(level01: float) -> int:
+    """Map a 0..1 intensity to a 0-255 DMX byte via the gamma+floor curve
+    above. Use this (not `_to8`) for every fixture's actual dimmer channel."""
+    if level01 <= 0.0:
+        return 0
+    curved = 255.0 * (min(1.0, level01) ** DIMMER_GAMMA)
+    return max(DIMMER_FLOOR_DMX, _clamp8(round(curved)))
+
+
 def _bias_factors(bias: float) -> tuple[float, float]:
     """(red_factor, blue_factor) for a warm/cool bias in [-1, +1].
 
@@ -175,6 +202,7 @@ class Fixture:
     def apply_color_bias(self, uni: bytearray, bias: float) -> None: ...
     def apply_strobe_burst(self, uni: bytearray, cap01: float) -> None: ...
     def apply_home_position(self, uni: bytearray, bound: float = 0.20) -> None: ...
+    def apply_slew_limit(self, uni: bytearray, dt: float) -> None: ...
     def apply_onset_gate(self, uni: bytearray, flash_active: bool) -> None: ...
 
     # --- visualization ---
@@ -192,6 +220,25 @@ class MovingHead(Fixture):
 
     type_name = "shehds_180w_mh"
     channel_count = 15
+
+    # Slew-rate limits (LIGHTING_BIBLE.md §6.6) — PLACEHOLDER values copied
+    # from the Bible's own reference-rig example, NOT measured against this
+    # specific SHEHDS 180W unit's real motor speed. The exact numbers matter
+    # less than having SOME clamp at all: `[VERIFIED]` per the Bible, instant
+    # dead-stop-to-full-speed jumps (e.g. a scene switch commanding a big
+    # position change in one tick) produce visible stepping and motor stress
+    # on real moving-head hardware. Verify/tune these against real hardware
+    # before trusting them as final — same "measure, don't guess" rule as
+    # everywhere else in this project.
+    PAN_RANGE_DEG = 540.0
+    TILT_RANGE_DEG = 270.0
+    PAN_MAX_DEG_PER_S = 260.0
+    TILT_MAX_DEG_PER_S = 200.0
+
+    def __init__(self, address: int, label: str, role: str, side: str) -> None:
+        super().__init__(address, label, role, side)
+        self._prev_pan_dmx: int | None = None
+        self._prev_tilt_dmx: int | None = None
 
     def channel_kinds(self) -> list[ChannelKind]:
         K = ChannelKind
@@ -211,7 +258,7 @@ class MovingHead(Fixture):
         self._set(buf, 13, 0)    # macro off (drive via DMX, not built-in macros)
 
     def set_intensity(self, buf: Buffer, level01: float) -> None:
-        self._set(buf, 6, _to8(level01))
+        self._set(buf, 6, _intensity_to8(level01))
 
     def set_color(self, buf: Buffer, r: float, g: float, b: float, w: float = 0.0) -> None:
         slot = rgb_to_color_wheel(_to8(r), _to8(g), _to8(b))
@@ -256,6 +303,34 @@ class MovingHead(Fixture):
         uni[self.offset + 0] = _to8(max(0.0, min(1.0, new_pan)))
         uni[self.offset + 2] = _to8(max(0.0, min(1.0, new_tilt)))
 
+    def apply_slew_limit(self, uni: bytearray, dt: float) -> None:
+        """Clamp the commanded pan/tilt delta per frame so a scene switch or
+        crossfade can't slam the motor from a dead stop to full-range in one
+        tick (LIGHTING_BIBLE.md §6.6). Large moves still complete, just ramped
+        over multiple frames instead of one. Runs AFTER apply_home_position,
+        so it clamps the final commanded position, not the pre-remap one.
+
+        First tick after construction (no prior commanded value yet) passes
+        the command through unclamped — there's nothing to ramp from.
+        """
+        pan_i, tilt_i = self.offset + 0, self.offset + 2
+        self._prev_pan_dmx = self._slew(uni, pan_i, self._prev_pan_dmx,
+                                         self.PAN_MAX_DEG_PER_S, self.PAN_RANGE_DEG, dt)
+        self._prev_tilt_dmx = self._slew(uni, tilt_i, self._prev_tilt_dmx,
+                                          self.TILT_MAX_DEG_PER_S, self.TILT_RANGE_DEG, dt)
+
+    @staticmethod
+    def _slew(uni: bytearray, i: int, prev: int | None,
+              max_deg_per_s: float, range_deg: float, dt: float) -> int:
+        commanded = uni[i]
+        if prev is None:
+            return commanded
+        max_delta = max_deg_per_s * dt / range_deg * 255.0
+        delta = max(-max_delta, min(max_delta, commanded - prev))
+        new_value = _clamp8(round(prev + delta))
+        uni[i] = new_value
+        return new_value
+
     def visual_state(self, uni: bytes) -> VisualState:
         dim = uni[self.offset + 5] / 255
         r, g, b = color_wheel_to_rgb(uni[self.offset + 7])
@@ -270,11 +345,60 @@ class Laser(Fixture):
     CH1 mode: 0-41 = OFF (boot here). LiveReact only ever uses static manual
     patterns (42-83) in explicit drop scenes, never the sound-active ranges
     (168-251). All channels are forced off unless laser-enable is set at finalize.
+
+    Channel map VERIFIED ON HARDWARE (2026-09-06) by isolated probing, cross-
+    checked against the real QLC+ fixture file bundled with the app (`Shehds-
+    3000mW-RGB-Laser.qxf`, author Bram Janssen — a genuine match by model name,
+    NOT a web guess) — but that file's exact shape NAMES and a couple of its
+    channel descriptions turned out wrong for this physical unit; only what's
+    listed below was actually confirmed live, same "verify empirically, don't
+    trust the manual" rule as everywhere else in this project:
+      CH1  mode (0-41 off, 42-83 manual — confirmed, matches the file)
+      CH2  "Pattern A 1": pattern group, changes roughly every 32 values.
+           PATTERN_A1_DOTTED_LINE=118 (group ~96-127) is the only value
+           mapped so far — flattens the default circle into a line. The
+           file's own shape names for other groups (e.g. "Circle Part Fan")
+           did NOT match what actually appeared on this unit — treat any
+           other CH2 value as unmapped, not as the file's stated name.
+      CH3  "Pattern A 2": sub-pattern within whichever CH2 group is selected.
+           Held at 0 throughout — not otherwise explored for CH2's dotted-
+           line group.
+      CH7  horizontal sweep — 0-127 static position (untested), 128-255 =
+           sweep speed (confirmed). Speed now driven by audio intensity.
+      CH9  "scale" per the file (claimed a plain static 0-255 zoom level) —
+           WRONG. Confirmed on hardware: any nonzero value makes the pattern
+           breathe/cycle size on its own (128 grows steadily, 64 shrinks
+           steadily, 96 sawtooths — shrink then snap back, repeating; not a
+           simple speed-around-a-center-point model either). SCALE_STATIC=0
+           is the ONLY value found that holds a fixed size. Never set this
+           to anything else without re-verifying live.
+      CH11 "Pattern A Scan" — 0-127 scan speed (untested), 128-255 =
+           "Pattern Lattice" per the file, CONFIRMED on hardware: turns the
+           shape's outline into dots. SCAN_DOTS=190 verified good.
+      CH12 color — confirmed, matches the file's named bands exactly
+           (spot-checked: Green 32-39 in the file matched a real green output).
     """
 
     type_name = "shehds_3w_laser"
     channel_count = 12
-    MANUAL_PATTERN_MODE = 60  # within the 42-83 manual range
+    MANUAL_PATTERN_MODE = 60        # within the 42-83 manual range
+    PATTERN_A1_DOTTED_LINE = 118    # CH2 — flattens the circle into a line (confirmed)
+    PATTERN_A2_DEFAULT = 0          # CH3 — sub-pattern within the group; unexplored otherwise
+    SCALE_STATIC = 0                # CH9 — MUST stay 0, see class docstring
+    SCAN_DOTS = 190                 # CH11 — "Pattern Lattice", outline -> dots (confirmed)
+    SWEEP_SPEED_MIN = 128           # CH7 — bottom of the confirmed speed sub-range
+    SWEEP_SPEED_MAX = 255           # CH7 — top of the confirmed speed sub-range
+
+    # CH12 color macros — middle of each named band in the QLC+ file, confirmed
+    # for Green; the rest inferred from the same file's explicit ranges (not yet
+    # individually spot-checked on hardware beyond Green and White).
+    COLOR_WHITE = 11
+    COLOR_RED = 19
+    COLOR_YELLOW = 27
+    COLOR_GREEN = 35
+    COLOR_CYAN = 43
+    COLOR_BLUE = 51
+    COLOR_PURPLE = 59
 
     def channel_kinds(self) -> list[ChannelKind]:
         return [ChannelKind.LASER] * self.channel_count
@@ -283,12 +407,24 @@ class Laser(Fixture):
         for ch in range(1, self.channel_count + 1):
             self._set(buf, ch, 0)  # everything off; CH1=0 is LASER OFF
 
-    def set_pattern(self, buf: Buffer, pattern: int, color: int = 255, scale: float = 1.0) -> None:
-        """Enable a static manual pattern (only meaningful inside a drop scene)."""
+    def set_dotted_line_sweep(self, buf: Buffer, color: int, sweep_intensity: float) -> None:
+        """The one fully-verified pattern (2026-09-06): a flattened line, its
+        outline turned to dots, sweeping horizontally at a speed driven by
+        real audio intensity (0..1) — "translate the audio directly," same
+        principle as wash/par. `color` should be one of the COLOR_* constants.
+        Only meaningful inside a drop scene / while the laser is armed."""
         self._set(buf, 1, self.MANUAL_PATTERN_MODE)
-        self._set(buf, 2, _clamp8(pattern))
-        self._set(buf, 9, _to8(scale))
+        self._set(buf, 2, self.PATTERN_A1_DOTTED_LINE)
+        self._set(buf, 3, self.PATTERN_A2_DEFAULT)
+        self._set(buf, 7, self._sweep_speed(sweep_intensity))
+        self._set(buf, 9, self.SCALE_STATIC)
+        self._set(buf, 11, self.SCAN_DOTS)
         self._set(buf, 12, _clamp8(color))
+
+    def _sweep_speed(self, intensity: float) -> int:
+        intensity = max(0.0, min(1.0, intensity))
+        span = self.SWEEP_SPEED_MAX - self.SWEEP_SPEED_MIN
+        return int(self.SWEEP_SPEED_MIN + intensity * span)
 
     def apply_safety(self, uni: bytearray, laser_enabled: bool) -> None:
         # Fail-safe: unless explicitly enabled this run, the entire fixture is zeroed
@@ -343,7 +479,7 @@ class Par(Fixture):
         self._set(buf, 4, _to8(min(1.0, b + w)))
 
     def set_intensity(self, buf: Buffer, level01: float) -> None:
-        self._set(buf, 1, _to8(level01))  # ch1 dimmer
+        self._set(buf, 1, _intensity_to8(level01))  # ch1 dimmer
 
     def apply_master_brightness(self, uni: bytearray, factor01: float) -> None:
         i = self.offset  # ch1 dimmer
@@ -385,7 +521,7 @@ class WashBar(Fixture):
             self._set(buf, ch, 0)
 
     def set_intensity(self, buf: Buffer, level01: float) -> None:
-        self._set(buf, 1, _to8(level01))
+        self._set(buf, 1, _intensity_to8(level01))
 
     def set_color(self, buf: Buffer, r: float, g: float, b: float, w: float = 0.0) -> None:
         self._set(buf, 3, _to8(r))

@@ -64,6 +64,26 @@ class ShowSnapshot:
 
     # --- derived ---
     energy: float = 0.0                  # inferred 0.0-1.0
+    # inferred 0.0-1.0: `energy` rescaled against this SET's own recent
+    # loudness range (a rolling percentile window), not a fixed absolute
+    # threshold — bucket_for_energy() should read this, not raw `energy`,
+    # so "DROP" means "near the top of what this set has actually contained,"
+    # independent of mixer gain staging or a given track's mastering (2026-09-07,
+    # see livereact-project memory). Real-audio only; passes raw `energy`
+    # through unscaled on the MIDI-fallback path (see metronome.py).
+    energy_norm: float = 0.0
+    # inferred: bucket_for_energy(energy_norm), DEBOUNCED (2026-09-07, see
+    # metronome.py's BUCKET_MIN_DWELL_S) -- a candidate bucket must persist for
+    # a real stretch of time before this changes, so it doesn't flip every time
+    # energy_norm brushes a boundary. Read this, not a fresh bucket_for_energy
+    # call, wherever "what bucket are we in" matters (reactive.py, phrase.py,
+    # laser_trigger.py all do) -- one shared, already-debounced answer, not
+    # three independent (and previously drift-prone) ones. Plain str, not the
+    # EnergyBucket enum itself: this module can't import scenes/base.py (it
+    # imports scenes/base.py's own Scene.render(snap: ShowSnapshot) type hint,
+    # so the reverse import would be circular) -- reconstruct via
+    # EnergyBucket(snap.bucket) at call sites that already import it.
+    bucket: str = "breakdown"
     in_transition: bool = False          # inferred / synthetic
 
     # --- health / confidence ---

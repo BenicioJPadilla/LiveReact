@@ -5,17 +5,44 @@ from __future__ import annotations
 
 from livereact.core.frame_buffer import UNIVERSE_SIZE
 from livereact.fixtures.profiles import (
+    DIMMER_FLOOR_DMX,
     ChannelKind,
     Laser,
     MovingHead,
     Par,
     WashBar,
+    _intensity_to8,
 )
 from livereact.merge.merge import Contribution
 
 
 def _uni() -> bytearray:
     return bytearray(UNIVERSE_SIZE)
+
+
+# --- _intensity_to8: gamma + floor dimmer curve (LIGHTING_BIBLE.md §3.7) ----
+
+
+def test_intensity_curve_true_zero_stays_zero():
+    assert _intensity_to8(0.0) == 0
+
+
+def test_intensity_curve_never_dwells_in_the_1_to_30_stepping_zone():
+    """Any nonzero intent, however dim, snaps straight to at least the floor
+    (31/12%) -- it never lands in the visually-broken 1-30 DMX range."""
+    for level in (1e-6, 0.01, 0.1, 0.3):
+        value = _intensity_to8(level)
+        assert value == 0 or value >= DIMMER_FLOOR_DMX
+
+
+def test_intensity_curve_full_level_hits_max():
+    assert _intensity_to8(1.0) == 255
+
+
+def test_intensity_curve_is_gamma_shaped_not_linear():
+    """A linear mapping would put 0.5 at 128; the gamma curve (exponent 2.2)
+    pushes it well below that, per LIGHTING_BIBLE.md §3.7's square-law finding."""
+    assert _intensity_to8(0.5) == 55
 
 
 def test_moving_head_kinds_have_correct_length_and_types():
@@ -101,6 +128,55 @@ def test_apply_home_position_clamps_within_0_1():
     assert 0 <= uni[mh.offset + 2] <= 255
 
 
+def test_apply_slew_limit_passes_through_the_first_commanded_position():
+    """No prior reference on the very first call -- nothing to ramp from, so
+    the command goes through unclamped (matches the pre-slew-limit behavior
+    for a freshly-constructed fixture)."""
+    mh = MovingHead(1, "MH", "spot", "left")
+    uni = _uni()
+    uni[mh.offset + 0] = 255
+    uni[mh.offset + 2] = 0
+    mh.apply_slew_limit(uni, dt=0.025)
+    assert uni[mh.offset + 0] == 255
+    assert uni[mh.offset + 2] == 0
+
+
+def test_apply_slew_limit_clamps_a_large_jump():
+    """LIGHTING_BIBLE.md §6.6 worked example: 260 deg/s over a 540 deg range,
+    at a 25ms (40Hz) frame, gives ~3.07 DMX/frame max pan step."""
+    mh = MovingHead(1, "MH", "spot", "left")
+    uni = _uni()
+    uni[mh.offset + 0] = 0
+    mh.apply_slew_limit(uni, dt=0.025)  # establishes prev=0
+    uni[mh.offset + 0] = 255  # a scene commands an instant full-range jump
+    mh.apply_slew_limit(uni, dt=0.025)
+    assert uni[mh.offset + 0] == 3  # round(260*0.025/540*255) = round(3.069) = 3
+
+
+def test_apply_slew_limit_allows_a_small_move_through_unclamped():
+    mh = MovingHead(1, "MH", "spot", "left")
+    uni = _uni()
+    uni[mh.offset + 2] = 100
+    mh.apply_slew_limit(uni, dt=0.025)  # establishes prev=100
+    uni[mh.offset + 2] = 101  # a 1-count move, well within the per-frame limit
+    mh.apply_slew_limit(uni, dt=0.025)
+    assert uni[mh.offset + 2] == 101
+
+
+def test_apply_slew_limit_ramps_a_large_move_over_multiple_frames():
+    mh = MovingHead(1, "MH", "spot", "left")
+    uni = _uni()
+    uni[mh.offset + 0] = 0
+    mh.apply_slew_limit(uni, dt=0.025)
+    values = []
+    for _ in range(5):
+        uni[mh.offset + 0] = 255  # scene keeps commanding the same far target
+        mh.apply_slew_limit(uni, dt=0.025)
+        values.append(uni[mh.offset + 0])
+    assert values == sorted(values)  # monotonic climb toward the target
+    assert values[-1] < 255  # still ramping, hasn't arrived in just 5 frames
+
+
 def test_par_master_brightness_scales_only_the_dimmer_channel():
     par = Par(55, "Par", "wash", "left")
     uni = _uni()
@@ -122,13 +198,34 @@ def test_laser_boots_off_and_safety_zeros_when_disabled():
     laser = Laser(31, "Laser", "laser", "left")
     uni = _uni()
     # Pretend a scene set a pattern.
-    laser.set_pattern(
+    laser.set_dotted_line_sweep(
         type("B", (), {"set": lambda self, ch, v: uni.__setitem__(ch - 1, v)})(),
-        pattern=40,
+        color=Laser.COLOR_WHITE, sweep_intensity=0.5,
     )
     assert uni[laser.offset] == Laser.MANUAL_PATTERN_MODE  # CH1 in manual range
     laser.apply_safety(uni, laser_enabled=False)
     assert all(uni[laser.offset + i] == 0 for i in range(12))  # all zeroed
+
+
+def test_set_dotted_line_sweep_writes_the_verified_channels():
+    """docs/14 §3, 2026-09-06: the one hardware-verified laser pattern."""
+    laser = Laser(31, "Laser", "laser", "left")
+    c = Contribution()
+    laser.set_dotted_line_sweep(c, color=Laser.COLOR_GREEN, sweep_intensity=0.0)
+    assert c.values[laser.offset + 0] == Laser.MANUAL_PATTERN_MODE      # CH1
+    assert c.values[laser.offset + 1] == Laser.PATTERN_A1_DOTTED_LINE   # CH2
+    assert c.values[laser.offset + 2] == Laser.PATTERN_A2_DEFAULT       # CH3
+    assert c.values[laser.offset + 6] == Laser.SWEEP_SPEED_MIN          # CH7 @ intensity=0
+    assert c.values[laser.offset + 8] == Laser.SCALE_STATIC             # CH9 -- must stay 0
+    assert c.values[laser.offset + 10] == Laser.SCAN_DOTS               # CH11
+    assert c.values[laser.offset + 11] == Laser.COLOR_GREEN             # CH12
+
+
+def test_dotted_line_sweep_speed_scales_with_intensity():
+    laser = Laser(31, "Laser", "laser", "left")
+    c = Contribution()
+    laser.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=1.0)
+    assert c.values[laser.offset + 6] == Laser.SWEEP_SPEED_MAX
 
 
 def test_laser_safety_leaves_channels_when_enabled():

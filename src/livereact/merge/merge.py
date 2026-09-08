@@ -72,7 +72,7 @@ def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearra
 
 
 def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: bool = False,
-             laser_flash_active: bool = False) -> bytes:
+             laser_flash_active: bool = False, dt: float = 1.0 / 60.0) -> bytes:
     """Apply manual biases/caps + safety clamps and return the wire-ready universe.
 
     ``freeze`` is intentionally not handled here — holding the last frame is the
@@ -86,6 +86,11 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
     gates the laser specifically — armed + an eligible scene is still required
     (apply_safety, unchanged), this only controls whether that's currently
     showing through as a brief flash on a real detected onset, vs. held on.
+
+    ``dt`` (LIGHTING_BIBLE.md §6.6, 2026-09-08) is the real elapsed time since
+    the last finalized frame, used by movement slew-limiting (a no-op on
+    fixtures that don't support it) — defaults to a 60Hz tick for callers that
+    don't track real time (e.g. tests, render_universe's one-shot use).
     """
     if manual.blackout or auto_blackout:
         return bytes(UNIVERSE_SIZE)
@@ -99,6 +104,7 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
         fx.cap_strobe(out, manual.strobe_cap)              # safety: always cap
         fx.apply_safety(out, manual.laser_enable)          # laser fail-safe
         fx.apply_home_position(out)                        # docs/14 §4: bound around a calibrated home
+        fx.apply_slew_limit(out, dt)                        # LIGHTING_BIBLE.md §6.6: protect motors from instant jumps
         fx.apply_onset_gate(out, laser_flash_active)        # docs/14 §3: flash on real hits, not held on
     return bytes(out)
 

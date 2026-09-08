@@ -11,12 +11,20 @@ from .base import EnergyBucket, Scene
 from .library import ALL_SCENES
 
 
+# Named so other modules (e.g. engines/reactive.py's per-bucket wash model,
+# LIGHTING_BIBLE.md §5/§9.1) can normalize energy *within* a bucket's own
+# range without duplicating these numbers and risking drift.
+BREAKDOWN_MAX = 0.30
+BUILD_MAX = 0.55
+HOLD_MAX = 0.80
+
+
 def bucket_for_energy(energy: float) -> EnergyBucket:
-    if energy < 0.30:
+    if energy < BREAKDOWN_MAX:
         return EnergyBucket.BREAKDOWN
-    if energy < 0.55:
+    if energy < BUILD_MAX:
         return EnergyBucket.BUILD
-    if energy < 0.80:
+    if energy < HOLD_MAX:
         return EnergyBucket.HOLD
     return EnergyBucket.DROP
 

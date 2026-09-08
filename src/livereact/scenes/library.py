@@ -2,8 +2,11 @@
 
 Adapted from docs/08 §3. Colors follow the two-axis rule (energy->brightness,
 band->hue) except where a scene deliberately sets a mood color (e.g. the deep-blue
-breakdown). Lasers appear only in DROP scenes, as static manual patterns above head
-height (docs/08 §5).
+breakdown). Lasers appear only in DROP scenes (docs/08 §5), using the one
+hardware-verified pattern (`Laser.set_dotted_line_sweep`, docs/14 §3,
+2026-09-06) with its color and sweep speed driven by real audio (frequency ->
+color, intensity -> sweep speed) — same "translate the audio directly"
+principle as wash/par, not a scene-picked static look.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import math
 from ..color import hsv_to_rgb
 from ..dynamics import beat_pulse, musical_bar_position
 from ..core.show_state import ShowSnapshot
-from ..engines.color import two_axis_color
+from ..engines.color import laser_color_for_bands, two_axis_color
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
 from .base import EnergyBucket, Scene, paint_spots, paint_wash
@@ -147,7 +150,7 @@ class FullSpectrumHit(Scene):
             mirror = 1.0 if fx.side == "left" else -1.0
             fx.set_position(c, 0.5 + 0.45 * math.sin(pos * 4.0) * mirror, 0.4 + 0.2 * math.sin(pos * 2.0))
         for fx in rig.by_role("laser"):
-            fx.set_pattern(c, pattern=40, color=200, scale=0.9)
+            fx.set_dotted_line_sweep(c, color=laser_color_for_bands(snap), sweep_intensity=snap.energy)
         return c
 
 
@@ -169,7 +172,7 @@ class BeamFanLaserTunnel(Scene):
             mirror = 1.0 if fx.side == "left" else -1.0
             fx.set_position(c, 0.5 + 0.3 * math.sin(pos * 2.0) * mirror, 0.5)
         for fx in rig.by_role("laser"):
-            fx.set_pattern(c, pattern=80, color=120, scale=1.0)
+            fx.set_dotted_line_sweep(c, color=laser_color_for_bands(snap), sweep_intensity=snap.energy)
         return c
 
 

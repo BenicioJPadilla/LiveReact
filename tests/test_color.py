@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from livereact.color import hsv_to_rgb
 from livereact.core.show_state import ShowSnapshot
-from livereact.engines.color import band_levels, two_axis_color
+from livereact.engines.color import band_levels, laser_color_for_bands, two_axis_color
+from livereact.fixtures.profiles import Laser
 
 
 def test_hsv_primaries():
@@ -62,3 +63,28 @@ def test_band_levels_falls_back_to_midi_eq_when_audio_stale():
         audio_fresh=False,
     )
     assert band_levels(snap) == (0.9, 0.1, 0.1)
+
+
+# --- laser_color_for_bands (docs/14 §3, 2026-09-06) --------------------------
+# Same "frequency maps to color" principle as two_axis_color, snapped to the
+# laser's small set of discrete CH12 macros instead of a continuous RGB blend.
+
+
+def test_laser_reads_red_when_bass_dominant():
+    color = laser_color_for_bands(_snap(eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2))
+    assert color == Laser.COLOR_RED
+
+
+def test_laser_reads_cyan_when_high_dominant():
+    color = laser_color_for_bands(_snap(eq_high_a=1.0, eq_low_a=0.2, eq_mid_a=0.2))
+    assert color == Laser.COLOR_CYAN
+
+
+def test_laser_reads_purple_when_mid_dominant():
+    color = laser_color_for_bands(_snap(eq_mid_a=1.0, eq_low_a=0.2, eq_high_a=0.2))
+    assert color == Laser.COLOR_PURPLE
+
+
+def test_laser_reads_white_when_bands_are_balanced():
+    color = laser_color_for_bands(_snap(eq_low_a=1.0, eq_mid_a=1.0, eq_high_a=1.0))
+    assert color == Laser.COLOR_WHITE

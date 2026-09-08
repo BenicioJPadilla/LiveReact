@@ -40,6 +40,24 @@ def test_movement_is_last_write_wins():
     assert merged[mh.offset + 2] == 255  # tilt from c2
 
 
+def test_finalize_slew_limits_moving_head_position_between_frames():
+    """LIGHTING_BIBLE.md §6.6: finalize() threads dt through to each fixture's
+    apply_slew_limit, so a large position jump between two finalize() calls on
+    the same rig (e.g. a scene switch) gets ramped, not slammed instantly."""
+    rig = _rig()
+    mh = rig.fixture("mh_l")
+    manual = ManualParams()
+
+    c1 = Contribution()
+    mh.set_position(c1, 0.0, 0.0)
+    finalize(merge_contributions([c1], rig), rig, manual, dt=0.025)  # establishes prev=0
+
+    c2 = Contribution()
+    mh.set_position(c2, 1.0, 1.0)  # an instant full-range jump
+    out = finalize(merge_contributions([c2], rig), rig, manual, dt=0.025)
+    assert 0 < out[mh.offset + 0] < 255  # ramping toward the target, not slammed
+
+
 def test_untouched_channels_keep_boot_defaults():
     rig = _rig()
     merged = merge_contributions([Contribution()], rig)  # empty contribution
@@ -72,7 +90,7 @@ def test_lasers_cannot_be_nonzero_unless_enabled():
     rig = _rig()
     laser = rig.fixture("laser_l")
     c = Contribution()
-    laser.set_pattern(c, pattern=40, color=200)
+    laser.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=0.5)
 
     off = render_universe([c], rig, ManualParams(laser_enable=False), laser_flash_active=True)
     assert all(off[laser.offset + i] == 0 for i in range(12))  # fail-safe
@@ -126,7 +144,7 @@ def test_laser_flash_gate_zeros_the_laser_independently_of_scene_and_arm():
     rig = _rig()
     laser = rig.fixture("laser_l")
     c = Contribution()
-    laser.set_pattern(c, pattern=60)
+    laser.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=0.5)
     armed = ManualParams(laser_enable=True)
 
     not_flashing = render_universe([c], rig, armed, laser_flash_active=False)

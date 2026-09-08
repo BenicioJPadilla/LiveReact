@@ -18,8 +18,8 @@ from ..dynamics import musical_bar_position
 from ..fixtures.profiles import ChannelKind
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
-from ..scenes.base import Scene
-from ..scenes.catalog import SceneCatalog, bucket_for_energy
+from ..scenes.base import EnergyBucket, Scene
+from ..scenes.catalog import SceneCatalog
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +92,14 @@ class PhraseEngine:
             self._begin_rotation(snap)
 
     def _begin_rotation(self, snap: ShowSnapshot) -> None:
-        bucket = bucket_for_energy(snap.energy)
+        # snap.bucket -- an ALREADY-DEBOUNCED, already-adaptively-rescaled
+        # bucket_for_energy(energy_norm), computed once in metronome.py (see
+        # BUCKET_MIN_DWELL_S there), not a fresh call here. Same reasoning as
+        # reactive.py and laser_trigger.py: one shared notion of "what bucket
+        # is this," not independently (and previously drift-prone) recomputed
+        # per engine (found live 2026-09-07, see show_state.py's bucket
+        # docstring).
+        bucket = EnergyBucket(snap.bucket)
         self._next = self.catalog.pick(bucket, exclude=self._current)
         self._crossfade_start_pos = musical_bar_position(snap)
         self._skip_requested = False

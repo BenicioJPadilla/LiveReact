@@ -5,12 +5,20 @@ from __future__ import annotations
 from livereact.core.show_state import ShowSnapshot
 from livereact.engines.phrase import CROSSFADE_BARS, HOLD_BARS, ROTATION_BARS, PhraseEngine
 from livereact.fixtures.rig import load_rig
+from livereact.scenes.catalog import bucket_for_energy
 
 
 def _snap(bar: int, **kw) -> ShowSnapshot:
     base = dict(bpm=124.0, energy=0.7, bar=bar, beat_in_bar=1, beat_phase=0.0,
                 fader_a=1.0, eq_low_a=1.0)
     base.update(kw)
+    # bucket_for_energy reads energy_norm, not raw energy (2026-09-07, found
+    # live) -- default it to match energy so existing tests that only set
+    # `energy=` still exercise the bucket they intend to.
+    base.setdefault("energy_norm", base["energy"])
+    # snap.bucket is normally an ALREADY-DEBOUNCED value from metronome.py --
+    # default it from this snapshot's own energy_norm for the same reason.
+    base.setdefault("bucket", bucket_for_energy(base["energy_norm"]).value)
     return ShowSnapshot(**base)
 
 

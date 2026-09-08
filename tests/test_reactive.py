@@ -2,40 +2,102 @@
 
 from __future__ import annotations
 
+import pytest
+
 from livereact.clock import FakeClock
 from livereact.core.show_state import ShowSnapshot
 from livereact.engines.reactive import ReactiveLayerEngine
 from livereact.fixtures.rig import load_rig
+from livereact.scenes.catalog import bucket_for_energy
 
 
 def _snap(**kw) -> ShowSnapshot:
     base = dict(bpm=120.0, energy=0.8, fader_a=1.0, eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2)
     base.update(kw)
+    # bucket_for_energy reads energy_norm, not raw energy (2026-09-07, found
+    # live) -- default it to match energy so existing tests that only set
+    # `energy=` still exercise the bucket they intend to, unless a test
+    # explicitly passes energy_norm to test the distinction.
+    base.setdefault("energy_norm", base["energy"])
+    # snap.bucket is normally an ALREADY-DEBOUNCED value from metronome.py
+    # (BUCKET_MIN_DWELL_S) -- these are unit tests of the engine directly, not
+    # of the debounce, so default it to whatever bucket_for_energy would say
+    # for this snapshot's own energy_norm, unless a test explicitly overrides
+    # it to exercise a mismatch.
+    base.setdefault("bucket", bucket_for_energy(base["energy_norm"]).value)
     return ShowSnapshot(**base)
 
 
 def test_pulse_peaks_on_the_beat_and_decays_across_it():
+    """kick_pulse/kick_level is retired as wash's default driver (2026-09-08,
+    LIGHTING_BIBLE.md full-alignment build -- see reactive.py's retirement
+    note) but still computed every tick for a possible future accent
+    feature. This checks the retained mechanism itself still works, not
+    wash's actual DMX output (see the bucket-model tests further down for
+    that)."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
-    bar = rig.fixture("bar_l")
 
-    on_beat = eng.tick(_snap(beat_phase=0.0), rig).values[bar.offset]    # dimmer ch1
-    mid_beat = eng.tick(_snap(beat_phase=0.5), rig).values[bar.offset]
-    late_beat = eng.tick(_snap(beat_phase=0.9), rig).values[bar.offset]
+    eng.tick(_snap(beat_phase=0.0), rig)
+    on_beat = eng.kick_level
+    eng.tick(_snap(beat_phase=0.5), rig)
+    mid_beat = eng.kick_level
+    eng.tick(_snap(beat_phase=0.9), rig)
+    late_beat = eng.kick_level
 
     assert on_beat > mid_beat > late_beat  # single peak, monotonic decay
 
 
-def test_color_follows_band_dominance():
+def test_color_follows_band_dominance_across_phrase_boundaries():
+    """LIGHTING_BIBLE.md §3.8: hue is frozen within a phrase (see the hue-freeze
+    tests below) but DOES follow real dominance once a new phrase begins."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     par = rig.fixture("par_l")  # ch1=dimmer, R,G,B at offset+1..offset+3
 
-    red = eng.tick(_snap(beat_phase=0.0, eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2), rig)
+    red = eng.tick(_snap(bar=0, beat_phase=0.0, eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2), rig)
     assert red.values[par.offset + 1] > red.values[par.offset + 3]  # R > B
 
-    cyan = eng.tick(_snap(beat_phase=0.0, eq_high_a=1.0, eq_low_a=0.2, eq_mid_a=0.2), rig)
+    # a new HUE_UPDATE_BARS (16) phrase begins, with a different dominant band
+    cyan = eng.tick(_snap(bar=16, beat_phase=0.0, eq_high_a=1.0, eq_low_a=0.2, eq_mid_a=0.2), rig)
     assert cyan.values[par.offset + 3] > cyan.values[par.offset + 1]  # B > R
+
+
+def test_hue_stays_frozen_within_the_same_phrase():
+    """The actual bug this fixes (2026-09-08 audit): two_axis_color used to
+    recompute hue every tick, so the dominant band flickering mid-phrase (real
+    audio does this constantly) caused visible hue churn. Now it shouldn't
+    change until a new HUE_UPDATE_BARS phrase begins."""
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+    par = rig.fixture("par_l")
+
+    red = eng.tick(_snap(bar=0, beat_phase=0.0, eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2), rig)
+    assert red.values[par.offset + 1] > red.values[par.offset + 3]  # R > B
+
+    # still bar 0 (same phrase) -- even though the dominant band has flipped
+    # to high, the hue must stay frozen on low (red) until the next phrase
+    still_red = eng.tick(_snap(bar=0, beat_phase=0.5, eq_high_a=1.0,
+                                eq_low_a=0.2, eq_mid_a=0.2), rig)
+    assert still_red.values[par.offset + 1] > still_red.values[par.offset + 3]  # still R > B
+
+
+def test_hue_updates_at_the_next_phrase_boundary():
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+    par = rig.fixture("par_l")
+
+    eng.tick(_snap(bar=0, beat_phase=0.0, eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2), rig)
+    # bar 15 is still within the first 16-bar phrase -- even with high now
+    # dominant, hue must stay frozen on the phrase's original pick (red)
+    still_red = eng.tick(_snap(bar=15, beat_phase=0.0, eq_high_a=1.0,
+                                eq_low_a=0.2, eq_mid_a=0.2), rig)
+    assert still_red.values[par.offset + 1] > still_red.values[par.offset + 3]
+
+    # bar 16 crosses into the next phrase -- now it's allowed to re-pick
+    new_phrase = eng.tick(_snap(bar=16, beat_phase=0.0, eq_high_a=1.0,
+                                 eq_low_a=0.2, eq_mid_a=0.2), rig)
+    assert new_phrase.values[par.offset + 3] > new_phrase.values[par.offset + 1]  # B > R now
 
 
 def test_moving_heads_mirror_left_and_right():
@@ -64,6 +126,57 @@ def test_high_energy_engages_capped_strobe():
     assert 0 < strobe <= int(0.30 * 255) + 1  # engaged but conservatively capped
 
 
+# --- strobe burst-duration cap + mandatory gap (LIGHTING_BIBLE.md §13, 2026-09-08) ---
+# Previously a sustained loud section could hold the strobe on indefinitely --
+# no burst-duration limit at all. Now capped at STROBE_MAX_BURST_S, then a
+# forced STROBE_MANDATORY_GAP_S dark gap before it can resume.
+
+
+def test_strobe_cuts_off_after_the_max_burst_duration():
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    bar = rig.fixture("bar_l")
+    # sustained high energy throughout -- would strobe continuously without the gate
+    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    assert c.values[bar.offset + 1] > 0  # engaged at the start of the burst
+    clock.advance(1.5)  # == STROBE_MAX_BURST_S
+    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    assert c.values[bar.offset + 1] == 0  # forced dark once the burst limit is hit
+
+
+def test_strobe_stays_off_for_the_mandatory_gap_then_resumes():
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    bar = rig.fixture("bar_l")
+    eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    clock.advance(1.5)
+    eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)  # burst cap trips here
+    clock.advance(1.0)  # still within the mandatory gap (1.5s)
+    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    assert c.values[bar.offset + 1] == 0  # still gapped, even though energy is still high
+    clock.advance(0.6)  # now past the 1.5s gap
+    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    assert c.values[bar.offset + 1] > 0  # allowed to strobe again
+
+
+def test_strobe_burst_timer_resets_when_energy_drops_before_the_cap():
+    """A burst that ends naturally (energy drops below threshold) before
+    hitting the duration cap should NOT count against a future burst -- only
+    a burst that actually hits the cap earns a mandatory gap."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    bar = rig.fixture("bar_l")
+    eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    clock.advance(0.5)  # well under the 1.5s cap
+    eng.tick(_snap(energy=0.5, beat_phase=0.0), rig)  # energy drops, strobe naturally off
+    clock.advance(0.1)
+    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)  # a fresh burst begins
+    assert c.values[bar.offset + 1] > 0  # not gated -- the prior burst never hit the cap
+
+
 # --- kick-envelope-follower (docs/14 §5, REDESIGNED 2026-09-03) -------------
 # Replaces the old beat-locked-ramp + relative-onset-gate design (which flapped
 # on/off and could keep re-triggering through real silence — both confirmed
@@ -73,13 +186,14 @@ def test_high_energy_engages_capped_strobe():
 
 def test_no_real_audio_falls_back_to_the_classic_beat_locked_pulse():
     """Demo mode / MIDI-only fallback never has real audio — there's no signal
-    to trace, so it falls back to the old mechanical beat-locked ramp instead
-    of going dark."""
+    to trace, so kick_level (retained mechanism, see the test above) falls
+    back to the old mechanical beat-locked ramp instead of going dark."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
-    bar = rig.fixture("bar_l")
-    on_beat = eng.tick(_snap(audio_fresh=False, beat_phase=0.0), rig).values[bar.offset]
-    late_beat = eng.tick(_snap(audio_fresh=False, beat_phase=0.9), rig).values[bar.offset]
+    eng.tick(_snap(audio_fresh=False, beat_phase=0.0), rig)
+    on_beat = eng.kick_level
+    eng.tick(_snap(audio_fresh=False, beat_phase=0.9), rig)
+    late_beat = eng.kick_level
     assert on_beat > late_beat
 
 
@@ -87,11 +201,10 @@ def test_true_silence_produces_no_brightness():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    bar = rig.fixture("bar_l")
     for _ in range(10):
-        c = eng.tick(_snap(audio_fresh=True, audio_band_low_abs=0.0), rig)
+        eng.tick(_snap(audio_fresh=True, audio_band_low_abs=0.0), rig)
         clock.advance(0.05)
-    assert c.values[bar.offset] == 0
+    assert eng.kick_level == 0
 
 
 def _warm_up_baseline(eng: ReactiveLayerEngine, rig, clock: FakeClock,
@@ -113,32 +226,30 @@ def test_a_sustained_bassline_alone_does_not_light_the_wash():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    bar = rig.fixture("bar_l")
     _warm_up_baseline(eng, rig, clock, level=8.0)
-    c = eng.tick(_snap(audio_fresh=True, audio_band_low_abs=8.0), rig)
-    assert c.values[bar.offset] <= 2  # baseline converged; no transient excess left
+    eng.tick(_snap(audio_fresh=True, audio_band_low_abs=8.0), rig)
+    assert eng.kick_level <= 0.01  # baseline converged; no transient excess left
 
 
 def test_a_kick_above_the_bassline_still_lights_up():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    bar = rig.fixture("bar_l")
     _warm_up_baseline(eng, rig, clock, level=8.0)
-    kick = eng.tick(_snap(audio_fresh=True, audio_band_low_abs=20.0), rig).values[bar.offset]
-    assert kick > 50  # a real transient above the established bassline pokes through
+    eng.tick(_snap(audio_fresh=True, audio_band_low_abs=20.0), rig)
+    assert eng.kick_level > 0.15  # a real transient above the established bassline pokes through
 
 
 def test_excess_decays_back_toward_baseline_after_the_transient_passes():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    bar = rig.fixture("bar_l")
     _warm_up_baseline(eng, rig, clock, level=8.0)
-    peak = eng.tick(_snap(audio_fresh=True, audio_band_low_abs=20.0), rig).values[bar.offset]
+    eng.tick(_snap(audio_fresh=True, audio_band_low_abs=20.0), rig)
+    peak = eng.kick_level
     clock.advance(0.15)  # a beat's worth of gap, bass returns to its normal level
-    decayed = eng.tick(_snap(audio_fresh=True, audio_band_low_abs=8.0), rig).values[bar.offset]
-    assert decayed < peak
+    eng.tick(_snap(audio_fresh=True, audio_band_low_abs=8.0), rig)
+    assert eng.kick_level < peak
 
 
 # A beat-timing gate (only let a transient register in a short window after
@@ -159,11 +270,10 @@ def test_a_kick_in_the_window_rises_live_when_pdl_is_locked():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    bar = rig.fixture("bar_l")
     _warm_up_baseline(eng, rig, clock, level=8.0)
-    lvl = eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.0,
-                          audio_band_low_abs=20.0), rig).values[bar.offset]
-    assert lvl > 50
+    eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.0,
+                    audio_band_low_abs=20.0), rig)
+    assert eng.kick_level > 0.15
 
 
 def test_a_beat_with_no_real_kick_stays_near_the_floor_when_pdl_is_locked():
@@ -172,11 +282,10 @@ def test_a_beat_with_no_real_kick_stays_near_the_floor_when_pdl_is_locked():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    bar = rig.fixture("bar_l")
     _warm_up_baseline(eng, rig, clock, level=8.0)
-    lvl = eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.0,
-                          audio_band_low_abs=8.0), rig).values[bar.offset]  # no excess over baseline
-    assert lvl <= 25  # near KICK_FLOOR (0.08 -> ~20/255), not literal zero
+    eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.0,
+                    audio_band_low_abs=8.0), rig)  # no excess over baseline
+    assert eng.kick_level <= 0.05  # near KICK_FLOOR (0.02), not literal zero
 
 
 def test_after_the_window_closes_new_audio_is_ignored_until_the_next_beat():
@@ -186,24 +295,23 @@ def test_after_the_window_closes_new_audio_is_ignored_until_the_next_beat():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    bar = rig.fixture("bar_l")
     _warm_up_baseline(eng, rig, clock, level=8.0)
 
     eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.0,
                     audio_band_low_abs=12.0), rig)  # a real kick, within the window
-    decaying = eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.5,
-                               audio_band_low_abs=0.0), rig).values[bar.offset]
+    eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.5,
+                    audio_band_low_abs=0.0), rig)
+    decaying = eng.kick_level
     # a huge NEW spike arrives late in the same beat, well past the window -- must be ignored
-    late_spike = eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.6,
-                                 audio_band_low_abs=50.0), rig).values[bar.offset]
-    assert late_spike < decaying  # still just decaying along the fixed curve, unaffected
+    eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.6,
+                    audio_band_low_abs=50.0), rig)
+    assert eng.kick_level < decaying  # still just decaying along the fixed curve, unaffected
 
 
 def test_the_next_beats_window_reopens_and_can_register_a_new_kick():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    bar = rig.fixture("bar_l")
     _warm_up_baseline(eng, rig, clock, level=8.0)
 
     eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.0,
@@ -211,9 +319,9 @@ def test_the_next_beats_window_reopens_and_can_register_a_new_kick():
     eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.9,
                     audio_band_low_abs=0.0), rig)  # decayed most of the way through
     # next beat starts (phase wraps back to ~0) with a fresh kick
-    next_beat = eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.0,
-                                audio_band_low_abs=20.0), rig).values[bar.offset]
-    assert next_beat > 50
+    eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0, beat_phase=0.0,
+                    audio_band_low_abs=20.0), rig)
+    assert eng.kick_level > 0.15
 
 
 def test_identical_repeating_beats_produce_identical_output():
@@ -221,21 +329,116 @@ def test_identical_repeating_beats_produce_identical_output():
     loop (Josh: "inconsistently inconsistent"). Feed the SAME two-beat pattern
     twice and require the second repetition to match the first at each
     corresponding phase."""
+    # Checks eng.kick_level (the retained mechanism, see the retirement note
+    # in reactive.py) rather than wash's actual DMX output -- with the
+    # bucket-driven model, _snap()'s default energy=0.8 lands in DROP, whose
+    # output is a flat constant regardless of the kick pattern, which would
+    # make this determinism check trivially/vacuously true against wash's
+    # real output now.
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    bar = rig.fixture("bar_l")
     _warm_up_baseline(eng, rig, clock, level=8.0)
 
-    def play_one_beat(kick_abs: float) -> list[int]:
+    def play_one_beat(kick_abs: float) -> list[float]:
         out = []
         for phase in (0.0, 0.05, 0.15, 0.3, 0.5, 0.7, 0.9):
             abs_level = kick_abs if phase == 0.0 else 8.0
-            out.append(eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0,
-                                       beat_phase=phase, audio_band_low_abs=abs_level),
-                                 rig).values[bar.offset])
+            eng.tick(_snap(audio_fresh=True, pdl_fresh=True, bpm=120.0,
+                            beat_phase=phase, audio_band_low_abs=abs_level), rig)
+            out.append(eng.kick_level)
         return out
 
     first_pass = [play_one_beat(20.0), play_one_beat(8.0)]   # beat with kick, beat without
     second_pass = [play_one_beat(20.0), play_one_beat(8.0)]  # the identical pattern again
     assert first_pass == second_pass
+
+
+# --- bucket-driven wash/par model (LIGHTING_BIBLE.md §5/§9.1, 2026-09-08) ---
+# Replaces kick-follow as wash/par's default (see reactive.py's retirement
+# note): DROP is a held constant, BUILD ramps structurally from bar position,
+# BREAKDOWN/HOLD get a slow non-pulsing "breathing" envelope.
+
+
+def test_drop_bucket_holds_a_constant_intensity_regardless_of_beat():
+    """peak_full_rig/drop_blackout_hit: "reactivity: static, kick_follow:
+    false" -- DROP must NOT vary with beat_phase or kick data at all."""
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+    bar = rig.fixture("bar_l")
+    on_beat = eng.tick(_snap(energy=0.9, beat_phase=0.0, audio_band_low_abs=50.0), rig)
+    late_beat = eng.tick(_snap(energy=0.9, beat_phase=0.9, audio_band_low_abs=0.0), rig)
+    assert on_beat.values[bar.offset] == late_beat.values[bar.offset] == 202  # DROP_INTENSITY=0.9
+
+
+def test_build_bucket_ramps_from_bar_position_not_audio():
+    """build_riser_wash: "the ramp IS the build; drive it from bar position,
+    not audio" -- climbs over BUILD_RAMP_BARS (8) regardless of kick data.
+    Checks eng.wash_level (the continuous pre-gamma-curve value) directly --
+    the actual DMX byte goes through a nonlinear curve (LIGHTING_BIBLE.md
+    §3.7), so a naive linear byte comparison would be testing the wrong
+    thing (found via testing)."""
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+
+    eng.tick(_snap(energy=0.4, bar=0, beat_in_bar=1, beat_phase=0.0,
+                    audio_band_low_abs=0.0), rig)
+    start = eng.wash_level
+    eng.tick(_snap(energy=0.4, bar=4, beat_in_bar=1, beat_phase=0.0,
+                    audio_band_low_abs=999.0), rig)  # audio ignored
+    mid = eng.wash_level
+    eng.tick(_snap(energy=0.4, bar=8, beat_in_bar=1, beat_phase=0.0,
+                    audio_band_low_abs=0.0), rig)
+    full = eng.wash_level
+
+    assert start == 0.2                    # BUILD_LOW
+    assert mid == pytest.approx(0.575)     # halfway: 0.2 + 0.5*(0.95-0.2)
+    assert full == 0.95                    # BUILD_HIGH
+    assert start < mid < full
+
+
+def test_build_ramp_restarts_on_a_fresh_entry():
+    """Leaving BUILD and re-entering later must restart the ramp from
+    BUILD_LOW, not continue from wherever it left off."""
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+
+    eng.tick(_snap(energy=0.4, bar=0, beat_in_bar=1, beat_phase=0.0), rig)
+    eng.tick(_snap(energy=0.4, bar=8, beat_in_bar=1, beat_phase=0.0), rig)  # ramp completes
+    eng.tick(_snap(energy=0.9, bar=9, beat_in_bar=1, beat_phase=0.0), rig)  # a drop happens
+    eng.tick(_snap(energy=0.4, bar=20, beat_in_bar=1, beat_phase=0.0), rig)
+    assert eng.wash_level == 0.2  # back to BUILD_LOW, not still at BUILD_HIGH
+
+
+def test_breakdown_bucket_breathes_slowly_toward_its_range():
+    """break_low_wash: "a break has no transients to chase, so only a slow
+    envelope earns reactivity" -- rises gradually, never instantly, and
+    never leaves the Bible's stated 15-35% range."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+
+    eng.tick(_snap(energy=0.25, beat_phase=0.0), rig)
+    first = eng.wash_level
+    for _ in range(50):
+        clock.advance(0.5)
+        eng.tick(_snap(energy=0.25, beat_phase=0.0), rig)
+    settled = eng.wash_level
+
+    assert first < settled  # rose over time, didn't jump instantly
+    for value in (first, settled):
+        assert 0.15 <= value <= 0.35
+
+
+def test_hold_bucket_breathes_faster_than_breakdown():
+    """This project's own extrapolation (no direct Bible state) -- same
+    principle as breakdown, brighter range, faster time constant."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+
+    eng.tick(_snap(energy=0.65, beat_phase=0.0), rig)
+    for _ in range(20):
+        clock.advance(0.5)
+        eng.tick(_snap(energy=0.65, beat_phase=0.0), rig)
+    assert 0.35 <= eng.wash_level <= 0.65

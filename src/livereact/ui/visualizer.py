@@ -244,7 +244,7 @@ def build_demo_universe(rig: Rig, t: float) -> bytes:
     laser_flash = in_drop and pulse > 0.9
     if in_drop:
         for fx in rig.by_role("laser"):
-            fx.set_pattern(c, pattern=40, color=200, scale=0.8)
+            fx.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=energy)
 
     manual = ManualParams(master_brightness=1.0, laser_enable=in_drop)
     return render_universe([c], rig, manual, laser_flash_active=laser_flash)
