@@ -72,7 +72,25 @@ class SessionRecorder(threading.Thread):
         stop_event: threading.Event,
         session_dir: str,
         hz: float = 10.0,
+        reactive_engine=None,
+        phrase_engine=None,
+        laser_trigger=None,
+        silence_detector=None,
+        rig=None,
     ) -> None:
+        """The engine/rig references are all optional (default None) so a
+        minimal recorder — or an existing test that doesn't care about them —
+        still works unchanged. When given (2026-09-07, Josh: "I want you to be
+        able to actually access and analyze the data from that run" without
+        needing a separate simulated pipeline — the earlier `replay_song.py`
+        approach couldn't match real PDL/MIDI timing, so instead of building a
+        message-capture-and-replay system, this just records the SAME internal
+        fields directly off the real, live objects during an actual
+        `--hardware --record` session), each tick also captures energy_norm,
+        bucket, wash/kick level, hue, laser/silence state, the active scene,
+        and per-fixture DMX-derived state for the whole rig — no separate
+        simulation needed, and no fidelity question at all: this IS the live
+        run, not an approximation of one."""
         super().__init__(name="recorder", daemon=False)
         self.show_state = show_state
         self.frame_buffer = frame_buffer
@@ -80,6 +98,11 @@ class SessionRecorder(threading.Thread):
         self.stop_event = stop_event
         self.session_dir = session_dir
         self.hz = hz
+        self.reactive_engine = reactive_engine
+        self.phrase_engine = phrase_engine
+        self.laser_trigger = laser_trigger
+        self.silence_detector = silence_detector
+        self.rig = rig
         self.samples = 0
         self._fh = None
 
@@ -114,7 +137,34 @@ class SessionRecorder(threading.Thread):
             "eq_a": [round(snap.eq_low_a, 2), round(snap.eq_mid_a, 2), round(snap.eq_high_a, 2)],
             "eq_b": [round(snap.eq_low_b, 2), round(snap.eq_mid_b, 2), round(snap.eq_high_b, 2)],
             "active_channels": sum(1 for b in uni if b),
+            "energy_norm": round(snap.energy_norm, 4),
+            "bucket": snap.bucket,
         }
+        # Engine/rig internals -- all optional (see __init__): each guarded
+        # separately so a partially-wired recorder (or a future engine that
+        # doesn't expose one of these) still records what it can.
+        if self.reactive_engine is not None:
+            record["wash_level"] = round(self.reactive_engine.wash_level, 4)
+            record["kick_level"] = round(self.reactive_engine.kick_level, 4)
+            record["hue_idx"] = self.reactive_engine._hue_idx
+        if self.phrase_engine is not None:
+            record["scene"] = self.phrase_engine._current.name
+            record["scene_uses_lasers"] = self.phrase_engine._current.uses_lasers
+        if self.laser_trigger is not None:
+            record["laser_flash_active"] = self.laser_trigger.active
+        if self.silence_detector is not None:
+            record["silence_active"] = self.silence_detector.active
+        if self.rig is not None:
+            for fx in self.rig.fixtures:
+                key = fx.label.lower().replace(" ", "_")
+                vs = fx.visual_state(uni)
+                record[f"{key}_r"] = vs.r
+                record[f"{key}_g"] = vs.g
+                record[f"{key}_b"] = vs.b
+                record[f"{key}_brightness"] = round(vs.brightness, 3)
+                record[f"{key}_pan"] = round(vs.pan, 3)
+                record[f"{key}_tilt"] = round(vs.tilt, 3)
+                record[f"{key}_active"] = vs.active
         assert self._fh is not None
         self._fh.write(json.dumps(record) + "\n")
         self.samples += 1

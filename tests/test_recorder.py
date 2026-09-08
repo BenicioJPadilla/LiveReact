@@ -7,8 +7,13 @@ import os
 
 from livereact.clock import FakeClock
 from livereact.core.frame_buffer import UNIVERSE_SIZE, DmxFrameBuffer
+from livereact.core.laser_trigger import LaserOnsetDetector
 from livereact.core.show_state import ShowSnapshot, ShowState
+from livereact.core.silence import SilenceDetector
 from livereact.diagnostics import collect_environment, format_report
+from livereact.engines.phrase import PhraseEngine
+from livereact.engines.reactive import ReactiveLayerEngine
+from livereact.fixtures.rig import load_rig
 from livereact.recorder import (
     SessionRecorder,
     create_session_dir,
@@ -53,6 +58,64 @@ def test_recorder_writes_state_samples(tmp_path):
     assert row["crossfader"] == 0.4
     assert row["active_channels"] == 10
     assert rec.samples == 2
+
+
+def test_recorder_without_engine_refs_still_works_unchanged():
+    """The engine/rig params are all optional -- an existing caller (or test)
+    that only passes the original 5 positional args must keep working exactly
+    as before, with none of the new fields present."""
+    state = ShowState()
+    state.publish(ShowSnapshot(bpm=128.0, bar=3, energy=0.6, crossfader=0.4))
+    fb = DmxFrameBuffer()
+
+    rec = SessionRecorder(state, fb, FakeClock(), __import__("threading").Event(), None)
+    rec._fh = __import__("io").StringIO()  # avoid touching the filesystem
+    rec.tick()
+    row = json.loads(rec._fh.getvalue())
+    assert row["bpm"] == 128.0
+    assert "wash_level" not in row and "scene" not in row and "laser_flash_active" not in row
+
+
+def test_recorder_captures_engine_and_rig_internals_when_given(tmp_path):
+    """2026-09-07 (Josh: "I want you to be able to actually access and analyze
+    the data from that run" without a separate simulated pipeline) -- when the
+    real engine/rig objects are passed in, the recorder captures the SAME
+    internal fields the offline replay tool's custom trace did, straight off
+    the real, live objects."""
+    state = ShowState()
+    state.publish(ShowSnapshot(bpm=128.0, bar=3, energy=0.6, crossfader=0.4,
+                                energy_norm=0.9, bucket="drop"))
+    fb = DmxFrameBuffer()
+    rig = load_rig()  # packaged default rig -- no real file path needed
+    clock = FakeClock()
+    reactive = ReactiveLayerEngine(clock)
+    phrase = PhraseEngine()
+    laser = LaserOnsetDetector(clock)
+    silence = SilenceDetector(clock)
+    fb.publish(rig.boot_universe())
+
+    rec = SessionRecorder(
+        state, fb, clock, __import__("threading").Event(), str(tmp_path),
+        reactive_engine=reactive, phrase_engine=phrase, laser_trigger=laser,
+        silence_detector=silence, rig=rig,
+    )
+    rec.open()
+    rec.tick()
+    rec.close()
+
+    row = json.loads((tmp_path / "state.jsonl").read_text().strip())
+    assert row["energy_norm"] == 0.9
+    assert row["bucket"] == "drop"
+    assert row["wash_level"] == reactive.wash_level
+    assert row["scene"] == phrase._current.name
+    assert row["scene_uses_lasers"] == phrase._current.uses_lasers
+    assert row["laser_flash_active"] == laser.active
+    assert row["silence_active"] == silence.active
+    # per-fixture DMX-derived fields exist for every real fixture in the rig
+    for fx in rig.fixtures:
+        key = fx.label.lower().replace(" ", "_")
+        assert f"{key}_brightness" in row
+        assert f"{key}_active" in row
 
 
 def test_notes_meta_and_summary_files(tmp_path):

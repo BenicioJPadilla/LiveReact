@@ -89,9 +89,10 @@ class App:
         if self.config.demo:
             self.manual.laser_enable = True
         self.phrase_engine = PhraseEngine()
+        self.reactive_engine = ReactiveLayerEngine(self.clock)
         # Order matters: Reactive base, then Phrase (scene movement/laser win via
         # last-write), then Transition (its lift max-merges over the held look).
-        self.engines = [ReactiveLayerEngine(self.clock), self.phrase_engine, TransitionEngine()]
+        self.engines = [self.reactive_engine, self.phrase_engine, TransitionEngine()]
         self.show_engine = ShowEngine(
             self.show_state, self.rig, self.frame_buffer, self.engines,
             self.manual, self.clock, self.stop_event,
@@ -119,6 +120,9 @@ class App:
         })
         self.recorder = SessionRecorder(
             self.show_state, self.frame_buffer, self.clock, self.stop_event, session_dir,
+            reactive_engine=self.reactive_engine, phrase_engine=self.phrase_engine,
+            laser_trigger=self.show_engine.laser_trigger, silence_detector=self.show_engine.silence,
+            rig=self.rig,
         )
         self._core_threads.append(self.recorder)
         log.info("Recording session to %s", session_dir)
