@@ -48,6 +48,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--visualize", action="store_true", help="Open the operator console + virtual rig (PySide6).")
     p.add_argument("--pdl-interface", default=None, help="Explicit network interface/IP for Pro DJ Link.")
     p.add_argument("--rig", default=None, help="Path to a custom rig JSON (default: the packaged 8-fixture default_rig.json).")
+    p.add_argument("--laser-height-override-m", type=float, default=None,
+                   help="TEST-ONLY: treat the laser's mount height as this many meters for the "
+                        "geometry safety gate (LASER-09/10/11), overriding the rig manifest's "
+                        "real declared height for this run only -- never persisted. Use only "
+                        "when you've independently confirmed the beam path is safe right now "
+                        "(protective eyewear, controlled aim, etc.); this does not make the "
+                        "physical fixture any safer, it only changes what the software allows.")
     p.add_argument("--audio-device", default=None, help="Explicit audio input device name/index for real audio analysis (default: auto-detect the XDJ).")
     p.add_argument("--log-level", default="INFO", help="DEBUG, INFO, WARNING, ERROR (default: INFO).")
     # Recording / feedback (capture a session to hand back for analysis).
@@ -162,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     config = AppConfig(demo=demo, dmx_rate_hz=args.rate, duration=args.duration,
                        pdl_interface=args.pdl_interface, rig_path=args.rig,
                        audio_device=args.audio_device,
+                       laser_height_override_m=args.laser_height_override_m,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)
 

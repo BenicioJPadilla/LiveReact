@@ -46,6 +46,14 @@ class AppConfig:
     session_dir: str | None = None            # where to record (set by the CLI)
     rig_path: str | None = None               # custom rig JSON; None = packaged default_rig.json
     audio_device: str | int | None = None     # explicit audio input device; None = auto-detect "XDJ"
+    laser_height_override_m: float | None = None  # SESSION-SCOPED test override for
+        # LASER-09/10/11's geometry safety gate (fixtures/profiles.py Laser.apply_safety).
+        # Deliberately NOT persisted to the rig manifest -- operator must type this
+        # explicitly every run (see __main__.py's --laser-height-override-m) so a real,
+        # below-minimum mount height never silently gets treated as compliant. Set
+        # ONLY when the operator has independently confirmed the beam path is safe for
+        # this specific session (e.g. protective eyewear, controlled aim) -- this does
+        # not change the fixture's actual physical safety, just what the software checks.
 
 
 class App:
@@ -80,6 +88,19 @@ class App:
 
         # --- show pipeline (Phases 3-4): snapshot -> engines -> merge -> frame buffer ---
         self.rig: Rig = load_rig(self.config.rig_path)
+        if self.config.laser_height_override_m is not None:
+            for fx in self.rig.by_role("laser"):
+                real = fx.mount_height_m
+                fx.mount_height_m = self.config.laser_height_override_m
+                log.warning(
+                    "LASER SAFETY OVERRIDE ACTIVE (%s): treating mount_height_m as "
+                    "%.2fm this session only -- real declared height is %s. This "
+                    "does not change the fixture's actual physical safety, only "
+                    "what the geometry check (LASER-09/10/11) allows. Not saved "
+                    "to the rig file.",
+                    fx.slot_id, self.config.laser_height_override_m,
+                    f"{real:.2f}m" if real is not None else "undeclared",
+                )
         self.manual = ManualParams()
         if self.config.config_path:
             app_config.load_into(self.manual, self.config.config_path)
