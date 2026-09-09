@@ -40,22 +40,63 @@ STROBE_THRESHOLD = 0.85  # energy_norm above which a gentle reactive strobe enga
                          # almost continuously (mechanical 1.5s-on/1.5s-off bursting,
                          # unrelated to the beat grid) -- read live as "turning on and off
                          # randomly, fluttering," not the intended rare accent.
-STROBE_MAX = 0.30       # conservative cap on the reactive strobe rate (0..1) -- raw
-                        # channel value, NOT a measured Hz. LIGHTING_BIBLE.md §11/§13
-                        # requires sustained strobing stay <=4Hz; this has never been
-                        # measured against the real fixture's actual DMX-to-Hz curve
-                        # (point a photodiode/camera at it and count, per §11's own
-                        # method) -- treat compliance as UNVERIFIED until that's done,
-                        # not confirmed either way by this cap alone.
-# Burst-duration limit + mandatory gap (LIGHTING_BIBLE.md §13, 2026-09-08 audit):
-# "assert strobe_burst_duration <= 1.5s then a mandatory gap." Previously the
-# reactive strobe could stay continuously nonzero for as long as energy stayed
-# above STROBE_THRESHOLD -- unbounded, possibly minutes during a sustained loud
+# Named Hz targets from LIGHTING_BIBLE.md §13 (SAFE-01..06, corrected
+# 2026-09-08 evidence-verification pass) -- kept here as the DOCUMENTED
+# TARGETS, not yet a working Hz clamp: nobody has measured this specific
+# wash bar's real DMX-byte-to-Hz curve (photodiode/camera count, per §11's
+# own method), and fabricating one would repeat the exact mistake the
+# correction pass exists to catch (see spec/conformance.md SAFE-01..06,
+# spec/FINDINGS.md). Reference these names once real calibration data
+# lets STROBE_MAX below be derived from an actual Hz ceiling instead of
+# the conservative placeholder it is now.
+SAFETY_STROBE_SUSTAINED_MAX_HZ = 4.0
+SAFETY_STROBE_ABSOLUTE_MAX_HZ = 8.0
+SAFETY_STROBE_FORBIDDEN_BAND_HZ = (10.0, 25.0)
+SAFETY_STROBE_STRICT_MODE_MAX_HZ = 2.0
+SAFETY_STROBE_RED_MAX_HZ = 3.0
+
+STROBE_MAX = 0.15       # INTERIM CONSERVATIVE CAP (2026-09-09, Stage 6 audit
+                        # fix, Josh's explicit call — see spec/FINDINGS.md
+                        # SAFE-01/02/03/05/06): lowered from 0.30 (byte ~76)
+                        # to 0.15 (byte ~38) specifically to sit well inside
+                        # the wash bar's real manual's own documented "slow"
+                        # sub-range (CH2: 0-9 off, 10-255 slow->fast) rather
+                        # than assume 76 was safe. This is NOT a measured-safe
+                        # value -- it's a deliberately conservative placeholder
+                        # chosen because *some* margin below the old cap is
+                        # strictly better than none while real Hz calibration
+                        # is still outstanding. Raise it only after measuring
+                        # this fixture's actual DMX-to-Hz curve, never by
+                        # guessing a bigger number feels fine by eye.
+# Burst-duration limit (LIGHTING_BIBLE.md §13, 2026-09-08 audit): "assert
+# strobe_burst_duration <= 1.5s then a mandatory gap." Previously the reactive
+# strobe could stay continuously nonzero for as long as energy stayed above
+# STROBE_THRESHOLD -- unbounded, possibly minutes during a sustained loud
 # section. This IS enforceable without knowing the real Hz mapping (it's a
-# software-side duty-cycle rule, not a hardware-calibration one), so fixed now.
-STROBE_MAX_BURST_S = 1.5     # a burst this long, then forced dark
-STROBE_MANDATORY_GAP_S = 1.5  # not itself specified by the Bible; matching the burst
-                              # length is a conservative default -- tune by ear/measurement
+# software-side duty-cycle rule, not a hardware-calibration one), so fixed then.
+STROBE_MAX_BURST_S = 1.5     # a single continuous strobe MOMENT runs at most this long
+
+# STROBE_MIN_SPACING_S -- CONFIRMED BUGGY, then fixed, 2026-09-08 (real
+# --hardware --record capture, see [[livereact-project]] memory): the original
+# 1.5s "mandatory gap" was sized to match the burst DURATION, not to space
+# separate strobe MOMENTS apart -- so during a sustained kick-heavy passage
+# (energy_norm pinned above STROBE_THRESHOLD for 30+ real seconds), the very
+# next tick after each 1.5s gap immediately re-triggered a new burst. Replayed
+# against tonight's actual captured energy_norm sequence (not guessed): 11
+# separate bursts crammed into one 36-second stretch, a continuous mechanical
+# on/off/on/off cycle -- confirmed live as "the wash bar trying to keep up
+# with the kicks... random stuttering," not the "rare accent" LIGHTING_BIBLE.md
+# §13 wants. Second bug, same root cause, fixed here too: a burst that ended
+# NATURALLY (energy dropped below threshold before hitting STROBE_MAX_BURST_S)
+# used to earn NO gap at all -- only a burst that hit the duration cap did --
+# so a moment ending naturally could restart on the very next tick. Both paths
+# (hit-the-cap and ended-naturally) now enforce the SAME minimum spacing
+# between the end of one moment and the start of the next.
+STROBE_MIN_SPACING_S = 8.0    # NOT yet tuned by ear/measurement, this project's
+                              # usual caveat -- long enough to break the
+                              # confirmed-live chaining into visibly separate
+                              # accents, short enough to still land more than
+                              # once across a long loud passage.
 
 # Direct audio-envelope-follower for wash/par brightness (docs/14 §5 REDESIGNED
 # 2026-09-03, Josh, in three passes):
@@ -250,6 +291,26 @@ HOLD_LOW = 0.35
 HOLD_HIGH = 0.65
 HOLD_BREATH_TAU_S = 1.0
 
+# Crossfade across a BUCKET CHANGE itself (2026-09-07, first real --hardware
+# --record capture, see [[livereact-project]] memory): each branch above
+# computes its own brightness independently, so a bucket flip used to just
+# overwrite `self.wash_level` outright -- a real capture showed jumps up to
+# |0.67| in a single ~40ms tick (e.g. DROP's held 0.9 landing straight on
+# BUILD's freshly-reset 0.2 the instant BUILD was re-entered). Combined with
+# 26 bucket flips in one real ~4min song, that read exactly like Josh's live
+# report: the wash bar "turning off and fluttering... doing some randomness."
+# Fix: blend `wash_level` toward the new bucket's target over
+# WASH_CROSSFADE_TAU_S instead of snapping, for every transition EXCEPT
+# entering DROP -- LIGHTING_BIBLE.md's own peak_full_rig/drop_blackout_hit
+# looks are explicit that "the cut IS the effect," so a drop landing should
+# stay a hard, instant hit; every other seam (including LEAVING drop) gets
+# smoothed. This is a blend on the SEAM only, not a permanent filter -- once
+# WASH_TRANSITION_WINDOW_S has passed, control reverts to the bucket's own
+# formula directly, so BUILD's ramp/HOLD's & BREAKDOWN's breathing behave
+# exactly as before (and their own existing tests still hold) once settled.
+WASH_CROSSFADE_TAU_S = 0.6
+WASH_TRANSITION_WINDOW_S = 3 * WASH_CROSSFADE_TAU_S  # ~95% converged by then
+
 
 class ReactiveLayerEngine:
     """Always-on beat/energy/color reactivity."""
@@ -275,6 +336,10 @@ class ReactiveLayerEngine:
         self._hold_breath = 0.0         # slow low-pass envelope, HOLD's (this project's own)
         self._last_bucket_tick_t: float | None = None    # dt for the breathing envelopes above
         self.wash_level = 0.0       # exposed for the console/tests: last computed 0..1 wash/par level
+        self._wash_transition_until = 0.0  # see WASH_CROSSFADE_TAU_S above -- 0.0 means "no
+                                            # active blend," which also correctly makes the
+                                            # very first tick ever a direct assignment (any
+                                            # real monotonic clock reads > 0.0)
 
     @property
     def name(self) -> str:
@@ -329,21 +394,29 @@ class ReactiveLayerEngine:
         return min(STROBE_MAX, scaled * STROBE_MAX)
 
     def _strobe_burst_gate(self, rate: float) -> float:
-        """Cap continuous strobing at STROBE_MAX_BURST_S, then force a
-        STROBE_MANDATORY_GAP_S dark gap before it can resume (LIGHTING_BIBLE.md
-        §13). Without this, `_strobe_rate` could stay nonzero for as long as
-        energy stayed above STROBE_THRESHOLD — unbounded, possibly minutes
-        during a sustained loud section."""
+        """Cap a single continuous strobe MOMENT at STROBE_MAX_BURST_S, then
+        enforce STROBE_MIN_SPACING_S before the next one can start (LIGHTING_
+        BIBLE.md §13) — CONFIRMED BUGGY then fixed 2026-09-08 (see
+        STROBE_MIN_SPACING_S's own comment above for the full story): a moment
+        ending EITHER way (hit the duration cap, or energy simply dropped
+        below threshold first) now earns the same minimum spacing before a new
+        one is allowed to start, so a sustained loud section can't chain
+        moments back-to-back with only a token gap between them."""
         now = self.clock.monotonic()
         if now < self._strobe_gap_until:
-            return 0.0  # serving the mandatory post-burst gap
+            return 0.0  # serving the minimum spacing before a new moment can start
         if rate <= 0.0:
-            self._strobe_burst_start = None  # energy dropped before hitting the cap; burst just ends
+            if self._strobe_burst_start is not None:
+                # the moment just ended naturally -- this earns the same
+                # cooldown as hitting the duration cap (both are "the moment
+                # is over," just two different reasons for it ending)
+                self._strobe_burst_start = None
+                self._strobe_gap_until = now + STROBE_MIN_SPACING_S
             return 0.0
         if self._strobe_burst_start is None:
             self._strobe_burst_start = now
         if now - self._strobe_burst_start >= STROBE_MAX_BURST_S:
-            self._strobe_gap_until = now + STROBE_MANDATORY_GAP_S
+            self._strobe_gap_until = now + STROBE_MIN_SPACING_S
             self._strobe_burst_start = None
             return 0.0
         return rate
@@ -389,22 +462,32 @@ class ReactiveLayerEngine:
         # beat-denominated; a "BUILD_RAMP_BARS" ramp needs the bar-denominated
         # helper instead, or it completes 4x too fast (found via testing).
         pos = musical_bar_position(snap)
-        if energy_bucket != self._prev_bucket:
-            if energy_bucket == EnergyBucket.BUILD:
-                self._build_entry_pos = pos
+        # Unguarded (fires on the very first tick too, prev_bucket=None ->
+        # always "entering" -- matches this ramp's pre-existing behavior of
+        # always starting a fresh BUILD from a real entry point, not just on
+        # a later re-entry).
+        entering_new_bucket = energy_bucket != self._prev_bucket
+        if entering_new_bucket and energy_bucket == EnergyBucket.BUILD:
+            self._build_entry_pos = pos
+        # Crossfade-arming is guarded on `self._prev_bucket is not None`,
+        # UNLIKE the build-entry reset above: the engine's very first tick
+        # ever has no meaningful prior state to blend FROM, and must land
+        # exactly on its bucket's target (existing tests rely on this) --
+        # which `now >= self._wash_transition_until` already gives it for
+        # free (0.0 initial value) as long as this stays unarmed that tick.
+        if self._prev_bucket is not None and entering_new_bucket and energy_bucket != EnergyBucket.DROP:
+            # (Re-)arm the crossfade window -- see WASH_CROSSFADE_TAU_S above.
+            # Entering DROP is deliberately excluded: that snap stays instant.
+            self._wash_transition_until = now + WASH_TRANSITION_WINDOW_S
         self._prev_bucket = energy_bucket
 
         if energy_bucket == EnergyBucket.DROP:
-            self.wash_level = DROP_INTENSITY
-            return self.wash_level
-
-        if energy_bucket == EnergyBucket.BUILD:
+            target = DROP_INTENSITY
+        elif energy_bucket == EnergyBucket.BUILD:
             entry = self._build_entry_pos if self._build_entry_pos is not None else pos
             progress = max(0.0, min(1.0, (pos - entry) / BUILD_RAMP_BARS))
-            self.wash_level = BUILD_LOW + (BUILD_HIGH - BUILD_LOW) * progress
-            return self.wash_level
-
-        if energy_bucket == EnergyBucket.BREAKDOWN:
+            target = BUILD_LOW + (BUILD_HIGH - BUILD_LOW) * progress
+        elif energy_bucket == EnergyBucket.BREAKDOWN:
             # Normalize energy WITHIN this bucket's own range (0..BREAKDOWN_MAX)
             # before using it as the breathing target -- using the raw value
             # directly (found via testing) can never actually reach
@@ -412,19 +495,23 @@ class ReactiveLayerEngine:
             # definition of being in this bucket at all. energy_norm, not raw
             # snap.energy -- same reasoning as the bucket boundary above, this
             # threshold means nothing against a fixed absolute number.
-            target = min(1.0, snap.energy_norm / BREAKDOWN_MAX)
+            breath_target = min(1.0, snap.energy_norm / BREAKDOWN_MAX)
             coeff = 1 - math.exp(-dt / BREAKDOWN_BREATH_TAU_S)
-            self._breakdown_breath += coeff * (target - self._breakdown_breath)
-            self.wash_level = BREAKDOWN_LOW + (BREAKDOWN_HIGH - BREAKDOWN_LOW) * self._breakdown_breath
-            return self.wash_level
+            self._breakdown_breath += coeff * (breath_target - self._breakdown_breath)
+            target = BREAKDOWN_LOW + (BREAKDOWN_HIGH - BREAKDOWN_LOW) * self._breakdown_breath
+        else:  # HOLD -- this project's own extrapolation, see the constants
+            # above. Same within-bucket normalization as BREAKDOWN, over
+            # HOLD's own [BUILD_MAX, HOLD_MAX) range, same energy_norm reasoning.
+            breath_target = min(1.0, max(0.0, (snap.energy_norm - BUILD_MAX) / (HOLD_MAX - BUILD_MAX)))
+            coeff = 1 - math.exp(-dt / HOLD_BREATH_TAU_S)
+            self._hold_breath += coeff * (breath_target - self._hold_breath)
+            target = HOLD_LOW + (HOLD_HIGH - HOLD_LOW) * self._hold_breath
 
-        # HOLD -- this project's own extrapolation, see the constants above.
-        # Same within-bucket normalization as BREAKDOWN, over HOLD's own
-        # [BUILD_MAX, HOLD_MAX) range, and same energy_norm reasoning.
-        target = min(1.0, max(0.0, (snap.energy_norm - BUILD_MAX) / (HOLD_MAX - BUILD_MAX)))
-        coeff = 1 - math.exp(-dt / HOLD_BREATH_TAU_S)
-        self._hold_breath += coeff * (target - self._hold_breath)
-        self.wash_level = HOLD_LOW + (HOLD_HIGH - HOLD_LOW) * self._hold_breath
+        if energy_bucket == EnergyBucket.DROP or now >= self._wash_transition_until:
+            self.wash_level = target  # settled, or a deliberately-instant DROP cut
+        else:
+            crossfade_coeff = 1 - math.exp(-dt / WASH_CROSSFADE_TAU_S)
+            self.wash_level += crossfade_coeff * (target - self.wash_level)
         return self.wash_level
 
     def _kick_pulse(self, snap: ShowSnapshot) -> float:

@@ -6,7 +6,7 @@ import pytest
 
 from livereact.clock import FakeClock
 from livereact.core.show_state import ShowSnapshot
-from livereact.engines.reactive import ReactiveLayerEngine
+from livereact.engines.reactive import STROBE_MAX, ReactiveLayerEngine
 from livereact.fixtures.rig import load_rig
 from livereact.scenes.catalog import bucket_for_energy
 
@@ -118,18 +118,31 @@ def test_low_energy_keeps_strobe_off():
 
 
 def test_high_energy_engages_capped_strobe():
+    """Cap value itself is a Stage 6 audit fix (spec/FINDINGS.md SAFE-01/02/
+    03/05/06): lowered from 0.30 to 0.15 as an interim conservative
+    placeholder pending real Hz calibration -- import STROBE_MAX rather than
+    hardcode it here, so this test can't silently drift from the real
+    constant again."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     bar = rig.fixture("bar_l")
     c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
     strobe = c.values[bar.offset + 1]
-    assert 0 < strobe <= int(0.30 * 255) + 1  # engaged but conservatively capped
+    assert 0 < strobe <= int(STROBE_MAX * 255) + 1  # engaged but conservatively capped
 
 
-# --- strobe burst-duration cap + mandatory gap (LIGHTING_BIBLE.md §13, 2026-09-08) ---
+# --- strobe burst-duration cap + minimum spacing (LIGHTING_BIBLE.md §13,
+# 2026-09-08 audit; spacing CONFIRMED BUGGY then fixed same-day evening via a
+# real --hardware --record capture, see [[livereact-project]] memory and
+# STROBE_MIN_SPACING_S's own comment in reactive.py for the full story) ---
 # Previously a sustained loud section could hold the strobe on indefinitely --
-# no burst-duration limit at all. Now capped at STROBE_MAX_BURST_S, then a
-# forced STROBE_MANDATORY_GAP_S dark gap before it can resume.
+# no burst-duration limit at all. Capped at STROBE_MAX_BURST_S, then a gap --
+# but the FIRST gap value (1.5s, sized to match the burst duration, not to
+# space separate moments apart) let a sustained loud section re-trigger
+# almost immediately, confirmed live as a continuous on/off "stutter," not a
+# rare accent. STROBE_MIN_SPACING_S (8.0s) replaces it, and now applies
+# whether a moment ends by hitting the cap OR by energy simply dropping first
+# -- both used to be handled differently, which was itself part of the bug.
 
 
 def test_strobe_cuts_off_after_the_max_burst_duration():
@@ -145,7 +158,7 @@ def test_strobe_cuts_off_after_the_max_burst_duration():
     assert c.values[bar.offset + 1] == 0  # forced dark once the burst limit is hit
 
 
-def test_strobe_stays_off_for_the_mandatory_gap_then_resumes():
+def test_strobe_stays_off_for_the_minimum_spacing_then_resumes():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
@@ -153,18 +166,21 @@ def test_strobe_stays_off_for_the_mandatory_gap_then_resumes():
     eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
     clock.advance(1.5)
     eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)  # burst cap trips here
-    clock.advance(1.0)  # still within the mandatory gap (1.5s)
+    clock.advance(5.0)  # still well within STROBE_MIN_SPACING_S (8.0s)
     c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
     assert c.values[bar.offset + 1] == 0  # still gapped, even though energy is still high
-    clock.advance(0.6)  # now past the 1.5s gap
+    clock.advance(3.1)  # now past the 8.0s minimum spacing
     c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
     assert c.values[bar.offset + 1] > 0  # allowed to strobe again
 
 
-def test_strobe_burst_timer_resets_when_energy_drops_before_the_cap():
-    """A burst that ends naturally (energy drops below threshold) before
-    hitting the duration cap should NOT count against a future burst -- only
-    a burst that actually hits the cap earns a mandatory gap."""
+def test_strobe_ending_naturally_also_earns_the_minimum_spacing():
+    """THE ACTUAL CONFIRMED BUG (2026-09-08 real capture): a moment ending
+    naturally (energy drops below threshold before hitting the duration cap)
+    used to earn NO spacing at all -- only hitting the cap did -- so a
+    sustained kick-heavy passage could re-trigger on literally the next tick.
+    Replayed against real captured energy_norm: 11 separate bursts crammed
+    into 36 real seconds. Both paths must now enforce the same spacing."""
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
@@ -172,9 +188,12 @@ def test_strobe_burst_timer_resets_when_energy_drops_before_the_cap():
     eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
     clock.advance(0.5)  # well under the 1.5s cap
     eng.tick(_snap(energy=0.5, beat_phase=0.0), rig)  # energy drops, strobe naturally off
-    clock.advance(0.1)
-    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)  # a fresh burst begins
-    assert c.values[bar.offset + 1] > 0  # not gated -- the prior burst never hit the cap
+    clock.advance(0.1)  # nowhere near STROBE_MIN_SPACING_S (8.0s)
+    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    assert c.values[bar.offset + 1] == 0  # gated -- a natural end earns spacing too now
+    clock.advance(8.0)  # now past the minimum spacing
+    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    assert c.values[bar.offset + 1] > 0  # allowed to strobe again
 
 
 # --- kick-envelope-follower (docs/14 §5, REDESIGNED 2026-09-03) -------------
@@ -399,15 +418,28 @@ def test_build_bucket_ramps_from_bar_position_not_audio():
 
 def test_build_ramp_restarts_on_a_fresh_entry():
     """Leaving BUILD and re-entering later must restart the ramp from
-    BUILD_LOW, not continue from wherever it left off."""
+    BUILD_LOW, not continue from wherever it left off. Re-entry now crosses
+    the bucket-change CROSSFADE (2026-09-07, see WASH_CROSSFADE_TAU_S in
+    reactive.py) since this is a DROP->BUILD transition, not a DROP entry --
+    so the immediate value blends toward BUILD_LOW rather than snapping,
+    settling there once WASH_TRANSITION_WINDOW_S has passed."""
+    clock = FakeClock()
     rig = load_rig()
-    eng = ReactiveLayerEngine(FakeClock())
+    eng = ReactiveLayerEngine(clock)
 
     eng.tick(_snap(energy=0.4, bar=0, beat_in_bar=1, beat_phase=0.0), rig)
     eng.tick(_snap(energy=0.4, bar=8, beat_in_bar=1, beat_phase=0.0), rig)  # ramp completes
     eng.tick(_snap(energy=0.9, bar=9, beat_in_bar=1, beat_phase=0.0), rig)  # a drop happens
+    assert eng.wash_level == 0.9  # DROP_INTENSITY -- entering DROP always snaps instantly
+
+    clock.advance(0.05)
+    eng.tick(_snap(energy=0.4, bar=20, beat_in_bar=1, beat_phase=0.0), rig)  # BUILD re-entered
+    just_after = eng.wash_level
+    assert 0.2 < just_after < 0.9  # blending toward BUILD_LOW, not yet snapped either way
+
+    clock.advance(2.0)  # past WASH_TRANSITION_WINDOW_S -- blend has settled
     eng.tick(_snap(energy=0.4, bar=20, beat_in_bar=1, beat_phase=0.0), rig)
-    assert eng.wash_level == 0.2  # back to BUILD_LOW, not still at BUILD_HIGH
+    assert eng.wash_level == 0.2  # back to BUILD_LOW, not still at BUILD_HIGH/DROP
 
 
 def test_breakdown_bucket_breathes_slowly_toward_its_range():
@@ -428,6 +460,39 @@ def test_breakdown_bucket_breathes_slowly_toward_its_range():
     assert first < settled  # rose over time, didn't jump instantly
     for value in (first, settled):
         assert 0.15 <= value <= 0.35
+
+
+def test_non_drop_bucket_change_crossfades_instead_of_snapping():
+    """The generalized fix (2026-09-07 real --hardware --record capture, see
+    [[livereact-project]] memory): NOT just BUILD's own restart (see the test
+    above) -- ANY bucket change other than entering DROP should blend, not
+    snap. The confirmed-live capture's flutter was dominated by DROP<->HOLD/
+    BUILD swings, but the mechanism applies to every non-DROP seam, e.g. a
+    real HOLD->BREAKDOWN drop-off."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+
+    # settle into HOLD at a clearly mid-range level
+    for _ in range(20):
+        eng.tick(_snap(energy=0.65, beat_phase=0.0), rig)
+        clock.advance(0.5)
+    # one more tick right after the loop's last advance, so _last_bucket_tick_t
+    # reflects "now" -- otherwise the upcoming small clock.advance(0.05) would
+    # actually hand the crossfade the loop's full unconsumed 0.5s dt instead
+    eng.tick(_snap(energy=0.65, beat_phase=0.0), rig)
+    settled_hold = eng.wash_level
+    assert 0.35 <= settled_hold <= 0.65
+
+    # drop straight to BREAKDOWN
+    clock.advance(0.05)
+    eng.tick(_snap(energy=0.15, beat_phase=0.0), rig)
+    just_after = eng.wash_level
+    assert just_after > 0.35  # still blending down, not snapped into BREAKDOWN's own range yet
+
+    clock.advance(2.0)  # past WASH_TRANSITION_WINDOW_S -- blend has settled
+    eng.tick(_snap(energy=0.15, beat_phase=0.0), rig)
+    assert eng.wash_level <= 0.35  # now genuinely settled into BREAKDOWN's range
 
 
 def test_hold_bucket_breathes_faster_than_breakdown():

@@ -86,9 +86,13 @@ def test_master_brightness_scales_dimmers():
 
 def test_lasers_cannot_be_nonzero_unless_enabled():
     """Isolates the arm gate specifically — laser_flash_active=True so the
-    docs/14 §3 onset gate (tested separately above) doesn't also zero it."""
+    docs/14 §3 onset gate (tested separately above) doesn't also zero it.
+    `mount_height_m` set to a safe value (Stage 6 audit fix, LASER-08/09/10/
+    11) so this test isolates the arm switch, not the new geometry check —
+    see test_merge.py's own laser-geometry test below for that half."""
     rig = _rig()
     laser = rig.fixture("laser_l")
+    laser.mount_height_m = 3.0
     c = Contribution()
     laser.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=0.5)
 
@@ -97,6 +101,24 @@ def test_lasers_cannot_be_nonzero_unless_enabled():
 
     on = render_universe([c], rig, ManualParams(laser_enable=True), laser_flash_active=True)
     assert on[laser.offset] == Laser.MANUAL_PATTERN_MODE  # CH1 enabled
+
+
+def test_laser_geometry_gate_zeros_the_laser_independently_of_arm():
+    """LIGHTING_BIBLE.md §8.6, LASER-08/09/10/11 (Stage 6 audit fix): armed
+    and flashing is not enough on its own — undeclared or unsafe beam-height
+    geometry forces the laser off regardless."""
+    rig = _rig()
+    laser = rig.fixture("laser_l")
+    c = Contribution()
+    laser.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=0.5)
+
+    armed = ManualParams(laser_enable=True)
+    undeclared = render_universe([c], rig, armed, laser_flash_active=True)
+    assert all(undeclared[laser.offset + i] == 0 for i in range(12))
+
+    laser.mount_height_m = 3.0
+    now_safe = render_universe([c], rig, armed, laser_flash_active=True)
+    assert now_safe[laser.offset] == Laser.MANUAL_PATTERN_MODE
 
 
 def test_strobe_capped_on_finalize():
@@ -140,9 +162,12 @@ def test_finalize_bounds_movement_around_a_calibrated_home_position():
 
 def test_laser_flash_gate_zeros_the_laser_independently_of_scene_and_arm():
     """docs/14 §3: even armed + an eligible scene set a pattern, the laser
-    stays off through finalize() unless a real onset flash is active."""
+    stays off through finalize() unless a real onset flash is active.
+    `mount_height_m` set to a safe value (Stage 6 audit fix, LASER-08/09/10/
+    11) so this test isolates the onset gate, not the new geometry check."""
     rig = _rig()
     laser = rig.fixture("laser_l")
+    laser.mount_height_m = 3.0
     c = Contribution()
     laser.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=0.5)
     armed = ManualParams(laser_enable=True)

@@ -166,6 +166,20 @@ class Fixture:
         # fixture-test panel's "Save as Home Position" button.
         self.home_pan: float | None = None
         self.home_tilt: float | None = None
+        # Laser beam-height safety geometry (LIGHTING_BIBLE.md §8.6,
+        # LASER-08/09/10/11 -- Stage 6 audit fix, 2026-09-09). Generic on the
+        # base class (same pattern as home_pan/home_tilt) though only `Laser`
+        # currently checks it in apply_safety(). Fail-closed on undeclared
+        # geometry, matching the spec literally: `mount_height_m is None`
+        # (never configured) forces the laser off, same as a declared height
+        # below `min_beam_height_m`. `fda_variance_on_file` is deliberately
+        # NOT modeled or enforced here: Josh has explicitly deprioritized
+        # that paperwork for solo/no-audience testing (see
+        # [[livereact-lighting-bible]] memory) -- this is a real eye-safety
+        # geometry check, not a compliance gate, so it doesn't depend on
+        # variance status.
+        self.mount_height_m: float | None = None
+        self.min_beam_height_m: float = 3.0
 
     # --- geometry ---
     @property
@@ -429,7 +443,19 @@ class Laser(Fixture):
     def apply_safety(self, uni: bytearray, laser_enabled: bool) -> None:
         # Fail-safe: unless explicitly enabled this run, the entire fixture is zeroed
         # (CH1=0 => laser off). Drop-scene gating is layered on top in Phase 4.
-        if not laser_enabled:
+        #
+        # Beam-height geometry check (LIGHTING_BIBLE.md §8.6, LASER-08/09/10/11
+        # -- Stage 6 audit fix, 2026-09-09, Josh's explicit call): this unit
+        # has no pan/tilt (channel_kinds() is all ChannelKind.LASER, confirmed
+        # in the conformance audit) -- its beam trajectory is fixed by
+        # physical installation, not DMX-controllable, so this is a one-time
+        # installation-time check, not a per-tick dynamic clamp. Fails closed
+        # on undeclared geometry, matching the spec literally: `mount_height_m
+        # is None` (never configured in the rig manifest) forces off, same as
+        # a declared height below `min_beam_height_m`. Deliberately does NOT
+        # check `fda_variance_on_file` -- see `__init__`'s comment on why.
+        geometry_unsafe = self.mount_height_m is None or self.mount_height_m < self.min_beam_height_m
+        if not laser_enabled or geometry_unsafe:
             for i in range(self.offset, self.offset + self.channel_count):
                 uni[i] = 0
 

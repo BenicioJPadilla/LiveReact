@@ -44,9 +44,13 @@ def test_window_constructs_and_updates(qapp):
 def test_demo_universe_lasers_flash_within_the_drop_window_not_held_on(qapp):
     """docs/14 §3: within a drop window the laser should flash near beat-like
     pulse peaks, not stay continuously on for the whole window (the old,
-    pre-onset-gate behavior this test used to check for)."""
+    pre-onset-gate behavior this test used to check for).
+    `mount_height_m` set to a safe value (Stage 6 audit fix, LASER-08/09/10/
+    11) so the demo's already-armed laser isn't also gated by the new
+    beam-height geometry check this test isn't about."""
     rig = load_rig()
     laser = rig.fixture("laser_l")
+    laser.mount_height_m = 3.0
     samples = [build_demo_universe(rig, i * 0.05)[laser.offset] for i in range(80)]  # t = 0..4s
     assert any(v != 0 for v in samples), "laser never flashed within the drop window"
     assert any(v == 0 for v in samples), "laser held on for the whole drop window"

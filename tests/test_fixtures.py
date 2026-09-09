@@ -229,11 +229,39 @@ def test_dotted_line_sweep_speed_scales_with_intensity():
 
 
 def test_laser_safety_leaves_channels_when_enabled():
+    """mount_height_m set to a safe value (Stage 6 audit fix, LASER-08/09/10/
+    11): apply_safety now ALSO fails closed on undeclared/unsafe beam-height
+    geometry, isolated from the arm switch this test is actually about --
+    see test_laser_safety_zeros_channels_on_undeclared_geometry below for
+    that half."""
     laser = Laser(31, "Laser", "laser", "left")
+    laser.mount_height_m = 3.0
     uni = _uni()
     uni[laser.offset] = Laser.MANUAL_PATTERN_MODE
     laser.apply_safety(uni, laser_enabled=True)
     assert uni[laser.offset] == Laser.MANUAL_PATTERN_MODE  # untouched when enabled
+
+
+def test_laser_safety_zeros_channels_on_undeclared_geometry():
+    """LIGHTING_BIBLE.md §8.6, LASER-08/09/10/11 (Stage 6 audit fix,
+    2026-09-09): even armed, the laser fails closed if `mount_height_m` was
+    never declared in the rig manifest -- fixes a real, previously-confirmed
+    gap where safety depended entirely on the operator's arm switch with no
+    geometry precondition at all."""
+    laser = Laser(31, "Laser", "laser", "left")
+    uni = _uni()
+    uni[laser.offset] = Laser.MANUAL_PATTERN_MODE
+    laser.apply_safety(uni, laser_enabled=True)
+    assert uni[laser.offset] == 0  # undeclared geometry -- forced off despite being armed
+
+
+def test_laser_safety_zeros_channels_below_the_minimum_beam_height():
+    laser = Laser(31, "Laser", "laser", "left")
+    laser.mount_height_m = 2.5  # below the 3.0 m default minimum
+    uni = _uni()
+    uni[laser.offset] = Laser.MANUAL_PATTERN_MODE
+    laser.apply_safety(uni, laser_enabled=True)
+    assert uni[laser.offset] == 0
 
 
 def test_laser_onset_gate_zeros_when_not_flashing():

@@ -121,5 +121,11 @@ def _rig_from_dict(data: dict) -> Rig:
         if "home_pan" in slot and "home_tilt" in slot:
             fx.home_pan = float(slot["home_pan"])
             fx.home_tilt = float(slot["home_tilt"])
+        # Optional laser beam-height safety geometry (LIGHTING_BIBLE.md §8.6,
+        # LASER-08/09/10/11 -- Stage 6 audit fix) — see Fixture.mount_height_m.
+        if "mount_height_m" in slot:
+            fx.mount_height_m = float(slot["mount_height_m"])
+        if "safe_projection" in slot and "min_beam_height_m" in slot["safe_projection"]:
+            fx.min_beam_height_m = float(slot["safe_projection"]["min_beam_height_m"])
         fixtures.append(fx)
     return Rig(name=data.get("name", "rig"), fixtures=fixtures)
