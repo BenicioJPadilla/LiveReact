@@ -55,6 +55,19 @@ same spirit as the wash/par bucket-model build the same session --
   that was spent actively flashing), not just a per-burst cap.
 NOT built: the Bible's "except one build-climax reveal" exception -- a
 deliberate scope cut, flagged rather than silently skipped.
+
+Scene-awareness gate (2026-09-07, CONFIRMED live via a real --hardware
+--record capture, see [[livereact-project]] memory): this detector and
+`PhraseEngine`'s scene rotation were fully independent systems that had never
+been wired together -- a real session showed ALL 21 laser flashes that
+session firing during "Slow Color Cycle"/"Deep Wash Breathe" (both
+`uses_lasers=False`), meaning every one was invisible yet still spent the
+`MIN_SPACING_S`/`MAX_DUTY` budget above for nothing. `update()` now takes an
+explicit `scene_uses_lasers` flag (the caller's job to supply the active
+scene's own value -- this module still has no scene knowledge of its own,
+same separation-of-concerns as everything else here) and gates on it
+alongside the DROP/spacing/duty checks. Defaults to True so every existing
+caller/test that doesn't pass it keeps its prior (scene-unaware) behavior.
 """
 
 from __future__ import annotations
@@ -112,8 +125,11 @@ class LaserOnsetDetector:
         self._last_flash_end_t = -1e9  # far in the past -- the first-ever flash isn't spacing-gated
         self.active = False  # exposed for the console
 
-    def update(self, snap: ShowSnapshot) -> bool:
-        """Returns whether the laser flash gate should be open right now."""
+    def update(self, snap: ShowSnapshot, scene_uses_lasers: bool = True) -> bool:
+        """Returns whether the laser flash gate should be open right now.
+        `scene_uses_lasers` -- whether the currently-active scene can even
+        show a laser at all (see the scene-awareness note above); defaults to
+        True so existing callers/tests that don't pass it are unaffected."""
         now = self.clock.monotonic()
         dt = (now - self._last_tick_t) if self._last_tick_t is not None else 0.0
         self._last_tick_t = now
@@ -154,6 +170,7 @@ class LaserOnsetDetector:
             (self._total_flash_s / self._total_elapsed_s) < self.max_duty
 
         if (warmed_up
+                and scene_uses_lasers      # confirmed live: don't spend the budget on an invisible fire
                 and in_drop                # LIGHTING_BIBLE.md §8.5: drops (and peaks) only
                 and spaced_out              # "...≥2 phrases apart so it stays special"
                 and under_duty              # "...active <=10% of set time"

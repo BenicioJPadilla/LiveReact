@@ -18,6 +18,25 @@ BREAKDOWN_MAX = 0.30
 BUILD_MAX = 0.55
 HOLD_MAX = 0.80
 
+# Bucket-boundary hysteresis (2026-09-07 real --hardware --record session,
+# see [[livereact-project]] memory): BUCKET_MIN_DWELL_S alone (metronome.py)
+# only guards against a candidate committing too QUICKLY -- it does nothing
+# once a bucket has already committed. A real ~4min capture showed 26 bucket
+# flips, mostly DROP<->HOLD/BUILD ping-pong every few (as little as ~1.2s)
+# seconds -- energy_norm spending a long stretch hovering right at a boundary
+# (DROP sat at 45% of a real song, far more than any actual "drop" section),
+# re-triggering a fresh dwell-timer race each time it crossed back. Josh's
+# own words: the wash bar "turning off and fluttering... doing some
+# randomness." Fix: once a bucket is committed, energy must clear the
+# boundary by MARGIN in the direction of travel before even becoming a new
+# candidate -- not just touch it. `bucket_for_energy` itself (stateless,
+# tested directly in several places) is left untouched; this wraps it with
+# the committed bucket as the anchor, used only by metronome.py's debounce.
+HYSTERESIS_MARGIN = 0.05
+
+_BUCKET_ORDER = (EnergyBucket.BREAKDOWN, EnergyBucket.BUILD, EnergyBucket.HOLD, EnergyBucket.DROP)
+_BUCKET_BOUNDARIES = (BREAKDOWN_MAX, BUILD_MAX, HOLD_MAX)  # boundary i sits between order[i]/order[i+1]
+
 
 def bucket_for_energy(energy: float) -> EnergyBucket:
     if energy < BREAKDOWN_MAX:
@@ -27,6 +46,24 @@ def bucket_for_energy(energy: float) -> EnergyBucket:
     if energy < HOLD_MAX:
         return EnergyBucket.HOLD
     return EnergyBucket.DROP
+
+
+def bucket_for_energy_with_hysteresis(
+    energy: float, committed: EnergyBucket, margin: float = HYSTERESIS_MARGIN
+) -> EnergyBucket:
+    """Like `bucket_for_energy`, but anchored on the currently-committed
+    bucket: a boundary only counts as crossed once `energy` clears it by
+    `margin` in the direction of travel, so hovering within `margin` of a
+    boundary (found live, see above) can't even start a new debounce
+    candidate. Walks one boundary at a time from `committed` toward wherever
+    `energy` actually is, so a big jump (e.g. a real drop) still resolves to
+    the right bucket in one call, not just the adjacent one."""
+    idx = _BUCKET_ORDER.index(committed)
+    while idx < len(_BUCKET_BOUNDARIES) and energy >= _BUCKET_BOUNDARIES[idx] + margin:
+        idx += 1
+    while idx > 0 and energy < _BUCKET_BOUNDARIES[idx - 1] - margin:
+        idx -= 1
+    return _BUCKET_ORDER[idx]
 
 
 class SceneCatalog:

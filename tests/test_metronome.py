@@ -227,9 +227,16 @@ def test_energy_norm_passes_raw_energy_through_when_audio_is_stale():
     assert snap.energy_norm == pytest.approx(snap.energy, abs=1e-9)
 
 
-# --- bucket debounce (2026-09-07, found live + via offline replay on a real
-# track) --- bucket_for_energy flapped near its own boundaries; a candidate
-# bucket must now persist for BUCKET_MIN_DWELL_S before it's committed to.
+# --- bucket debounce + hysteresis (2026-09-07, found live + via offline
+# replay on a real track; RE-TUNED 2026-09-07 evening after a real
+# --hardware --record capture, see [[livereact-project]] memory) ---
+# bucket_for_energy flapped near its own boundaries; a candidate bucket must
+# persist for BUCKET_MIN_DWELL_S before it's committed to. The dwell alone
+# turned out not to be enough once tested against a real ~4min song (26
+# flips, several under BUCKET_MIN_DWELL_S's old 1.0s value once compounded
+# across a boundary crossed repeatedly) -- BUCKET_MIN_DWELL_S was raised
+# 1.0->3.0, and `bucket_for_energy_with_hysteresis` now also requires
+# clearing a boundary by HYSTERESIS_MARGIN before a candidate even starts.
 # Drives _derive_bucket directly (bypassing tick()'s own _derive_energy_norm,
 # which would otherwise overwrite the manually-set energy_norm each call) --
 # same white-box style as the laser trigger's duty-cap tests.
@@ -259,7 +266,7 @@ def test_bucket_commits_after_persisting_past_the_dwell_time():
     m = _metronome(clock)
     m._energy_norm = 0.9  # DROP-range
     m._derive_bucket(clock.monotonic())
-    clock.advance(1.1)  # past BUCKET_MIN_DWELL_S, still DROP-range the whole time
+    clock.advance(3.1)  # past BUCKET_MIN_DWELL_S (3.0), still DROP-range the whole time
     m._derive_bucket(clock.monotonic())
     assert m._bucket_committed.value == "drop"
 
@@ -272,15 +279,38 @@ def test_bucket_candidate_restarts_if_a_different_bucket_appears_first():
     m = _metronome(clock)
     m._energy_norm = 0.9  # DROP-range candidate begins
     m._derive_bucket(clock.monotonic())
-    clock.advance(0.9)  # close to committing, but not quite
-    m._energy_norm = 0.6  # HOLD-range -- a different candidate pre-empts DROP
+    clock.advance(2.9)  # close to committing, but not quite
+    m._energy_norm = 0.65  # HOLD-range (comfortably past BUILD_MAX+HYSTERESIS_MARGIN=0.60,
+                            # so this is unambiguously a HOLD candidate) -- pre-empts DROP
     m._derive_bucket(clock.monotonic())
-    clock.advance(0.9)  # would have been enough time for the ORIGINAL candidate
+    clock.advance(2.9)  # would have been enough time for the ORIGINAL candidate
     m._derive_bucket(clock.monotonic())
     assert m._bucket_committed.value == "breakdown"  # HOLD hasn't dwelled long enough yet
-    clock.advance(0.2)  # now past 1.0s since HOLD became the candidate
+    clock.advance(0.2)  # now past 3.0s since HOLD became the candidate
     m._derive_bucket(clock.monotonic())
     assert m._bucket_committed.value == "hold"
+
+
+def test_bucket_hovering_within_the_margin_of_a_boundary_never_becomes_a_candidate():
+    """The actual live bug (2026-09-07 real capture): energy_norm can sit
+    within a hair of a boundary for a real stretch of a song. Once settled in
+    HOLD, hovering just above/below HOLD_MAX (0.80) without ever clearing it
+    by HYSTERESIS_MARGIN must never commit to DROP -- the committed bucket
+    should just stay put, however long real time passes."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.65  # squarely HOLD, nowhere near a boundary
+    m._derive_bucket(clock.monotonic())
+    clock.advance(3.1)  # past BUCKET_MIN_DWELL_S -- HOLD is now the committed bucket
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed.value == "hold"
+
+    for energy in (0.78, 0.81, 0.79, 0.82, 0.80):  # all within +-0.03 of HOLD_MAX=0.80,
+                                                     # i.e. inside the +-0.05 margin
+        m._energy_norm = energy
+        m._derive_bucket(clock.monotonic())
+        clock.advance(1.0)
+    assert m._bucket_committed.value == "hold"  # never even started a real DROP candidate
 
 
 def test_midi_and_transition_and_status_update_state():

@@ -96,6 +96,7 @@ class App:
         self.show_engine = ShowEngine(
             self.show_state, self.rig, self.frame_buffer, self.engines,
             self.manual, self.clock, self.stop_event,
+            phrase_engine=self.phrase_engine,
         )
 
         # Core engine threads (always present). Input sources are managed separately

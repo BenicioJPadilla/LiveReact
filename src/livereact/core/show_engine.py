@@ -40,6 +40,7 @@ class ShowEngine(threading.Thread):
         clock: Clock,
         stop_event: threading.Event,
         hz: float = 60.0,
+        phrase_engine=None,
     ) -> None:
         super().__init__(name="show-engine", daemon=False)
         self.show_state = show_state
@@ -50,6 +51,14 @@ class ShowEngine(threading.Thread):
         self.clock = clock
         self.stop_event = stop_event
         self.hz = hz
+        # Named reference (2026-09-07, see [[livereact-project]] memory) so the
+        # laser trigger can be gated on the ACTIVE scene's own `uses_lasers` --
+        # confirmed live that without this, the laser fires happily during
+        # scenes that can't even show it. Optional/defaults None (rather than
+        # required) so anything constructing a bare ShowEngine without a
+        # PhraseEngine (e.g. a minimal test harness) still works -- the gate
+        # just falls back to LaserOnsetDetector's own default (True) then.
+        self.phrase_engine = phrase_engine
         self._last: dict[str, Contribution] = {}
         self._last_tick_t: float | None = None  # for dt -> movement slew-limiting (LIGHTING_BIBLE.md §6.6)
         self.silence = SilenceDetector(clock)  # docs/14 §2; .active exposed for the console
@@ -87,7 +96,8 @@ class ShowEngine(threading.Thread):
         self._last_tick_t = now
 
         auto_blackout = self.silence.update(snap)
-        laser_flash = self.laser_trigger.update(snap)
+        scene_uses_lasers = self.phrase_engine._current.uses_lasers if self.phrase_engine else True
+        laser_flash = self.laser_trigger.update(snap, scene_uses_lasers)
         frame = finalize(merge_contributions(contributions, self.rig), self.rig, self.manual,
                           auto_blackout, laser_flash, dt)
         self.frame_buffer.publish(frame)

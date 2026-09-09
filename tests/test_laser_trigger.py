@@ -227,3 +227,38 @@ def test_duty_cap_allows_a_trigger_once_diluted_back_under_budget():
     d._total_elapsed_s = 1000.0
     d._total_flash_s = 20.0  # 2% -- well under the default 10% budget
     assert d.update(_snap(audio_band_low_abs=10.0, energy=0.9)) is True
+
+
+# --- scene-awareness gate (2026-09-07, CONFIRMED live via a real --hardware
+# --record capture, see [[livereact-project]] memory): a real session showed
+# every laser fire that night happening during a scene that couldn't even
+# show it -- `update()` now takes `scene_uses_lasers` and gates on it.
+
+
+def test_defaults_to_scene_unaware_when_the_caller_omits_the_flag():
+    """Every pre-existing call site/test above doesn't pass scene_uses_lasers
+    at all -- must keep firing exactly as before (default True)."""
+    clock = FakeClock()
+    d = LaserOnsetDetector(clock)
+    _warm_up(d, clock, audio_band_low_abs=1.0, energy=0.9)
+    assert d.update(_snap(audio_band_low_abs=10.0, energy=0.9)) is True
+
+
+def test_scene_uses_lasers_false_blocks_an_otherwise_valid_trigger():
+    clock = FakeClock()
+    d = LaserOnsetDetector(clock)
+    _warm_up(d, clock, audio_band_low_abs=1.0, energy=0.9)
+    # identical to a triggering case above, except the active scene can't show it
+    assert d.update(_snap(audio_band_low_abs=10.0, energy=0.9), scene_uses_lasers=False) is False
+
+
+def test_scene_uses_lasers_false_does_not_spend_the_spacing_budget():
+    """The actual confirmed-live waste: a blocked fire must not count as a
+    laser 'moment' at all -- a real trigger right after should still be
+    allowed, not gated by MIN_SPACING_S as if the blocked one had happened."""
+    clock = FakeClock()
+    d = LaserOnsetDetector(clock)  # default min_spacing_s=120.0
+    _warm_up(d, clock, audio_band_low_abs=1.0, energy=0.9)
+    assert d.update(_snap(audio_band_low_abs=10.0, energy=0.9), scene_uses_lasers=False) is False
+    clock.advance(0.5)  # nowhere near MIN_SPACING_S
+    assert d.update(_snap(audio_band_low_abs=10.0, energy=0.9), scene_uses_lasers=True) is True

@@ -28,7 +28,7 @@ from collections import deque
 
 from ..clock import Clock, LoopTimer
 from ..scenes.base import EnergyBucket
-from ..scenes.catalog import bucket_for_energy
+from ..scenes.catalog import bucket_for_energy_with_hysteresis
 from .messages import AudioLevelMessage, BeatMessage, MidiControlMessage, StatusMessage, TransitionMessage
 from .show_state import ShowSnapshot, ShowState
 
@@ -119,7 +119,16 @@ ENERGY_NORM_MIN_CEILING = 0.05        # if nothing above this has happened
 # never be interrupted -- if energy_norm itself genuinely dips for several real
 # seconds, this will still (correctly) commit to a lower bucket. Re-check
 # against real playback after this lands rather than assuming it's fully solved.
-BUCKET_MIN_DWELL_S = 1.0
+#
+# RAISED 1.0 -> 3.0 (2026-09-07, first real --hardware --record capture, see
+# [[livereact-project]] memory): 1.0s stopped sub-second flapping but a real
+# song's ordinary dynamics still cross a boundary on a several-second cadence
+# -- measured BUILD dwelling only 1.2-4.3s in one real ~4min capture, nowhere
+# near completing its own 8-bar/~14s ramp before being pre-empted. Paired with
+# `bucket_for_energy_with_hysteresis` (scenes/catalog.py) so a candidate now
+# has to both clear the boundary by a margin AND persist -- two independent
+# defenses against the same "reads as random flutter" failure mode.
+BUCKET_MIN_DWELL_S = 3.0
 
 
 class Metronome(threading.Thread):
@@ -398,8 +407,11 @@ class Metronome(threading.Thread):
         """Debounce bucket_for_energy's output (see BUCKET_MIN_DWELL_S above):
         a candidate bucket must persist for BUCKET_MIN_DWELL_S before it's
         actually committed to, instead of flipping the instant energy_norm
-        crosses a boundary."""
-        raw = bucket_for_energy(self._energy_norm)
+        crosses a boundary. Also anchored on the currently-committed bucket
+        via `bucket_for_energy_with_hysteresis` (scenes/catalog.py) -- energy
+        must clear a boundary by HYSTERESIS_MARGIN, not just touch it, before
+        it even becomes a candidate at all."""
+        raw = bucket_for_energy_with_hysteresis(self._energy_norm, self._bucket_committed)
         if raw == self._bucket_committed:
             self._bucket_candidate = None
             self._bucket_candidate_since = None
