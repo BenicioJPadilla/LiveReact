@@ -195,6 +195,27 @@ class Fixture:
         """Per-local-channel kinds; length == channel_count. Override per fixture."""
         return [ChannelKind.OTHER] * self.channel_count
 
+    def capabilities(self) -> set[str]:
+        """Capability tokens for LIGHTING_BIBLE.md's `requires{}` look-gating
+        (`LOOK-01`, Bible-integration Phase 1 -- docs/bible_integration/,
+        /Users/joshuaracimora/.claude/plans/adaptive-squishing-pebble.md).
+        Derived from `channel_kinds()` -- not new hardware data, just making
+        an existing de facto signal explicitly queryable. Override per
+        fixture only where this generic derivation would be misleading (e.g.
+        a wheel-based color slot isn't true continuous RGB -- see
+        `MovingHead.capabilities()`)."""
+        kinds = set(self.channel_kinds())
+        caps: set[str] = set()
+        if ChannelKind.MOVEMENT in kinds:
+            caps.add("pan_tilt")
+        if ChannelKind.STROBE in kinds:
+            caps.add("native_strobe_channel")
+        if ChannelKind.LASER in kinds:
+            caps.add("laser")
+        if ChannelKind.COLOR in kinds:
+            caps.add("rgb")
+        return caps
+
     # --- helpers ---
     def _set(self, buf: Buffer, local_1based: int, value: int) -> None:
         buf.set(self.address + local_1based - 1, value)
@@ -263,6 +284,14 @@ class MovingHead(Fixture):
             K.OTHER, K.OTHER, K.OTHER, K.OTHER,               # 9-12 gobo/prism/focus/frost
             K.OTHER, K.OTHER, K.OTHER,                        # 13-15 macro/macro-speed/reset
         ]
+
+    def capabilities(self) -> set[str]:
+        # Override the base's generic derivation: CH8 is tagged ChannelKind.COLOR
+        # for merge purposes (a known mistagging, MERGE-06) but it's a discrete
+        # color-wheel slot, not continuous RGB mixing -- "rgb" would be
+        # misleading for requires{} gating (e.g. a look needing real RGB
+        # blending shouldn't be satisfied by a wheel fixture).
+        return {"pan_tilt", "native_strobe_channel", "wheel_discrete"}
 
     def boot_defaults(self, buf: Buffer) -> None:
         self._set(buf, 1, 128)   # pan center

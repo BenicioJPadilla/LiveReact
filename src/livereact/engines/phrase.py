@@ -64,7 +64,7 @@ class PhraseEngine:
     # --- per-frame ---
     def tick(self, snap: ShowSnapshot, rig: Rig) -> Contribution:
         self._detect_settle(snap)
-        self._maybe_rotate(snap)
+        self._maybe_rotate(snap, rig)
         self._advance_crossfade(snap)
         return self._render(snap, rig)
 
@@ -74,7 +74,7 @@ class PhraseEngine:
             self._skip_requested = True
         self._was_in_transition = snap.in_transition
 
-    def _maybe_rotate(self, snap: ShowSnapshot) -> None:
+    def _maybe_rotate(self, snap: ShowSnapshot, rig: Rig) -> None:
         # Only act on a *new* bar so a boundary fires once, not every tick.
         if snap.bar == self._last_bar_seen:
             return
@@ -109,9 +109,9 @@ class PhraseEngine:
             return  # enforce the minimum hold
 
         if self._skip_requested or bars_since_change >= ROTATION_BARS:
-            self._begin_rotation(snap)
+            self._begin_rotation(snap, rig)
 
-    def _begin_rotation(self, snap: ShowSnapshot) -> None:
+    def _begin_rotation(self, snap: ShowSnapshot, rig: Rig) -> None:
         # snap.bucket -- an ALREADY-DEBOUNCED, already-adaptively-rescaled
         # bucket_for_energy(energy_norm), computed once in metronome.py (see
         # BUCKET_MIN_DWELL_S there), not a fresh call here. Same reasoning as
@@ -120,7 +120,12 @@ class PhraseEngine:
         # per engine (found live 2026-09-07, see show_state.py's bucket
         # docstring).
         bucket = EnergyBucket(snap.bucket)
-        self._next = self.catalog.pick(bucket, exclude=self._current)
+        # `rig` threaded through (Bible-integration Phase 1) so pick() can
+        # apply requires{}/min_atmosphere_density capability gating -- a
+        # no-op for all 8 pre-Phase-1 scenes (empty requires, 0.0 atm
+        # requirement, always satisfied), real once Phase 5 adds looks that
+        # actually declare requires{}.
+        self._next = self.catalog.pick(bucket, rig, exclude=self._current)
         self._crossfade_start_pos = musical_bar_position(snap)
         self._skip_requested = False
         self.rotations += 1

@@ -46,6 +46,10 @@ class AppConfig:
     session_dir: str | None = None            # where to record (set by the CLI)
     rig_path: str | None = None               # custom rig JSON; None = packaged default_rig.json
     audio_device: str | int | None = None     # explicit audio input device; None = auto-detect "XDJ"
+    bible_failsafe_enabled: bool = False      # Bible-integration Phase 1 gig-safe flag: off by
+        # default (old instant-hard-zero auto_blackout stays selectable); when True, auto_blackout
+        # fades to LIGHTING_BIBLE.md's real safe_default look instead (LOOK-08/FAIL-04). See
+        # docs/bible_integration/ and /Users/joshuaracimora/.claude/plans/adaptive-squishing-pebble.md.
     laser_height_override_m: float | None = None  # SESSION-SCOPED test override for
         # LASER-09/10/11's geometry safety gate (fixtures/profiles.py Laser.apply_safety).
         # Deliberately NOT persisted to the rig manifest -- operator must type this
@@ -118,6 +122,7 @@ class App:
             self.show_state, self.rig, self.frame_buffer, self.engines,
             self.manual, self.clock, self.stop_event,
             phrase_engine=self.phrase_engine,
+            bible_failsafe_enabled=self.config.bible_failsafe_enabled,
         )
 
         # Core engine threads (always present). Input sources are managed separately

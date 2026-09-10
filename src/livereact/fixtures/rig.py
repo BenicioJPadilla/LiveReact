@@ -24,6 +24,13 @@ class Rig:
         self.fixtures = fixtures
         self._by_slot: dict[str, Fixture] = {}
         self._kinds = bytearray(UNIVERSE_SIZE)  # ChannelKind per channel (default OTHER=0)
+        # Atmosphere density (LIGHTING_BIBLE.md §4.4, `min_atmosphere_density`
+        # gating -- Bible-integration Phase 1). A real, typed field rather than
+        # a special-cased "no fog exists" branch scattered through look
+        # selection: always 0.0 on this rig (no haze/fogger fixture exists),
+        # so `requires{atm: X}` is a single honest comparison everywhere.
+        # Revisit only if/when haze hardware is actually added.
+        self.atm: float = 0.0
         self._validate_and_index()
 
     def _validate_and_index(self) -> None:
@@ -60,6 +67,18 @@ class Rig:
 
     def kind_at(self, channel_0based: int) -> ChannelKind:
         return ChannelKind(self._kinds[channel_0based])
+
+    def capabilities(self) -> set[str]:
+        """Union of every fixture's `capabilities()` -- what `Scene.requires`
+        gets checked against (Bible-integration Phase 1). Plus `role` tokens
+        themselves (e.g. "wash", "spot", "laser") so a look can require a
+        role directly, matching LIGHTING_BIBLE.md's own `requires{wash,
+        atm 0.0}`-style shorthand."""
+        caps: set[str] = set()
+        for fx in self.fixtures:
+            caps |= fx.capabilities()
+            caps.add(fx.role)
+        return caps
 
     def channel_count(self) -> int:
         return sum(f.channel_count for f in self.fixtures)

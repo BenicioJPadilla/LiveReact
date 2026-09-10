@@ -72,7 +72,8 @@ def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearra
 
 
 def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: bool = False,
-             laser_flash_active: bool = False, dt: float = 1.0 / 60.0) -> bytes:
+             laser_flash_active: bool = False, dt: float = 1.0 / 60.0,
+             safe_default_frame: bytes | None = None) -> bytes:
     """Apply manual biases/caps + safety clamps and return the wire-ready universe.
 
     ``freeze`` is intentionally not handled here — holding the last frame is the
@@ -91,9 +92,27 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
     the last finalized frame, used by movement slew-limiting (a no-op on
     fixtures that don't support it) — defaults to a 60Hz tick for callers that
     don't track real time (e.g. tests, render_universe's one-shot use).
+
+    ``safe_default_frame`` (Bible-integration Phase 1, `LOOK-08`/`FAIL-04`,
+    optional/default None): when given, ``auto_blackout`` renders this frame
+    instead of an instant hard zero — LIGHTING_BIBLE.md §12's actual failsafe
+    target is a static 40% neutral wash (`scenes/base.py`'s `SAFE_DEFAULT`),
+    not total darkness. ``manual.blackout`` (the operator's own hard kill
+    switch) is deliberately UNCHANGED by this — an operator hitting "kill"
+    wants instant black, not a dim wash, so it still always short-circuits to
+    ``bytes(UNIVERSE_SIZE)`` regardless of this parameter. Omitting
+    ``safe_default_frame`` (the default) preserves the old instant-hard-zero
+    behavior for auto_blackout too, so every existing caller/test is
+    unaffected until a caller opts in (gig-safe: the old failsafe stays
+    selectable until this is wired in and approved for real hardware use).
+    NOTE: this is the *target* fix only — a real ~2-bar fade FROM the live
+    frame TOWARD this one (rather than an instant switch) is still open,
+    tracked in docs/bible_integration/RULES_MATRIX.md against FAIL-04.
     """
-    if manual.blackout or auto_blackout:
+    if manual.blackout:
         return bytes(UNIVERSE_SIZE)
+    if auto_blackout:
+        return bytes(safe_default_frame) if safe_default_frame is not None else bytes(UNIVERSE_SIZE)
 
     out = bytearray(merged)
     for fx in rig.fixtures:

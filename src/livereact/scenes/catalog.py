@@ -7,6 +7,7 @@ docs/10 B7).
 
 from __future__ import annotations
 
+from ..fixtures.rig import Rig
 from .base import EnergyBucket, Scene
 from .library import ALL_SCENES
 
@@ -84,15 +85,29 @@ class SceneCatalog:
                 return self._by_bucket[bucket][0]
         raise ValueError("catalog has no scenes")
 
-    def pick(self, bucket: EnergyBucket, exclude: Scene | None = None) -> Scene:
+    def pick(self, bucket: EnergyBucket, rig: Rig | None = None, exclude: Scene | None = None) -> Scene:
         """Round-robin within ``bucket``; avoid returning ``exclude`` if possible.
 
         Falls back to any non-excluded scene in any bucket if the requested bucket
         is empty, so selection never fails.
+
+        ``rig`` (Bible-integration Phase 1, optional/default None): when given,
+        applies LIGHTING_BIBLE.md §5's `requires{}`/`min_atmosphere_density`
+        capability gate before round-robining, walking one `degrade_to` hop on
+        failure (LOOK-01; recursive-degrade beyond one hop and conflict
+        arbitration are NOT specified anywhere in the Bible -- see this
+        project's plan doc's Open Questions #3/#4 for the deliberately
+        conservative defaults applied here: one hop only, then fall back to
+        round-robin among whatever's actually eligible, never hard-fail).
+        Omitting ``rig`` (the default) skips this gate entirely -- existing
+        callers that don't pass a rig get byte-identical behavior to before
+        this parameter existed.
         """
         scenes = self._by_bucket[bucket]
         if not scenes:
             scenes = [s for b in EnergyBucket for s in self._by_bucket[b]]
+        if rig is not None:
+            scenes = self._capability_filter(scenes, rig)
         n = len(scenes)
         for _ in range(n):
             idx = self._rr_index[bucket] % n
@@ -101,3 +116,41 @@ class SceneCatalog:
             if candidate is not exclude:
                 return candidate
         return scenes[0]  # only one scene available; reuse it
+
+    @staticmethod
+    def _eligible(scene: Scene, rig: Rig) -> bool:
+        return scene.requires <= rig.capabilities() and rig.atm >= scene.min_atmosphere_density
+
+    def _capability_filter(self, scenes: list[Scene], rig: Rig) -> list[Scene]:
+        """Replace each ineligible scene with its one-hop `degrade_to` target
+        (if that target is itself eligible), then drop anything still
+        ineligible. Never returns an empty list while ANY scene anywhere in
+        the catalog is eligible (falls back to the full flattened catalog,
+        same "selection never fails" guarantee `pick()` already makes)."""
+        result: list[Scene] = []
+        for scene in scenes:
+            if self._eligible(scene, rig):
+                result.append(scene)
+                continue
+            if scene.degrade_to is not None:
+                degraded = self._instance_of(scene.degrade_to)
+                if degraded is not None and self._eligible(degraded, rig):
+                    result.append(degraded)
+        if result:
+            return result
+        # Nothing in this bucket is eligible even after degrading -- fall back
+        # to any eligible scene anywhere, same spirit as the empty-bucket case
+        # above (never fail to select something).
+        everything = [s for b in EnergyBucket for s in self._by_bucket[b]]
+        eligible_anywhere = [s for s in everything if self._eligible(s, rig)]
+        return eligible_anywhere or scenes  # scenes as an absolute last resort (old behavior)
+
+    def _instance_of(self, scene_type: type[Scene]) -> Scene | None:
+        """Find the catalog's own instance of a `degrade_to` target type, so
+        degrading reuses the same instance (and its round-robin state)
+        rather than constructing a bare, un-registered one."""
+        for b in EnergyBucket:
+            for s in self._by_bucket[b]:
+                if type(s) is scene_type:
+                    return s
+        return None

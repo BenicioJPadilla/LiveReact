@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from livereact.core.show_state import ShowSnapshot
 from livereact.fixtures.rig import _rig_from_dict, load_rig
-from livereact.scenes.base import EnergyBucket
+from livereact.scenes.base import SAFE_DEFAULT, EnergyBucket, Scene
 from livereact.scenes.catalog import SceneCatalog, bucket_for_energy
 from livereact.scenes.library import ALL_SCENES, BeamFanLaserTunnel, Converge, DeepWashBreathe
 
@@ -61,6 +61,72 @@ def test_round_robin_avoids_repeating_current():
     first = cat.pick(EnergyBucket.DROP)
     second = cat.pick(EnergyBucket.DROP, exclude=first)
     assert second is not first
+
+
+def test_pick_without_a_rig_skips_capability_gating_entirely():
+    """Backward compatibility: existing callers that don't pass `rig` (the
+    default, None) get byte-identical behavior to before this parameter
+    existed -- confirmed by exercising a scene with an impossible
+    `requires` that would fail any real gate check."""
+    class _Impossible(Scene):
+        name, bucket = "Impossible", EnergyBucket.DROP
+        requires = frozenset({"a_capability_no_rig_has"})
+    cat = SceneCatalog([_Impossible()])
+    assert isinstance(cat.pick(EnergyBucket.DROP), _Impossible)  # no rig -> gate never runs
+
+
+def test_pick_with_a_rig_filters_out_ineligible_scenes():
+    class _NeedsHaze(Scene):
+        name, bucket = "Needs Haze", EnergyBucket.DROP
+        requires = frozenset({"laser"})
+        min_atmosphere_density = 0.6
+    class _Plain(Scene):
+        name, bucket = "Plain", EnergyBucket.DROP
+    rig = load_rig()  # has lasers, but atm is always 0.0 -- no haze hardware
+    cat = SceneCatalog([_NeedsHaze(), _Plain()])
+    for _ in range(5):  # round-robin would otherwise eventually return _NeedsHaze
+        assert isinstance(cat.pick(EnergyBucket.DROP, rig), _Plain)
+
+
+def test_pick_walks_one_degrade_hop_when_ineligible():
+    class _Fallback(Scene):
+        name, bucket = "Fallback", EnergyBucket.DROP
+    class _NeedsHaze(Scene):
+        name, bucket = "Needs Haze", EnergyBucket.DROP
+        requires = frozenset({"laser"})
+        min_atmosphere_density = 0.6
+        degrade_to = _Fallback
+    rig = load_rig()
+    cat = SceneCatalog([_NeedsHaze(), _Fallback()])
+    picked = cat.pick(EnergyBucket.DROP, rig)
+    assert isinstance(picked, _Fallback)
+
+
+def test_pick_falls_back_to_round_robin_if_nothing_is_eligible_even_degraded():
+    """Never hard-fail selection (this project's standing "selection never
+    fails" guarantee) -- even with zero eligible scenes anywhere, pick()
+    still returns something rather than raising."""
+    class _NeedsHaze(Scene):
+        name, bucket = "Needs Haze", EnergyBucket.DROP
+        min_atmosphere_density = 1.0
+    rig = load_rig()
+    cat = SceneCatalog([_NeedsHaze()])
+    assert cat.pick(EnergyBucket.DROP, rig) is not None
+
+
+def test_safe_default_renders_static_neutral_wash_no_motion_no_laser():
+    """LOOK-08: safe_default is static 40% neutral_wash, no mover motion,
+    no laser, no fog."""
+    from livereact.fixtures.profiles import _intensity_to8
+    rig = load_rig()
+    snap = _snap()
+    c = SAFE_DEFAULT.render(rig, snap, 1.0)
+    par = rig.fixture("par_l")
+    assert c.values[par.offset] == _intensity_to8(0.40)  # neutral 40% intensity, gamma+floor curve
+    laser = rig.fixture("laser_l")
+    assert not any(c.touched[laser.offset + i] for i in range(12))  # laser untouched
+    mh = rig.fixture("mh_l")
+    assert not c.touched[mh.offset]  # pan untouched -- no motion commanded
 
 
 def test_converge_two_spots_matches_original_spread():

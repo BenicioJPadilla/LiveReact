@@ -15,6 +15,22 @@ def test_default_rig_loads_with_eight_fixtures_and_74_channels():
     assert rig.channel_count() == 74
 
 
+def test_rig_capabilities_are_the_union_of_every_fixture_plus_roles():
+    """Bible-integration Phase 1: Rig.capabilities() backs LIGHTING_BIBLE.md's
+    requires{} gating -- confirmed against the packaged 8-fixture rig (2
+    spots, 2 lasers, 2 pars, 2 wash bars)."""
+    rig = load_rig()
+    caps = rig.capabilities()
+    assert caps >= {"pan_tilt", "native_strobe_channel", "wheel_discrete",  # from the 2 MovingHeads
+                     "laser", "rgb",                                        # from lasers/pars/bars
+                     "wash", "spot"}                                        # role tokens
+
+
+def test_rig_atm_is_always_zero_no_haze_hardware_exists():
+    rig = load_rig()
+    assert rig.atm == 0.0
+
+
 def test_role_and_side_lookups():
     rig = load_rig()
     assert len(rig.by_role("spot")) == 2

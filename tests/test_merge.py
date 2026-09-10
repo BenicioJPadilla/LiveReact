@@ -144,7 +144,44 @@ def test_auto_blackout_zeros_the_frame_independently_of_manual():
     merged = merge_contributions([c], rig)
     blacked = finalize(merged, rig, ManualParams(), auto_blackout=True)
     assert blacked == bytes(len(blacked))
-    assert not any(blacked)
+
+
+def test_auto_blackout_renders_safe_default_when_a_frame_is_given():
+    """LOOK-08/FAIL-04 (Bible-integration Phase 1): auto_blackout's real
+    failsafe target is a static 40% neutral wash, not total darkness --
+    opt-in via safe_default_frame so this doesn't change behavior for any
+    caller that doesn't pass one (see the test above, still unaffected)."""
+    from livereact.scenes.base import SAFE_DEFAULT
+    from livereact.core.show_state import ShowSnapshot
+
+    rig = _rig()
+    mh = rig.fixture("mh_l")
+    c = Contribution()
+    mh.set_intensity(c, 1.0)
+    merged = merge_contributions([c], rig)
+
+    safe_frame = render_universe([SAFE_DEFAULT.render(rig, ShowSnapshot(), 1.0)], rig, ManualParams())
+    out = finalize(merged, rig, ManualParams(), auto_blackout=True, safe_default_frame=safe_frame)
+    assert out == safe_frame
+    assert any(out)  # NOT a hard zero -- the whole point of this fix
+
+
+def test_manual_blackout_still_wins_instantly_even_with_a_safe_default_frame():
+    """The operator's own hard kill switch is deliberately unchanged by this
+    fix -- it's a different concern from the automatic no-music failsafe."""
+    from livereact.scenes.base import SAFE_DEFAULT
+    from livereact.core.show_state import ShowSnapshot
+
+    rig = _rig()
+    mh = rig.fixture("mh_l")
+    c = Contribution()
+    mh.set_intensity(c, 1.0)
+    merged = merge_contributions([c], rig)
+
+    safe_frame = render_universe([SAFE_DEFAULT.render(rig, ShowSnapshot(), 1.0)], rig, ManualParams())
+    out = finalize(merged, rig, ManualParams(blackout=True), auto_blackout=False,
+                   safe_default_frame=safe_frame)
+    assert out == bytes(len(out))  # manual.blackout ignores safe_default_frame entirely
 
 
 def test_finalize_bounds_movement_around_a_calibrated_home_position():

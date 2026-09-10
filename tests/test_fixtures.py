@@ -55,6 +55,35 @@ def test_moving_head_kinds_have_correct_length_and_types():
     assert kinds[7] == ChannelKind.COLOR      # ch8 color wheel
 
 
+def test_moving_head_capabilities_are_wheel_discrete_not_rgb():
+    """Bible-integration Phase 1: MovingHead overrides the base's generic
+    capabilities() derivation specifically to avoid claiming "rgb" -- CH8 is
+    tagged ChannelKind.COLOR for merge purposes (MERGE-06) but it's a
+    discrete wheel slot, not continuous RGB mixing."""
+    mh = MovingHead(1, "MH", "spot", "left")
+    caps = mh.capabilities()
+    assert caps == {"pan_tilt", "native_strobe_channel", "wheel_discrete"}
+    assert "rgb" not in caps
+
+
+def test_par_capabilities_derive_generically_from_channel_kinds():
+    from livereact.fixtures.profiles import Par
+    par = Par(1, "Par", "wash", "left")
+    assert par.capabilities() == {"rgb"}  # DIMMER isn't a capability token; no strobe/movement/laser channel
+
+
+def test_wash_bar_capabilities_include_native_strobe():
+    from livereact.fixtures.profiles import WashBar
+    bar = WashBar(1, "Bar", "wash", "left")
+    assert bar.capabilities() == {"rgb", "native_strobe_channel"}
+
+
+def test_laser_capabilities_are_laser_only():
+    from livereact.fixtures.profiles import Laser
+    laser = Laser(1, "Laser", "laser", "left")
+    assert laser.capabilities() == {"laser"}
+
+
 def test_moving_head_semantic_setters_hit_the_right_channels():
     mh = MovingHead(16, "MH-R", "spot", "right")  # address 16
     c = Contribution()

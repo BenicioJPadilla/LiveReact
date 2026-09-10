@@ -48,6 +48,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--visualize", action="store_true", help="Open the operator console + virtual rig (PySide6).")
     p.add_argument("--pdl-interface", default=None, help="Explicit network interface/IP for Pro DJ Link.")
     p.add_argument("--rig", default=None, help="Path to a custom rig JSON (default: the packaged 8-fixture default_rig.json).")
+    p.add_argument("--bible-failsafe", action="store_true",
+                   help="Bible-integration Phase 1 (gig-safe migration flag, off by default): "
+                        "when set, the no-music auto-blackout failsafe fades to a real safe_default "
+                        "look (LIGHTING_BIBLE.md LOOK-08) instead of an instant hard blackout. "
+                        "The operator's own manual blackout switch is unaffected either way.")
     p.add_argument("--laser-height-override-m", type=float, default=None,
                    help="TEST-ONLY: treat the laser's mount height as this many meters for the "
                         "geometry safety gate (LASER-09/10/11), overriding the rig manifest's "
@@ -170,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
                        pdl_interface=args.pdl_interface, rig_path=args.rig,
                        audio_device=args.audio_device,
                        laser_height_override_m=args.laser_height_override_m,
+                       bible_failsafe_enabled=args.bible_failsafe,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)
 
