@@ -75,6 +75,50 @@ def test_skip_forces_rotation_after_minimum_hold():
     assert eng.rotations == 1
 
 
+def test_bucket_change_forces_rotation_after_minimum_hold():
+    """2026-09-09 hardware capture (see [[livereact-project]] memory):
+    scene rotation and bucket classification were two fully independent
+    clocks -- a bucket could jump straight into DROP while the active
+    scene (picked for a totally different energy state) kept running for
+    up to a full ROTATION_BARS before catching up, measured as long as
+    24s/14 bars on a real drop and directly producing "still blue during
+    the drop." A bucket change should now prompt a rotation check on its
+    own, same as an explicit skip -- still gated by HOLD_BARS, not an
+    override of it."""
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2), rig)  # low energy: establishes a "breakdown" baseline bucket
+    assert eng.rotations == 0
+    # Energy jumps straight to a drop-level bucket, past the minimum hold
+    # but nowhere near ROTATION_BARS -- should still rotate, unlike before.
+    eng.tick(_snap(HOLD_BARS, energy=1.0), rig)
+    assert eng.rotations == 1
+
+
+def test_bucket_change_before_minimum_hold_is_still_deferred():
+    """The new bucket-change trigger must not bypass the existing
+    anti-whiplash floor -- it's one more reason to check, not a shortcut
+    around HOLD_BARS."""
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2), rig)
+    eng.tick(_snap(HOLD_BARS - 1, energy=1.0), rig)  # bucket changed, but still inside the hold
+    assert eng.rotations == 0
+
+
+def test_bucket_change_rotation_picks_a_scene_for_the_new_bucket():
+    """Not just that it rotates sooner -- the scene it rotates TO must
+    actually match the bucket that triggered it (LIGHTING_BIBLE.md's own
+    per-bucket scene pools), since `_begin_rotation` reads `snap.bucket`
+    fresh at fire time."""
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2), rig)
+    eng.tick(_snap(HOLD_BARS, energy=1.0), rig)  # -> drop bucket
+    assert eng._next is not None
+    assert eng._next.bucket.value == "drop"
+
+
 def test_drop_scene_emits_laser_channels_through_the_engine():
     rig = load_rig()
     from livereact.scenes.library import FullSpectrumHit

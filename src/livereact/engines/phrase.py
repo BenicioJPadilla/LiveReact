@@ -36,6 +36,7 @@ class PhraseEngine:
         self._crossfade_start_pos = 0.0
         self._last_change_bar = 0
         self._last_bar_seen = -1
+        self._last_bucket_seen: str | None = None
         self._skip_requested = False
         self._was_in_transition = False
         self.rotations = 0  # for tests/telemetry
@@ -78,6 +79,25 @@ class PhraseEngine:
         if snap.bar == self._last_bar_seen:
             return
         self._last_bar_seen = snap.bar
+
+        # A real energy-state change (e.g. into DROP) should prompt a fresh
+        # rotation check on its own timeline, not wait for the next scheduled
+        # ROTATION_BARS boundary -- CONFIRMED live (2026-09-09 hardware
+        # capture, see [[livereact-project]] memory) that scene rotation and
+        # bucket classification were otherwise two fully independent clocks:
+        # a bucket could jump straight into DROP while the active scene
+        # (chosen for a totally different energy state, e.g. the calm
+        # `Deep Wash Breathe`) kept running for up to a full ROTATION_BARS=16
+        # bars before catching up -- measured as long as 24s/14 bars on a
+        # real drop, directly producing "still blue during the drop."
+        # Reuses the existing `_skip_requested` flag/path (same as an
+        # explicit operator skip or a DJ-transition-end), so this does NOT
+        # bypass the HOLD_BARS anti-whiplash floor below -- it's still
+        # subject to the exact same minimum hold as every other trigger
+        # here, just one more legitimate reason to ask for a rotation check.
+        if self._last_bucket_seen is not None and snap.bucket != self._last_bucket_seen:
+            self._skip_requested = True
+        self._last_bucket_seen = snap.bucket
 
         if self._next is not None:
             return  # already crossfading
