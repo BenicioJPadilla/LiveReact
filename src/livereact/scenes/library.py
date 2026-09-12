@@ -495,6 +495,91 @@ class BreakColorHoldClear(Scene):
         return c
 
 
+# --- outro family, Bible-integration Phase 5, fourth wave (docs/bible_
+# integration/LOOK_CATALOG.md §5, lines 837-842) -- OUTRO was, until now, a
+# genuinely new state with zero scenes (same starting point PEAK was in
+# before its own wave -- see EnergyBucket's own docstring/the old "assert
+# not cat.bucket(EnergyBucket.OUTRO)" test this wave removes).
+
+WARM_WHITE = (1.0, 0.85, 0.65)
+DEEP_AMBER = (0.85, 0.45, 0.05)
+
+
+class OutroFadeWash(Scene):
+    """LIGHTING_BIBLE.md §5: "the set winding down -- wash fades 40% to 15%
+    over the outro." Wash intensity is deliberately NOT set here (same
+    pattern as BreakLowWash/BuildRiserWash/PeakColorPulseClear) -- the
+    40->15% descending fade is already produced by ReactiveLayerEngine's own
+    OUTRO branch (`_bucket_wash_level`'s `OUTRO_HIGH`/`OUTRO_LOW`/
+    `OUTRO_FADE_BARS`, confirmed by name/range/direction match against this
+    exact look). This class's job is only the color.
+
+    color{warm_white or deep_amber} -- the Bible offers either; unlike
+    DropBlackoutHit's blood_red/cold_steel (a deliberate Josh-directed
+    alternation-by-drop_cycle design call), there's no equivalent signal or
+    steer for OUTRO, so this fixes on warm_white as a single default rather
+    than inventing an alternation rule with nothing to key it off. DEEP_AMBER
+    is still defined and named here (not used) as the Bible's other named
+    option, should a real reason to pick it later come up."""
+
+    name = "Outro Fade Wash"
+    bucket = EnergyBucket.OUTRO
+    dark_pct = 0.60
+    min_hold_bars = 16
+    reactivity_note = "audio:[wash.dimmer descending 40%->15% envelope] (via ReactiveLayerEngine, not this scene), static:[hue]"
+    color_note = "warm_white or deep_amber -- warm_white chosen as the fixed default, see class docstring"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = WARM_WHITE
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, 0.30 * intensity)
+        return c
+
+
+class OutroSingleBeam(Scene):
+    """LIGHTING_BIBLE.md §5: "the set's very last light -- one spot,
+    ceiling_bounce, dim." `requires{spot, atm 0.0}` names only a spot, no
+    wash -- unlike every other scene in this file (which paints wash
+    regardless of what the look's own roles{} block mentions, e.g.
+    PeakColorPulseClear/BuildRiserWash still touch spots even though their
+    roles only name wash), this one deliberately does NOT paint the wash at
+    all: the whole point of a single last beam is everything else already
+    dark (`dark 80%`), so lighting the wash here would fight the look's own
+    intent rather than just being redundant.
+
+    "one spot" is also taken literally, not "all spot fixtures" -- if a
+    future rig ever has 2+ spots, only the first is lit; this codebase's
+    only spot fixture today (`mh_l`) makes that indistinguishable from
+    "the spot," but the distinction is real and worth keeping explicit
+    (same discipline as Converge/PeakAltHitsClear's N-fixture handling).
+
+    GAP, disclosed not faked: "ceiling_bounce" is another named-position
+    case with no mechanism in this codebase (same absence as
+    BreakSingleSpotSpecial's `dj_booth`) -- expressed as a literal tilt
+    value reusing this codebase's own existing "tilted up" convention
+    (DeepWashBreathe's `0.85`), not measured against real ceiling geometry."""
+
+    name = "Outro Single Beam"
+    bucket = EnergyBucket.OUTRO
+    dark_pct = 0.80
+    min_hold_bars = 16
+    reactivity_note = "static all -- no reactivity{} block given by the Bible for this look"
+    color_note = "not specified by the Bible for this look -- reuses warm_white for family consistency with Outro Fade Wash"
+
+    DIM_LEVEL = 0.25  # "dim" -- an unmeasured pick, same magnitude as BREAK family's ambient levels
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = WARM_WHITE
+        spots = rig.by_role("spot")[:1]  # "one spot," literally -- see class docstring
+        for fx in spots:
+            fx.set_intensity(c, self.DIM_LEVEL * intensity)
+            fx.set_color(c, r, g, b)
+            fx.set_position(c, 0.5, 0.85)  # ceiling_bounce guess: centered, tilted up -- see class docstring
+        return c
+
+
 # --- hold / sustain (loops, post-transition, plateaus) ----------------------
 
 class PulseAndDriftSustain(Scene):
@@ -554,4 +639,7 @@ ALL_SCENES: list[type[Scene]] = [
     BreakSingleSpotSpecial,
     BreakCeilingDrift,
     BreakColorHoldClear,
+    # Bible-integration Phase 5, fourth wave -- OUTRO family:
+    OutroFadeWash,
+    OutroSingleBeam,
 ]

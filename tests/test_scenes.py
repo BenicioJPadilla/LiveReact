@@ -15,19 +15,19 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
-def test_eighteen_scenes_across_all_buckets():
-    """Bible-integration Phase 2: OUTRO is still a genuinely new state (see
-    EnergyBucket's own docstring) with no scene yet -- an expected, interim
-    gap, not a bug; a later Phase 5 wave builds looks for it. 18 = the
+def test_twenty_scenes_across_all_buckets():
+    """Bible-integration Phase 2: OUTRO was a genuinely new state (see
+    EnergyBucket's own docstring) with no scene at all until Phase 5's
+    fourth wave -- now every bucket has at least one look. 20 = the
     original 8 + Phase 5's first wave (DropBlackoutHit, DropStrobeStab,
     BuildRiserWash) + second wave (PeakFullRig, PeakColorPulseClear,
     PeakAltHitsClear) + third wave (BreakLowWash, BreakSingleSpotSpecial,
-    BreakCeilingDrift, BreakColorHoldClear)."""
+    BreakCeilingDrift, BreakColorHoldClear) + fourth wave (OutroFadeWash,
+    OutroSingleBeam)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 18
-    for bucket in (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP, EnergyBucket.PEAK):
+    assert len(ALL_SCENES) == 20
+    for bucket in EnergyBucket:
         assert cat.bucket(bucket), f"{bucket} has no scenes"
-    assert not cat.bucket(EnergyBucket.OUTRO), "OUTRO unexpectedly has a scene already -- update this test"
 
 
 def test_every_scene_renders_some_output():
@@ -382,6 +382,59 @@ def test_break_color_hold_clear_is_static_color_and_position():
     assert (a.values[par.offset + 1], a.values[par.offset + 2], a.values[par.offset + 3]) == (r, g, bl)
     assert a.values[par.offset + 1:par.offset + 4] == b.values[par.offset + 1:par.offset + 4]
     assert a.values[mh.offset] == b.values[mh.offset]  # pan static too
+
+
+# --- Bible-integration Phase 5, fourth wave: OutroFadeWash, OutroSingleBeam
+
+def test_outro_fade_wash_does_not_set_wash_intensity():
+    """paint_wash deliberately never sets intensity -- the 40%->15%
+    descending fade is owned exclusively by ReactiveLayerEngine's own OUTRO
+    branch, same pattern as BreakLowWash/BuildRiserWash."""
+    from livereact.scenes.library import OutroFadeWash
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    c = OutroFadeWash().render(rig, _snap(), 1.0)
+    assert not c.touched[bar.offset]  # ch1 = dimmer, untouched
+
+
+def test_outro_fade_wash_uses_warm_white():
+    from livereact.scenes.library import WARM_WHITE, OutroFadeWash
+    rig = load_rig()
+    par = rig.fixture("par_l")
+    c = OutroFadeWash().render(rig, _snap(), 1.0)
+    r, g, b = (round(v * 255) for v in WARM_WHITE)
+    assert (c.values[par.offset + 1], c.values[par.offset + 2], c.values[par.offset + 3]) == (r, g, b)
+
+
+def test_outro_single_beam_does_not_touch_wash_at_all():
+    """Unlike every other scene in this file, OutroSingleBeam deliberately
+    skips paint_wash entirely -- a single last beam should not fight its own
+    "dark 80%" intent by lighting the wash. See the class docstring."""
+    from livereact.scenes.library import OutroSingleBeam
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    c = OutroSingleBeam().render(rig, _snap(), 1.0)
+    assert not any(c.touched[bar.offset:bar.offset + bar.channel_count])
+
+
+def test_outro_single_beam_lights_only_the_first_spot():
+    """"One spot," literally -- this rig only has one, so this mostly
+    documents intent, but the slicing itself (`rig.by_role("spot")[:1]`) is
+    the behavior under test, not just its effect on this specific rig."""
+    from livereact.scenes.library import OutroSingleBeam
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    c = OutroSingleBeam().render(rig, _snap(), 1.0)
+    assert c.touched[mh.offset + 5]  # ch6 dimmer -- the one spot got lit
+
+
+def test_outro_single_beam_is_static_not_audio_reactive():
+    from livereact.scenes.library import OutroSingleBeam
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    quiet = OutroSingleBeam().render(rig, _snap(energy=0.0), 1.0)
+    loud = OutroSingleBeam().render(rig, _snap(energy=1.0), 1.0)
+    assert quiet.values[mh.offset + 5] == loud.values[mh.offset + 5]  # ch6 dimmer -- "reactivity: static all"
 
 
 def test_safe_default_renders_static_neutral_wash_no_motion_no_laser():
