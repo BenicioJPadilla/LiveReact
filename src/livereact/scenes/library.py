@@ -176,6 +176,97 @@ class BeamFanLaserTunnel(Scene):
         return c
 
 
+# LIGHTING_BIBLE.md §5's `color{blood_red or cold_steel, unison}` for
+# drop_blackout_hit -- Bible-integration Phase 5. Two fixed palettes,
+# alternated by `drop_cycle` (not audio) so the choice is genuinely STATIC
+# per drop (matching "reactivity: static all, nothing reacts") while still
+# giving real color VARIETY across multiple drops in one set (Josh,
+# 2026-09-09: "the drop doesn't have to be white... whatever the logic
+# says") -- not a fixed literal, not audio-chased either.
+BLOOD_RED = (0.85, 0.05, 0.02)
+COLD_STEEL = (0.55, 0.70, 0.85)
+
+
+class DropBlackoutHit(Scene):
+    """LIGHTING_BIBLE.md §5: "the pre-drop blackout then full hit; the
+    signature tech-house move." Fully static once rendered -- no beat-pulse,
+    no continuous hue, no movement -- "the cut IS the effect; nothing
+    reacts." The actual pre-drop blackout itself is a separate, cross-
+    cutting mechanism (merge/merge.py's `drop_pending`/`build_to_drop_
+    bridge`, Phase 5) that runs regardless of which scene is active; this
+    class is just the static look the cut resolves TO."""
+
+    name = "Drop Blackout Hit"
+    bucket = EnergyBucket.DROP
+    conflicts = frozenset({
+        "Rising Tide", "Converge", "Pulse & Drift Sustain", "Locked Hold", "Build Riser Wash",
+    })  # "conflicts[all build looks]"
+    min_hold_bars = 8
+    dark_pct = 0.10
+    reactivity_note = "static all, kick_follow:false -- the cut IS the effect; nothing reacts"
+    color_note = "blood_red or cold_steel, unison -- alternated by drop_cycle, not audio"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = BLOOD_RED if snap.drop_cycle % 2 == 0 else COLD_STEEL
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, intensity)
+        for fx in rig.by_role("spot"):
+            fx.set_position(c, 0.5, 0.5)  # static -- no sweep, no drift
+        return c
+
+
+class DropStrobeStab(Scene):
+    """LIGHTING_BIBLE.md §5: "native-strobe stabs on drop accents... uses
+    native strobe channel, never dimmer toggling." The actual strobe stab
+    itself is already produced by ReactiveLayerEngine's own strobe channel
+    (engines/reactive.py's `_strobe_rate`/`_strobe_burst_gate`, SAFE-01..06-
+    capped) -- a SEPARATE physical DMX channel from color/dimmer, written
+    every tick regardless of which Phrase scene is active. This look's job
+    is just the color/movement CONTEXT the stab plays over: a bright,
+    static-ish accent look, deliberately simple so it doesn't compete with
+    the strobe channel for visual attention."""
+
+    name = "Drop Strobe Stab"
+    bucket = EnergyBucket.DROP
+    min_hold_bars = 8
+    dark_pct = 0.20
+    reactivity_note = "audio:[strobe gated to drop-accent bars only] -- via the Reactive layer's own strobe channel, not this scene"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = 1.0, 1.0, 1.0  # bright white accent -- lets the strobe channel itself read as the "stab"
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, intensity)
+        for fx in rig.by_role("spot"):
+            fx.set_position(c, 0.5, 0.5)
+        return c
+
+
+class BuildRiserWash(Scene):
+    """LIGHTING_BIBLE.md §5's canonical build: "intensity climbs across the
+    build... the ramp IS the build." The actual dimmer ramp is already
+    produced by ReactiveLayerEngine's own `_bucket_wash_level` BUILD branch
+    (bar-position-driven, LOOK-04, confirmed correct) -- wash intensity is
+    deliberately not set here at all (see `paint_wash`'s own docstring).
+    This look's job is the color: `two_axis_color`, same mechanism as the
+    other BUILD scenes. NOT fully implementing "static:[hue]" here -- a
+    truly frozen-per-phrase hue for an individual Phrase scene (as opposed
+    to the Reactive layer's own already-frozen hue) would need real
+    per-scene state tracking, disclosed as a known gap rather than faked."""
+
+    name = "Build Riser Wash"
+    bucket = EnergyBucket.BUILD
+    reactivity_note = "audio:[wash.dimmer tied to bar-count envelope] (via ReactiveLayerEngine, not this scene), static:[hue] -- NOT fully implemented, see class docstring"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, 0.5 * intensity)
+        return c
+
+
 # --- hold / sustain (loops, post-transition, plateaus) ----------------------
 
 class PulseAndDriftSustain(Scene):
@@ -222,4 +313,8 @@ ALL_SCENES: list[type[Scene]] = [
     BeamFanLaserTunnel,
     PulseAndDriftSustain,
     LockedHold,
+    # Bible-integration Phase 5, first wave -- BUILD/DROP families:
+    DropBlackoutHit,
+    DropStrobeStab,
+    BuildRiserWash,
 ]

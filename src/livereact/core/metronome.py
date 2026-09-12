@@ -773,6 +773,7 @@ class Metronome(threading.Thread):
             drop_cycle=self.drop_cycle,
             drop_hit_intensity=self.drop_hit_intensity,
             transition_likely=self.transition_likely,
+            drop_pending=self._pending_drop_release,
             drop_marker=self._drop_marker_pulse,
             in_transition=now < self._transition_until,
             free_running=not self._is_pdl_fresh(now),

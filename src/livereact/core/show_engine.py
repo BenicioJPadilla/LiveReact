@@ -117,6 +117,6 @@ class ShowEngine(threading.Thread):
         if self.bible_failsafe_enabled and auto_blackout:
             safe_default_frame = merge_contributions([SAFE_DEFAULT.render(self.rig, snap, 1.0)], self.rig)
         frame = finalize(merge_contributions(contributions, self.rig), self.rig, self.manual,
-                          auto_blackout, laser_flash, dt, safe_default_frame)
+                          auto_blackout, laser_flash, dt, safe_default_frame, snap.drop_pending)
         self.frame_buffer.publish(frame)
         return frame

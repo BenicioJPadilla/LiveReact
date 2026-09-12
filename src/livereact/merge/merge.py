@@ -109,7 +109,7 @@ def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearra
 
 def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: bool = False,
              laser_flash_active: bool = False, dt: float = 1.0 / 60.0,
-             safe_default_frame: bytes | None = None) -> bytes:
+             safe_default_frame: bytes | None = None, drop_pending: bool = False) -> bytes:
     """Apply manual biases/caps + safety clamps and return the wire-ready universe.
 
     ``freeze`` is intentionally not handled here — holding the last frame is the
@@ -144,11 +144,25 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
     NOTE: this is the *target* fix only — a real ~2-bar fade FROM the live
     frame TOWARD this one (rather than an instant switch) is still open,
     tracked in docs/bible_integration/RULES_MATRIX.md against FAIL-04.
+
+    ``drop_pending`` (Bible-integration Phase 5, `build_to_drop_bridge`,
+    `TRANS-03`'s `blackout_beat`): true for the brief window between a DROP
+    being confirmed and the next real downbeat actually releasing it (see
+    core/metronome.py's `_pending_drop_release`, Phase 3's beat-
+    quantization). "Holds dark on the final bar, releases to the DROP look
+    on the downbeat" — a genuine hard cut, matching `blackout_beat`'s own
+    literal "cut to 0 on the final beat" wording, not a dim/faded state like
+    `safe_default`. Checked after ``manual.blackout``/``auto_blackout`` (an
+    operator kill or a real no-music failsafe should still win outright)
+    but before anything else -- in practice these shouldn't co-occur, since
+    a real pending drop implies fresh audio/PDL.
     """
     if manual.blackout:
         return bytes(UNIVERSE_SIZE)
     if auto_blackout:
         return bytes(safe_default_frame) if safe_default_frame is not None else bytes(UNIVERSE_SIZE)
+    if drop_pending:
+        return bytes(UNIVERSE_SIZE)
 
     out = bytearray(merged)
     for fx in rig.fixtures:

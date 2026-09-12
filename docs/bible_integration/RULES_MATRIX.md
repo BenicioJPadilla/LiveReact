@@ -107,6 +107,25 @@ Plan: `/Users/joshuaracimora/.claude/plans/adaptive-squishing-pebble.md`.
 
 **Re-verified against the real capture, replaying the actual `ReactiveLayerEngine`+`PhraseEngine` pipeline with real priorities** (not just isolated unit tests): during the real first drop, the OLD max()-merge produced a visibly flickering, muddy composite color on the wash bar -- tick-to-tick values like (74,133,255) -> (135,135,255) -> (106,133,255) -> (81,133,255), never settling -- while the NEW priority-LTP merge holds a clean, stable (51,133,255) for the entire window. This is a more concrete, more visually-relevant demonstration of the fix's value than the unit tests alone show: the original bug wasn't just "sometimes the wrong color wins," it was real per-tick color instability from two engines' independently-fluctuating values being max-merged together, which reads as exactly the "doesn't feel clean" quality problem from the original live complaints.
 
+## Phase 5 delta log (2026-09-12, first wave -- BUILD/DROP families)
+
+Scope note: Phase 5 covers all 30 Bible looks eventually; this pass covers
+the first, highest-impact wave (the looks most directly tied to tonight's
+original live-test complaints). Remaining DROP looks
+(`drop_color_slam_bigroom`, `drop_wash_slam_clear`, `drop_gobo_projection_
+clear`, `drop_blinder_clear`), `build_snare_accent` (needs new audio-
+transient infrastructure, tracked separately), and the PEAK/BREAK/OUTRO/
+utility/atmosphere-gated waves are follow-up work under the same phase.
+
+| Rule | Before | After | Evidence |
+|---|---|---|---|
+| `build_to_drop_bridge` (new look, [BUILD→DROP]) | NOT-IMPLEMENTED | PASS | `merge/merge.py`'s `finalize(..., drop_pending=...)` -- reuses Phase 3's `_pending_drop_release` directly: a confirmed-but-not-yet-released DROP now forces a genuine hard cut (not `safe_default`'s dim wash) until the downbeat releases it. `core/show_state.py`'s `drop_pending` field, `core/show_engine.py` wiring; tests: `tests/test_merge.py::test_drop_pending_forces_a_hard_cut`, `::test_manual_blackout_wins_over_drop_pending` |
+| `drop_blackout_hit` (new look, [DROP]) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `DropBlackoutHit` -- static color/position (no beat-pulse, no continuous hue, matching "the cut IS the effect"), alternates `blood_red`/`cold_steel` by `drop_cycle` (not audio -- Josh's "doesn't have to be white" preference, satisfied without contradicting "static, nothing reacts"), `conflicts` with every BUILD-bucket scene name; tests: `tests/test_scenes.py::test_drop_blackout_hit_alternates_blood_red_and_cold_steel_by_drop_cycle`, `::test_drop_blackout_hit_color_is_static_not_audio_reactive`, `::test_drop_blackout_hit_conflicts_with_every_build_scene` |
+| `drop_strobe_stab` (new look, [DROP]) | NOT-IMPLEMENTED | PARTIAL | `scenes/library.py`'s `DropStrobeStab` -- provides the color/movement context; the actual "native-strobe stabs" are already produced by `ReactiveLayerEngine`'s own strobe channel (a separate DMX byte, unaffected by which Phrase scene is active) -- this look deliberately doesn't touch that channel itself. Still subject to the pre-existing, separately-tracked SAFE-01..06 Hz-calibration gap (unrelated to this look, not re-litigated here); test: `tests/test_scenes.py::test_drop_strobe_stab_does_not_touch_the_strobe_channel_itself` |
+| `build_riser_wash` (new look, [BUILD]) | NOT-IMPLEMENTED (ramp existed only inside `ReactiveLayerEngine`, no selectable look identity) | PARTIAL | `scenes/library.py`'s `BuildRiserWash` -- gives the existing, already-correct (`LOOK-04`, PASS) bar-position ramp a real catalog identity; does NOT implement "static:[hue]" for this specific look (disclosed, not faked -- would need new per-scene state tracking); test: `tests/test_scenes.py::test_build_riser_wash_does_not_set_wash_intensity` |
+
+**Re-verified against the real capture, running the full pipeline** (`Metronome` → `ReactiveLayerEngine`/`PhraseEngine` → merge/finalize, not just isolated unit tests): `Drop Blackout Hit` was genuinely selected and rendered during a real drop (t=80.9s); the `drop_pending` blackout fired a real, clean 0.4s hard cut immediately before the second drop's release, confirmed all-zero via the actual `finalize()` output, then released cleanly the instant the downbeat arrived. `Drop Strobe Stab`/`Build Riser Wash` weren't round-robin-selected in this particular ~380s replay (11 scenes now share the rotation cursor) -- not a defect, just this replay's luck of timing; both are directly exercised by their own unit tests. Caught and fixed a verification-script bug during this same pass: an earlier version of the replay script fed `energy_norm`/`beat_in_bar` into a fresh `Metronome` instance but never advanced its internal `bar` counter, which silently froze `PhraseEngine`'s rotation check (it only acts "on a new bar") for the entire replay -- worth remembering alongside Phase 3's similar caught-in-verification lesson.
+
 ## Phase 1 delta log (updated as Phase 1 code lands)
 
 | Rule | Before | After | Evidence |

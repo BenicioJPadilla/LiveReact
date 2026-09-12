@@ -106,6 +106,12 @@ class ShowSnapshot:
     # already had several drops. Not consumed by anything yet -- see
     # docs/bible_integration/SPEC_DEVIATIONS.md's D1 entry.
     transition_likely: bool = False
+    # `build_to_drop_bridge` (Bible-integration Phase 5): true while a DROP
+    # is confirmed but held for beat-quantized release (core/metronome.py's
+    # `_pending_drop_release`, Phase 3) -- "holds dark on the final bar,
+    # releases to the DROP look on the downbeat." See merge/merge.py's
+    # finalize() for where this actually forces the hard cut.
+    drop_pending: bool = False
     in_transition: bool = False          # inferred / synthetic
 
     # --- health / confidence ---

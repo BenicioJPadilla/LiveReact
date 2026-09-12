@@ -196,6 +196,29 @@ def test_auto_blackout_renders_safe_default_when_a_frame_is_given():
     assert any(out)  # NOT a hard zero -- the whole point of this fix
 
 
+def test_drop_pending_forces_a_hard_cut():
+    """Bible-integration Phase 5, build_to_drop_bridge/blackout_beat: "holds
+    dark on the final bar, releases to the DROP look on the downbeat" -- a
+    genuine hard cut, distinct from safe_default's dim wash."""
+    rig = _rig()
+    mh = rig.fixture("mh_l")
+    c = Contribution()
+    mh.set_intensity(c, 1.0)
+    merged = merge_contributions([c], rig)
+    out = finalize(merged, rig, ManualParams(), drop_pending=True)
+    assert out == bytes(len(out))
+
+
+def test_manual_blackout_wins_over_drop_pending():
+    rig = _rig()
+    mh = rig.fixture("mh_l")
+    c = Contribution()
+    mh.set_intensity(c, 1.0)
+    merged = merge_contributions([c], rig)
+    out = finalize(merged, rig, ManualParams(blackout=True), drop_pending=True)
+    assert out == bytes(len(out))  # both agree on hard-zero here, just confirming no crash/precedence issue
+
+
 def test_manual_blackout_still_wins_instantly_even_with_a_safe_default_frame():
     """The operator's own hard kill switch is deliberately unchanged by this
     fix -- it's a different concern from the automatic no-music failsafe."""

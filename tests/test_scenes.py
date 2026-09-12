@@ -15,14 +15,15 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
-def test_eight_scenes_across_all_buckets():
+def test_eleven_scenes_across_all_buckets():
     """Bible-integration Phase 2: PEAK and OUTRO are genuinely new states
     (see EnergyBucket's own docstring) that no scene declares yet -- an
-    expected, interim gap, not a bug; Phase 5 is what actually builds looks
-    for them. Only BREAK/BUILD/DROP (the buckets this interim 8-scene
-    catalog still covers) are checked here."""
+    expected, interim gap, not a bug; later Phase 5 waves build looks for
+    them. Only BREAK/BUILD/DROP (the buckets this catalog covers so far)
+    are checked here. 11 = the original 8 + Phase 5's first wave
+    (DropBlackoutHit, DropStrobeStab, BuildRiserWash)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 8
+    assert len(ALL_SCENES) == 11
     for bucket in (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP):
         assert cat.bucket(bucket), f"{bucket} has no scenes"
     for bucket in (EnergyBucket.PEAK, EnergyBucket.OUTRO):
@@ -38,6 +39,11 @@ def test_every_scene_renders_some_output():
 
 
 def test_only_drop_scenes_touch_laser_channels():
+    """One-directional: a non-DROP scene must NEVER touch laser channels.
+    The reverse isn't required -- Bible-integration Phase 5 added DROP
+    scenes (DropBlackoutHit, DropStrobeStab) that deliberately don't use
+    lasers at all (restraint, TIME-21 -- not every DROP look needs every
+    fixture)."""
     rig = load_rig()
     snap = _snap(energy=1.0)
     laser = rig.fixture("laser_l")
@@ -45,7 +51,8 @@ def test_only_drop_scenes_touch_laser_channels():
         scene = cls()
         c = scene.render(rig, snap, 1.0)
         touched_laser = any(c.touched[laser.offset + i] for i in range(12))
-        assert touched_laser == (scene.bucket == EnergyBucket.DROP), cls.__name__
+        if touched_laser:
+            assert scene.bucket == EnergyBucket.DROP, cls.__name__
 
 
 def test_scenes_are_visually_distinct():
@@ -164,6 +171,56 @@ def test_pick_never_hard_fails_even_if_everything_conflicts():
     cat = SceneCatalog([_A(), _B()])
     a = cat.bucket(EnergyBucket.DROP)[0]
     assert cat.pick(EnergyBucket.DROP, exclude=a) is not None  # never fails to select something
+
+
+# --- Bible-integration Phase 5, first wave: DropBlackoutHit, DropStrobeStab, BuildRiserWash
+
+def test_drop_blackout_hit_alternates_blood_red_and_cold_steel_by_drop_cycle():
+    from livereact.scenes.library import BLOOD_RED, COLD_STEEL, DropBlackoutHit
+    rig = load_rig()
+    par = rig.fixture("par_l")
+    even = DropBlackoutHit().render(rig, _snap(drop_cycle=2), 1.0)
+    odd = DropBlackoutHit().render(rig, _snap(drop_cycle=3), 1.0)
+    r, g, b = (round(v * 255) for v in BLOOD_RED)
+    assert (even.values[par.offset + 1], even.values[par.offset + 2], even.values[par.offset + 3]) == (r, g, b)
+    r, g, b = (round(v * 255) for v in COLD_STEEL)
+    assert (odd.values[par.offset + 1], odd.values[par.offset + 2], odd.values[par.offset + 3]) == (r, g, b)
+
+
+def test_drop_blackout_hit_color_is_static_not_audio_reactive():
+    """"reactivity: static all, kick_follow:false -- the cut IS the effect."""
+    from livereact.scenes.library import DropBlackoutHit
+    rig = load_rig()
+    quiet = DropBlackoutHit().render(rig, _snap(energy=0.1, drop_cycle=0, eq_low_a=0.9, eq_mid_a=0.05, eq_high_a=0.05), 1.0)
+    loud = DropBlackoutHit().render(rig, _snap(energy=1.0, drop_cycle=0, eq_low_a=0.05, eq_mid_a=0.05, eq_high_a=0.9), 1.0)
+    par = rig.fixture("par_l")
+    assert quiet.values[par.offset + 1:par.offset + 4] == loud.values[par.offset + 1:par.offset + 4]
+
+
+def test_drop_blackout_hit_conflicts_with_every_build_scene():
+    from livereact.scenes.library import ALL_SCENES, DropBlackoutHit
+    build_scene_names = {cls().name for cls in ALL_SCENES if cls().bucket == EnergyBucket.BUILD}
+    assert build_scene_names <= DropBlackoutHit.conflicts
+
+
+def test_drop_strobe_stab_does_not_touch_the_strobe_channel_itself():
+    """The strobe stab itself belongs to ReactiveLayerEngine's own strobe
+    channel (a separate DMX byte) -- this scene only provides color context."""
+    from livereact.scenes.library import DropStrobeStab
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    c = DropStrobeStab().render(rig, _snap(), 1.0)
+    assert not c.touched[bar.offset + 1]  # ch2 = strobe, untouched by this scene
+
+
+def test_build_riser_wash_does_not_set_wash_intensity():
+    """paint_wash deliberately never sets intensity -- that's owned
+    exclusively by ReactiveLayerEngine's own bar-position ramp."""
+    from livereact.scenes.library import BuildRiserWash
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    c = BuildRiserWash().render(rig, _snap(), 1.0)
+    assert not c.touched[bar.offset]  # ch1 = dimmer, untouched
 
 
 def test_safe_default_renders_static_neutral_wash_no_motion_no_laser():

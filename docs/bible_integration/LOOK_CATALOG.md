@@ -38,7 +38,9 @@ static:[hue], kick_follow:false, justification:"the ramp IS the build; drive it
 from bar position, not audio, to stay predictable"}`. `dark 30→0%`, `min_hold 8`.
 Escalation: "dimmer + fixture count rise; strobe/laser/prism held for the drop."
 **Already mostly built** in `engines/reactive.py`'s `_bucket_wash_level` BUILD
-branch (`LOOK-04`, confirmed PASS) — Phase 5 gives it a real `Scene` identity.
+branch (`LOOK-04`, confirmed PASS). **Built 2026-09-12**: `scenes/library.py`'s
+`BuildRiserWash` gives it a real `Scene` identity; "static:[hue]" NOT
+implemented for this specific look, disclosed in the class's own docstring.
 
 ### `build_snare_accent` (772-776)
 `[BUILD]`, bigroom. `requires{wash or blinder, native strobe or dimmer}`.
@@ -60,7 +62,9 @@ build_riser_wash`. `movement{tilt_raise, ramp, period=build, tilt 20→70%}`.
 `roles{wash full, spot full open}`. `color{blood_red or cold_steel, unison}`.
 `reactivity{static all, kick_follow:false, justification:"the cut IS the
 effect; nothing reacts"}`. `dark 10%`, `min_hold 8`.
-`conflicts[all build looks]`. First-wave priority (Phase 5).
+`conflicts[all build looks]`. **Built 2026-09-12**: `scenes/library.py`'s
+`DropBlackoutHit`. `transition_in blackout_beat` is handled separately by
+`build_to_drop_bridge`'s merge-level mechanism, not this class.
 
 ### `drop_beam_fan` (790-801)
 `[DROP,PEAK]`, both. `requires{spot, wheel+, pan_tilt, atm 0.6, spot≥2}`.
@@ -78,8 +82,10 @@ on this rig** (also only 1 spot fixture — `spot≥2` unmet regardless of atm).
 `[DROP]`, both. `requires{wash or blinder, native_strobe_channel}`.
 `reactivity{audio:[strobe gated to drop-accent bars only], kick_follow:false}`.
 "Uses native strobe channel, never dimmer toggling (§11). ≤ §13 limit."
-`dark 20%`, `min_hold 8`. First-wave priority (Phase 5) — real, hardware-
-verified strobe path already exists (`WashBar.set_strobe`).
+`dark 20%`, `min_hold 8`. **Built 2026-09-12**: `scenes/library.py`'s
+`DropStrobeStab` — real, hardware-verified strobe path already exists
+(`WashBar.set_strobe`, owned by `ReactiveLayerEngine`, unaffected by which
+Phrase scene runs); this class supplies color/movement context only.
 
 ### `drop_color_slam_bigroom` (807-811)
 `[DROP,PEAK]`, bigroom. `requires{wash, spot, atm 0.0}`. `color{sunset_split,
@@ -200,8 +206,11 @@ sequential by x_norm; 5-8:even phase; 9+:phase+subgroup}`. `dark 30%`,
 `[BUILD→DROP]`. "managed handoff for the pre-drop bar." `transition_in
 blackout_beat`. "Holds dark on the final bar, releases to the DROP look on the
 downbeat." `min_hold 1`. **No `requires{}`/`degrade`/etc. given — same
-under-specification pattern as `spot_position_change`.** First-wave priority
-(Phase 5) alongside `drop_blackout_hit`.
+under-specification pattern as `spot_position_change`.** **Built
+2026-09-12** as a merge-level mechanism, not a `Scene` subclass (it's a
+cross-cutting cue, not something `SceneCatalog.pick()` would ever choose)
+— reuses Phase 3's `_pending_drop_release` beat-quantization directly;
+see `merge/merge.py`'s `finalize(..., drop_pending=...)`.
 
 ## Summary tables
 
