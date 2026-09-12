@@ -102,6 +102,44 @@ class SafeDefault(Scene):
 SAFE_DEFAULT = SafeDefault()
 
 
+class AllDark(Scene):
+    """LIGHTING_BIBLE.md §5's `all_dark`: "reserved darkness / cut. any
+    mode... roles all 0... transition snap... min_hold 1 (momentary)."
+
+    Deliberately NOT part of `ALL_SCENES`/the rotation pool -- same
+    reasoning as `SafeDefault` above: a "reserved... any mode" cut is
+    something an operator or a future console binding calls on request
+    (e.g. via `PhraseEngine.force_scene(ALL_DARK)`), not a look
+    `SceneCatalog.pick()` should ever hand out on its own. Unlike
+    `build_to_drop_bridge` (a similarly cross-cutting Bible cue, but one
+    with an explicit stated trigger point -- "the final bar before a drop
+    release" -- already wired into `merge/merge.py`'s `finalize()`), the
+    Bible gives `all_dark` no trigger condition at all beyond "any mode,"
+    so no automatic firing path is wired here either -- disclosed as an
+    open question, not fabricated. A single shared instance (`ALL_DARK`
+    below) mirrors `SAFE_DEFAULT`'s pattern for callers."""
+
+    name = "All Dark"
+    bucket = EnergyBucket.BREAK  # nominal only -- never selected via pick()
+    uses_lasers = False
+    min_hold_bars = 1  # "momentary"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        for fx in rig.by_role("wash"):
+            if isinstance(fx, (Par, WashBar)):
+                fx.set_intensity(c, 0.0)
+        for fx in rig.by_role("spot"):
+            fx.set_intensity(c, 0.0)
+        # No color, no position, no laser -- "roles all 0" means every
+        # intensity channel to zero; nothing else is commanded (same
+        # "leave position/laser alone" restraint as SafeDefault above).
+        return c
+
+
+ALL_DARK = AllDark()
+
+
 # --- painting helpers shared by scenes -------------------------------------
 
 def paint_wash(c: Contribution, rig: Rig, r: float, g: float, b: float) -> None:

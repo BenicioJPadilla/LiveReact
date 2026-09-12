@@ -201,6 +201,7 @@ class DropBlackoutHit(Scene):
     bucket = EnergyBucket.DROP
     conflicts = frozenset({
         "Rising Tide", "Converge", "Pulse & Drift Sustain", "Locked Hold", "Build Riser Wash",
+        "Chase Wash L/R",  # added Phase 5 fifth wave -- also a BUILD-bucket look
     })  # "conflicts[all build looks]"
     min_hold_bars = 8
     dark_pct = 0.10
@@ -580,6 +581,73 @@ class OutroSingleBeam(Scene):
         return c
 
 
+# --- bridge/utility, Bible-integration Phase 5, fifth wave (docs/bible_
+# integration/LOOK_CATALOG.md's "Utility / structural" section, §5 lines
+# 872-890). `all_dark` and `safe_default` both belong here too, but they're
+# "reserved... any mode" cues, not per-bucket rotation looks -- built in
+# scenes/base.py instead, alongside SafeDefault (see AllDark/ALL_DARK
+# there). `spot_position_change` is deliberately NOT built this wave: the
+# Bible's own catalog entry for it already flags it as under-specified
+# relative to the other 29 looks (no requires{}/degrade/conflicts/color/
+# dark%/min_hold given at all), and it depends on the same "named position"
+# mechanism this codebase doesn't have (see BreakSingleSpotSpecial's
+# dj_booth/OutroSingleBeam's ceiling_bounce gaps) -- deferred rather than
+# fabricated, same treatment as build_snare_accent. `mirror_cross_beam`
+# (also filed under this section in the catalog) is atm-gated (requires
+# atm 0.6) and requires spot>=2 (this rig only has 1) -- left for the
+# atmosphere-gated-stubs wave instead, where it belongs with the other
+# always-degrading atm-gated looks, not this wave.
+
+class ChaseWashLr(Scene):
+    """LIGHTING_BIBLE.md §5: `chase_wash_lr` -- "[BUILD,PEAK]... movement{
+    chase, period_bars 2, phase by x_norm}... scaling{2:L then R}." This
+    rig's wash fixtures (Par/WashBar) have no pan/tilt at all -- "movement"
+    here can only mean a genuine per-fixture INTENSITY chase (one wash
+    fixture brightening while the other dims), so -- like PeakColorPulseClear
+    -- this is a deliberate, disclosed exception to paint_wash's "never set
+    intensity" rule: the chase IS the look's whole mechanic, not an ambient
+    level competing with Reactive's own pulse.
+
+    There's no `x_norm` field anywhere in this codebase (only `side`,
+    left/right) -- with exactly the 2 wash fixtures this rig has, that's
+    the same case the Bible's own `scaling{2:L then R}` already names
+    directly, so `side` stands in for `x_norm` here rather than inventing a
+    new field for a case this rig can't even exercise beyond 2.
+
+    Tagged `[BUILD,PEAK]` in the Bible, but `Scene.bucket` is single-valued
+    in this codebase (`SceneCatalog` groups strictly one bucket per scene) --
+    filed under BUILD only; the PEAK half of that tag is a disclosed,
+    not-yet-modeled limitation of the current Scene shape, not something
+    silently dropped. `requires{wash>=2}` is genuinely satisfied here (par +
+    wash bar), so this look is NOT a degrade-only stub like the atm-gated
+    ones.
+
+    Doesn't touch spot fixtures at all -- `requires{}` names only wash, and
+    (same reasoning as OutroSingleBeam) painting them would just be noise
+    against a look whose entire mechanic is the wash-to-wash chase."""
+
+    name = "Chase Wash L/R"
+    bucket = EnergyBucket.BUILD
+    dark_pct = 0.30
+    min_hold_bars = 8
+    reactivity_note = "movement only (chase, period_bars 2); no reactivity{} block given by the Bible for this look"
+    color_note = "not specified by the Bible for this look -- reuses two_axis_color for BUILD-family consistency with Rising Tide/Converge"
+
+    PERIOD_BARS = 2.0
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        pos = musical_bar_position(snap)
+        for fx in rig.by_role("wash"):
+            if isinstance(fx, (Par, WashBar)):
+                phase = 0.5 if fx.side == "right" else 0.0  # "L then R" -- R half a cycle behind L
+                level = 0.5 + 0.5 * math.sin(2 * math.pi * (pos / self.PERIOD_BARS - phase))
+                fx.set_intensity(c, level * intensity)
+                fx.set_color(c, r, g, b)
+        return c
+
+
 # --- hold / sustain (loops, post-transition, plateaus) ----------------------
 
 class PulseAndDriftSustain(Scene):
@@ -642,4 +710,6 @@ ALL_SCENES: list[type[Scene]] = [
     # Bible-integration Phase 5, fourth wave -- OUTRO family:
     OutroFadeWash,
     OutroSingleBeam,
+    # Bible-integration Phase 5, fifth wave -- bridge/utility:
+    ChaseWashLr,
 ]

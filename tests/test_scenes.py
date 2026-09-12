@@ -15,17 +15,18 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
-def test_twenty_scenes_across_all_buckets():
+def test_twentyone_scenes_across_all_buckets():
     """Bible-integration Phase 2: OUTRO was a genuinely new state (see
     EnergyBucket's own docstring) with no scene at all until Phase 5's
-    fourth wave -- now every bucket has at least one look. 20 = the
+    fourth wave -- now every bucket has at least one look. 21 = the
     original 8 + Phase 5's first wave (DropBlackoutHit, DropStrobeStab,
     BuildRiserWash) + second wave (PeakFullRig, PeakColorPulseClear,
     PeakAltHitsClear) + third wave (BreakLowWash, BreakSingleSpotSpecial,
     BreakCeilingDrift, BreakColorHoldClear) + fourth wave (OutroFadeWash,
-    OutroSingleBeam)."""
+    OutroSingleBeam) + fifth wave (ChaseWashLr -- AllDark, like SafeDefault,
+    is deliberately NOT part of ALL_SCENES, see scenes/base.py)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 20
+    assert len(ALL_SCENES) == 21
     for bucket in EnergyBucket:
         assert cat.bucket(bucket), f"{bucket} has no scenes"
 
@@ -450,6 +451,67 @@ def test_safe_default_renders_static_neutral_wash_no_motion_no_laser():
     assert not any(c.touched[laser.offset + i] for i in range(12))  # laser untouched
     mh = rig.fixture("mh_l")
     assert not c.touched[mh.offset]  # pan untouched -- no motion commanded
+
+
+# --- Bible-integration Phase 5, fifth wave: AllDark, ChaseWashLr
+
+def test_all_dark_zeroes_every_intensity_channel_no_motion_no_laser():
+    """all_dark: "roles all 0" -- every wash/spot dimmer to zero, nothing
+    else touched (same "leave position/laser alone" restraint as
+    SafeDefault, not part of ALL_SCENES/the rotation pool)."""
+    from livereact.scenes.base import ALL_DARK
+    rig = load_rig()
+    snap = _snap()
+    c = ALL_DARK.render(rig, snap, 1.0)
+    par = rig.fixture("par_l")
+    bar = rig.fixture("bar_l")
+    mh = rig.fixture("mh_l")
+    assert c.values[par.offset] == 0
+    assert c.values[bar.offset] == 0
+    assert c.values[mh.offset + 5] == 0  # ch6 dimmer
+    laser = rig.fixture("laser_l")
+    assert not any(c.touched[laser.offset + i] for i in range(12))  # laser untouched
+    assert not c.touched[mh.offset]  # pan untouched -- no motion commanded
+
+
+def test_all_dark_not_in_rotation_pool():
+    from livereact.scenes.library import ALL_SCENES
+    assert "All Dark" not in {cls().name for cls in ALL_SCENES}
+
+
+def test_chase_wash_lr_alternates_left_and_right_out_of_phase():
+    """"scaling{2:L then R}" -- with the period_bars=2 chase, L and R should
+    be at opposite points in their cycle at any given moment, not moving
+    together."""
+    from livereact.scenes.library import ChaseWashLr
+    rig = load_rig()
+    par_l = rig.fixture("par_l")  # side="left"
+    par_r = rig.fixture("par_r")  # side="right"
+    scene = ChaseWashLr()
+    # bar=0, beat_in_bar=3 -> musical_bar_position=0.5, a quarter into the
+    # period_bars=2 cycle -- NOT a zero-crossing (unlike bar=0/beat=1, where
+    # L and R's opposite-phase sine values both happen to cross zero at the
+    # same instant and misleadingly look equal despite being out of phase).
+    c = scene.render(rig, _snap(bar=0, beat_in_bar=3, beat_phase=0.0), 1.0)
+    assert c.values[par_l.offset] != c.values[par_r.offset]
+
+
+def test_chase_wash_lr_completes_one_cycle_every_two_bars():
+    from livereact.scenes.library import ChaseWashLr
+    rig = load_rig()
+    par = rig.fixture("par_l")
+    scene = ChaseWashLr()
+    at_0 = scene.render(rig, _snap(bar=0, beat_in_bar=1, beat_phase=0.0), 1.0).values[par.offset]
+    at_2 = scene.render(rig, _snap(bar=2, beat_in_bar=1, beat_phase=0.0), 1.0).values[par.offset]
+    assert abs(at_0 - at_2) <= 1  # a full period_bars=2 cycle returns to the same level (+-1 byte fp rounding)
+
+
+def test_chase_wash_lr_does_not_touch_spots():
+    from livereact.scenes.library import ChaseWashLr
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    c = ChaseWashLr().render(rig, _snap(), 1.0)
+    assert not any(c.touched[mh.offset:mh.offset + mh.channel_count])
 
 
 def test_converge_two_spots_matches_original_spread():
