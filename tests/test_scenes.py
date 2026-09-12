@@ -15,19 +15,18 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
-def test_eleven_scenes_across_all_buckets():
-    """Bible-integration Phase 2: PEAK and OUTRO are genuinely new states
-    (see EnergyBucket's own docstring) that no scene declares yet -- an
-    expected, interim gap, not a bug; later Phase 5 waves build looks for
-    them. Only BREAK/BUILD/DROP (the buckets this catalog covers so far)
-    are checked here. 11 = the original 8 + Phase 5's first wave
-    (DropBlackoutHit, DropStrobeStab, BuildRiserWash)."""
+def test_fourteen_scenes_across_all_buckets():
+    """Bible-integration Phase 2: OUTRO is still a genuinely new state (see
+    EnergyBucket's own docstring) with no scene yet -- an expected, interim
+    gap, not a bug; a later Phase 5 wave builds looks for it. 14 = the
+    original 8 + Phase 5's first wave (DropBlackoutHit, DropStrobeStab,
+    BuildRiserWash) + second wave (PeakFullRig, PeakColorPulseClear,
+    PeakAltHitsClear)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 11
-    for bucket in (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP):
+    assert len(ALL_SCENES) == 14
+    for bucket in (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP, EnergyBucket.PEAK):
         assert cat.bucket(bucket), f"{bucket} has no scenes"
-    for bucket in (EnergyBucket.PEAK, EnergyBucket.OUTRO):
-        assert not cat.bucket(bucket), f"{bucket} unexpectedly has a scene already -- update this test"
+    assert not cat.bucket(EnergyBucket.OUTRO), "OUTRO unexpectedly has a scene already -- update this test"
 
 
 def test_every_scene_renders_some_output():
@@ -221,6 +220,87 @@ def test_build_riser_wash_does_not_set_wash_intensity():
     bar = rig.fixture("bar_l")
     c = BuildRiserWash().render(rig, _snap(), 1.0)
     assert not c.touched[bar.offset]  # ch1 = dimmer, untouched
+
+
+# --- Bible-integration Phase 5, second wave: PeakFullRig, PeakColorPulseClear, PeakAltHitsClear
+
+def test_peak_full_rig_spots_at_full_intensity():
+    from livereact.scenes.library import PeakFullRig
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    c = PeakFullRig().render(rig, _snap(), 1.0)
+    assert c.values[mh.offset + 5] == 255  # ch6 dimmer, "spot 100%"
+
+
+def test_peak_full_rig_fan_completes_one_cycle_every_four_bars():
+    from livereact.scenes.library import PeakFullRig
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    scene = PeakFullRig()
+    at_0 = scene.render(rig, _snap(bar=0, beat_in_bar=1, beat_phase=0.0), 1.0).values[mh.offset]
+    at_4 = scene.render(rig, _snap(bar=4, beat_in_bar=1, beat_phase=0.0), 1.0).values[mh.offset]
+    assert abs(at_0 - at_4) <= 1  # a full period_bars=4 cycle returns to the same pan (+-1 byte fp rounding)
+
+
+def test_peak_color_pulse_clear_only_pulses_on_the_downbeat():
+    from livereact.scenes.library import PeakColorPulseClear
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    scene = PeakColorPulseClear()
+    on_beat = scene.render(rig, _snap(beat_in_bar=1, beat_phase=0.0), 1.0)
+    off_beat = scene.render(rig, _snap(beat_in_bar=2, beat_phase=0.0), 1.0)
+    assert on_beat.values[bar.offset] > 0
+    assert off_beat.values[bar.offset] == 0
+
+
+def test_peak_color_pulse_clear_decays_across_the_downbeat():
+    from livereact.scenes.library import PeakColorPulseClear
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    scene = PeakColorPulseClear()
+    early = scene.render(rig, _snap(beat_in_bar=1, beat_phase=0.0), 1.0).values[bar.offset]
+    late = scene.render(rig, _snap(beat_in_bar=1, beat_phase=0.9), 1.0).values[bar.offset]
+    assert early > late
+
+
+def test_peak_color_pulse_clear_is_actually_visible_through_reactives_htp_hold():
+    """Verified, not just theorized: DIMMER merges by HTP (max), so this
+    scene's pulse could in principle be masked by ReactiveLayerEngine's own
+    PEAK hold -- confirmed it genuinely shows through for realistic
+    drop_hit_intensity values, only disappearing once the hit itself is
+    already near-maximum (both sides already at the ceiling)."""
+    from livereact.clock import FakeClock
+    from livereact.core.show_state import ShowSnapshot
+    from livereact.engines.reactive import ReactiveLayerEngine
+    from livereact.merge.merge import merge_contributions
+    from livereact.scenes.library import PeakColorPulseClear
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    scene = PeakColorPulseClear()
+
+    def _merged_at(hit: float, beat_in_bar: int) -> int:
+        reactive = ReactiveLayerEngine(FakeClock())
+        snap = ShowSnapshot(energy=1.0, energy_norm=1.0, bucket="peak", drop_hit_intensity=hit,
+                             beat_in_bar=beat_in_bar, beat_phase=0.0, fader_a=1.0, eq_low_a=0.5)
+        c_r = reactive.tick(snap, rig)
+        c_r.priority = reactive.priority
+        c_p = scene.render(rig, snap, 1.0)
+        c_p.priority = 50
+        return merge_contributions([c_r, c_p], rig)[bar.offset]
+
+    assert _merged_at(0.85, beat_in_bar=1) > _merged_at(0.85, beat_in_bar=3)  # a real, typical hit: pulse visible
+
+
+def test_peak_alt_hits_clear_alternates_by_bar_on_a_single_fixture():
+    from livereact.scenes.library import PeakAltHitsClear
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    scene = PeakAltHitsClear()
+    bar0 = scene.render(rig, _snap(bar=0), 1.0).values[mh.offset]
+    bar1 = scene.render(rig, _snap(bar=1), 1.0).values[mh.offset]
+    bar2 = scene.render(rig, _snap(bar=2), 1.0).values[mh.offset]
+    assert bar0 != bar1  # snaps between the two positions each bar
+    assert bar0 == bar2  # and returns on the next even bar -- true alternation, not drift
 
 
 def test_safe_default_renders_static_neutral_wash_no_motion_no_laser():

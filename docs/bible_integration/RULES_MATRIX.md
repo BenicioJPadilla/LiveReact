@@ -126,6 +126,19 @@ utility/atmosphere-gated waves are follow-up work under the same phase.
 
 **Re-verified against the real capture, running the full pipeline** (`Metronome` → `ReactiveLayerEngine`/`PhraseEngine` → merge/finalize, not just isolated unit tests): `Drop Blackout Hit` was genuinely selected and rendered during a real drop (t=80.9s); the `drop_pending` blackout fired a real, clean 0.4s hard cut immediately before the second drop's release, confirmed all-zero via the actual `finalize()` output, then released cleanly the instant the downbeat arrived. `Drop Strobe Stab`/`Build Riser Wash` weren't round-robin-selected in this particular ~380s replay (11 scenes now share the rotation cursor) -- not a defect, just this replay's luck of timing; both are directly exercised by their own unit tests. Caught and fixed a verification-script bug during this same pass: an earlier version of the replay script fed `energy_norm`/`beat_in_bar` into a fresh `Metronome` instance but never advanced its internal `bar` counter, which silently froze `PhraseEngine`'s rotation check (it only acts "on a new bar") for the entire replay -- worth remembering alongside Phase 3's similar caught-in-verification lesson.
 
+## Phase 5 delta log, second wave (2026-09-12 -- PEAK family)
+
+PEAK went from zero looks (a real, total gap -- the state is new, nothing
+had ever populated it) to three.
+
+| Rule | Before | After | Evidence |
+|---|---|---|---|
+| `peak_full_rig` (new look) | NOT-IMPLEMENTED | PARTIAL | `scenes/library.py`'s `PeakFullRig` -- full spot intensity, a genuine slow 4-bar fan (distinct from DROP scenes' much faster sweeps); "static hue" not fully implemented (same disclosed gap as `BuildRiserWash`); tests: `tests/test_scenes.py::test_peak_full_rig_spots_at_full_intensity`, `::test_peak_full_rig_fan_completes_one_cycle_every_four_bars` |
+| `peak_color_pulse_clear` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `PeakColorPulseClear` -- a real bar-downbeat-only pulse, deliberately overriding wash intensity (the one exception to "Reactive owns dimmer," justified since this is a slow 1/bar quantized signal, not a competing per-tick chase). **Verified, not just theorized**, that the pulse actually shows through Reactive's own HTP dimmer hold for realistic `drop_hit_intensity` values (255 on-beat vs. 192-217 off-beat at 0.85-0.90), only disappearing once the hit itself is already ~0.97+ (both sides already maxed); tests: `tests/test_scenes.py::test_peak_color_pulse_clear_only_pulses_on_the_downbeat`, `::test_peak_color_pulse_clear_decays_across_the_downbeat`, `::test_peak_color_pulse_clear_is_actually_visible_through_reactives_htp_hold` |
+| `peak_alt_hits_clear` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `PeakAltHitsClear` -- generalized for this rig's single spot fixture the same way `Converge` was (`MOVE-12`): snaps between two positions every bar rather than a smooth sweep, matching `snap_alternate`'s "snap, don't sweep" semantics; tests: `tests/test_scenes.py::test_peak_alt_hits_clear_alternates_by_bar_on_a_single_fixture` |
+
+**Re-verified against the real capture, full pipeline**: `Peak Full Rig` was genuinely selected and rendered during a real PEAK-bucket window (t=228.5s-238.9s); `Drop Strobe Stab`, `Peak Alt Hits Clear`, and `Peak Color Pulse Clear` were also exercised during the same replay (as crossfade participants, not necessarily long-settled). `Build Riser Wash` and `Locked Hold` weren't picked in this particular ~380s replay -- round-robin timing across 14 scenes now sharing the cursor, not a defect; both remain directly unit-tested.
+
 ## Phase 1 delta log (updated as Phase 1 code lands)
 
 | Rule | Before | After | Evidence |

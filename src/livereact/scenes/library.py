@@ -17,6 +17,7 @@ from ..color import hsv_to_rgb
 from ..dynamics import beat_pulse, musical_bar_position
 from ..core.show_state import ShowSnapshot
 from ..engines.color import laser_color_for_bands, two_axis_color
+from ..fixtures.profiles import Par, WashBar
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
 from .base import EnergyBucket, Scene, paint_spots, paint_wash
@@ -267,6 +268,102 @@ class BuildRiserWash(Scene):
         return c
 
 
+# --- peak (post-drop escalation, LIGHTING_BIBLE.md's genuinely new state,
+# reached only via a sustained DROP -- see EnergyBucket's own docstring,
+# scenes/base.py) ------------------------------------------------------------
+
+class PeakFullRig(Scene):
+    """LIGHTING_BIBLE.md §5: "everything committed" -- full-intensity spots,
+    a slow synchronized fan, static hue+pan (not beat-reactive). Wash
+    intensity is deliberately not set here (Reactive already holds PEAK at
+    `drop_hit_intensity + PEAK_BOOST`, see engines/reactive.py)."""
+
+    name = "Peak Full Rig"
+    bucket = EnergyBucket.PEAK
+    reactivity_note = "static hue+pan, kick_follow:false -- hue NOT fully frozen here, see class docstring (same disclosed gap as BuildRiserWash)"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, intensity)  # "spot 100%"
+        pos = musical_bar_position(snap)
+        for fx in rig.by_role("spot"):
+            mirror = 1.0 if fx.side == "left" else -1.0
+            # "slow fan, period_bars 4" -- a full cycle every 4 bars, much
+            # slower than DROP scenes' fast sweeps (period_bars ~0.5-1).
+            fx.set_position(c, 0.5 + 0.3 * math.sin(pos * (2 * math.pi / 4.0)) * mirror, 0.5)
+        return c
+
+
+class PeakColorPulseClear(Scene):
+    """LIGHTING_BIBLE.md §5: "bar-synced color pulse, no beams" -- a real
+    per-bar emphasis pulse, distinct from Reactive's own steady PEAK hold.
+
+    Deliberately overrides wash intensity itself (unlike every other scene
+    in this catalog, which leaves that to ReactiveLayerEngine per paint_
+    wash's own docstring) -- the Bible is explicit this look's reactivity IS
+    "wash.dimmer on bar downbeat only, 1/bar," not a continuous ambient
+    level, so it doesn't repeat the old kick-follow-vs-ambient fight (that
+    was two DIFFERENT signals both chasing the SAME channel every tick; this
+    is one slow, quantized pulse). DIMMER is HTP (max), so this pulse only
+    becomes visible when it exceeds Reactive's own PEAK hold -- VERIFIED
+    (not just theorized) across the realistic `drop_hit_intensity` range:
+    at 0.85-0.90 the pulse genuinely shows (255 on-beat vs. 192-217
+    off-beat), only disappearing once the hit itself is already ~0.97+
+    (both sides already maxed -- a benign edge case, not a defect)."""
+
+    name = "Peak Color Pulse Clear"
+    bucket = EnergyBucket.PEAK
+    reactivity_note = "audio:[wash.dimmer on bar downbeat only, 1/bar], kick_follow:false"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        # "on bar downbeat only" -- a short pulse right at beat 1, decaying
+        # across the rest of the bar, same shape as beat_pulse but gated to
+        # only the bar's first beat instead of every beat.
+        on_downbeat = snap.beat_in_bar == 1
+        pulse = (1.0 - snap.beat_phase) if on_downbeat else 0.0
+        for fx in rig.by_role("wash"):
+            if isinstance(fx, (Par, WashBar)):
+                fx.set_intensity(c, pulse * intensity)
+                fx.set_color(c, r, g, b)
+        paint_spots(c, rig, r, g, b, 0.5 * intensity)
+        return c
+
+
+class PeakAltHitsClear(Scene):
+    """LIGHTING_BIBLE.md §5: "two spots alternate snap-hits to position, no
+    beams." `scaling{2:alternate L/R snap each bar}` -- generalized for this
+    rig's single spot fixture the same way Converge was (MOVE-12): with
+    nothing to alternate WITH, the one fixture itself snaps between two
+    positions every bar, matching the "alternate, don't sweep" shape
+    (`snap_alternate`, no interpolation) rather than Converge's continuous
+    search."""
+
+    name = "Peak Alt Hits Clear"
+    bucket = EnergyBucket.PEAK
+    dark_pct = 0.25
+    reactivity_note = "static all -- snap_alternate is bar-quantized, not audio-driven"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = 1.0, 1.0, 1.0
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, intensity)
+        spots = rig.by_role("spot")
+        n = len(spots)
+        for i, fx in enumerate(spots):
+            # 2+ fixtures: alternate WHICH ONE is at the "hit" position each
+            # bar. Exactly 1: the single fixture itself snaps between two
+            # positions each bar (n==1 makes i%2 always 0, so fold the bar
+            # parity in directly instead).
+            parity = (int(snap.bar) + (0 if n == 1 else i)) % 2
+            fx.set_position(c, 0.3 if parity == 0 else 0.7, 0.5)
+        return c
+
+
 # --- hold / sustain (loops, post-transition, plateaus) ----------------------
 
 class PulseAndDriftSustain(Scene):
@@ -317,4 +414,8 @@ ALL_SCENES: list[type[Scene]] = [
     DropBlackoutHit,
     DropStrobeStab,
     BuildRiserWash,
+    # Bible-integration Phase 5, second wave -- PEAK family:
+    PeakFullRig,
+    PeakColorPulseClear,
+    PeakAltHitsClear,
 ]

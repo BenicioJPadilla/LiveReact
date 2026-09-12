@@ -119,6 +119,7 @@ falls to round-robin per Open Question #3's default) until hardware changes.**
 `[PEAK]`, bigroom. `requires{wash, spot, atm 0.0}`. `roles{wash 85–100%, spot
 100%}`. `color{≤3 hues}`. `movement{spots slow fan, period_bars 4}`.
 `reactivity{static hue+pan, kick_follow:false}`. `dark 10%`, `min_hold 8`.
+**Built 2026-09-12**: `scenes/library.py`'s `PeakFullRig`.
 
 ### `peak_beam_sweep` (824-827)
 `[PEAK]`, techhouse. `requires{spot, pan_tilt, atm 0.6}`. `degrade_to:
@@ -140,11 +141,15 @@ bursts ≤ 1.5s then blackout, ≤ §13." `min_hold 4`.
 `[PEAK]`. `requires{wash, atm 0.0}`. `reactivity{audio:[wash.dimmer on bar
 downbeat only, 1/bar], kick_follow:false, justification:"one pulse per bar is
 bar emphasis, not kick-following"}`. `dark 15%`, `min_hold 8`.
+**Built 2026-09-12**: `scenes/library.py`'s `PeakColorPulseClear` — verified
+the pulse actually shows through Reactive's HTP dimmer hold for realistic
+hit intensities, not just in theory.
 
 ### `peak_alt_hits_clear` (862-865)
 `[PEAK]`. `requires{spot, pan_tilt, atm 0.0}`. `scaling{2:alternate L/R snap
 each bar}`. `movement{snap_alternate, period_bars 1}`. Static. `dark 25%`,
-`min_hold 8`. **Only 1 spot on this rig** — reuse `Converge`'s existing
+`min_hold 8`. **Built 2026-09-12**: `scenes/library.py`'s `PeakAltHitsClear`.
+**Only 1 spot on this rig** — reuse `Converge`'s existing
 single-fixture-substitution pattern (`MOVE-12`, confirmed PASS) per the plan.
 
 ## OUTRO (§5, lines 837-842)
