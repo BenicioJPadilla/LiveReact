@@ -15,15 +15,16 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
-def test_fourteen_scenes_across_all_buckets():
+def test_eighteen_scenes_across_all_buckets():
     """Bible-integration Phase 2: OUTRO is still a genuinely new state (see
     EnergyBucket's own docstring) with no scene yet -- an expected, interim
-    gap, not a bug; a later Phase 5 wave builds looks for it. 14 = the
+    gap, not a bug; a later Phase 5 wave builds looks for it. 18 = the
     original 8 + Phase 5's first wave (DropBlackoutHit, DropStrobeStab,
     BuildRiserWash) + second wave (PeakFullRig, PeakColorPulseClear,
-    PeakAltHitsClear)."""
+    PeakAltHitsClear) + third wave (BreakLowWash, BreakSingleSpotSpecial,
+    BreakCeilingDrift, BreakColorHoldClear)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 14
+    assert len(ALL_SCENES) == 18
     for bucket in (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP, EnergyBucket.PEAK):
         assert cat.bucket(bucket), f"{bucket} has no scenes"
     assert not cat.bucket(EnergyBucket.OUTRO), "OUTRO unexpectedly has a scene already -- update this test"
@@ -301,6 +302,86 @@ def test_peak_alt_hits_clear_alternates_by_bar_on_a_single_fixture():
     bar2 = scene.render(rig, _snap(bar=2), 1.0).values[mh.offset]
     assert bar0 != bar1  # snaps between the two positions each bar
     assert bar0 == bar2  # and returns on the next even bar -- true alternation, not drift
+
+
+# --- Bible-integration Phase 5, third wave: BreakLowWash, BreakSingleSpotSpecial, BreakCeilingDrift, BreakColorHoldClear
+
+def test_break_low_wash_does_not_set_wash_intensity():
+    """paint_wash deliberately never sets intensity -- the 15-35% breathing
+    envelope is owned exclusively by ReactiveLayerEngine's own BREAK branch,
+    same pattern as BuildRiserWash."""
+    from livereact.scenes.library import BreakLowWash
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    c = BreakLowWash().render(rig, _snap(), 1.0)
+    assert not c.touched[bar.offset]  # ch1 = dimmer, untouched
+
+
+def test_break_low_wash_uses_cold_steel():
+    from livereact.scenes.library import COLD_STEEL, BreakLowWash
+    rig = load_rig()
+    par = rig.fixture("par_l")
+    c = BreakLowWash().render(rig, _snap(), 1.0)
+    r, g, b = (round(v * 255) for v in COLD_STEEL)
+    assert (c.values[par.offset + 1], c.values[par.offset + 2], c.values[par.offset + 3]) == (r, g, b)
+
+
+def test_break_low_wash_conflicts_with_peak_strobe_blackout():
+    """peak_strobe_blackout isn't built yet -- this just confirms the
+    Bible's conflicts[] pairing is declared, ready for when it is."""
+    from livereact.scenes.library import BreakLowWash
+    assert "Peak Strobe Blackout" in BreakLowWash.conflicts
+
+
+def test_break_single_spot_special_degrades_to_break_low_wash():
+    from livereact.scenes.library import BreakLowWash, BreakSingleSpotSpecial
+    assert BreakSingleSpotSpecial.degrade_to is BreakLowWash
+
+
+def test_break_single_spot_special_spot_level_is_static_not_audio_reactive():
+    from livereact.scenes.library import BreakSingleSpotSpecial
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    quiet = BreakSingleSpotSpecial().render(rig, _snap(energy=0.0), 1.0)
+    loud = BreakSingleSpotSpecial().render(rig, _snap(energy=1.0), 1.0)
+    assert quiet.values[mh.offset + 5] == loud.values[mh.offset + 5]  # ch6 dimmer -- "reactivity: static all"
+
+
+def test_break_ceiling_drift_tilt_completes_one_cycle_every_eight_bars():
+    from livereact.scenes.library import BreakCeilingDrift
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    scene = BreakCeilingDrift()
+    at_0 = scene.render(rig, _snap(bar=0, beat_in_bar=1, beat_phase=0.0), 1.0).values[mh.offset + 2]
+    at_8 = scene.render(rig, _snap(bar=8, beat_in_bar=1, beat_phase=0.0), 1.0).values[mh.offset + 2]
+    assert abs(at_0 - at_8) <= 1  # a full period_bars=8 cycle returns to the same tilt (+-1 byte fp rounding)
+
+
+def test_break_ceiling_drift_stays_within_the_declared_tilt_amplitude():
+    from livereact.scenes.library import BreakCeilingDrift
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    scene = BreakCeilingDrift()
+    tilts = [
+        scene.render(rig, _snap(bar=b, beat_in_bar=1, beat_phase=0.0), 1.0).values[mh.offset + 2]
+        for b in range(9)
+    ]
+    lo, hi = (0.5 - BreakCeilingDrift.TILT_AMP) * 255, (0.5 + BreakCeilingDrift.TILT_AMP) * 255
+    assert all(lo - 1 <= t <= hi + 1 for t in tilts)
+
+
+def test_break_color_hold_clear_is_static_color_and_position():
+    """"Fully static" -- neither color nor position should move with energy/bar."""
+    from livereact.scenes.library import DEEP_BLUE, BreakColorHoldClear
+    rig = load_rig()
+    par = rig.fixture("par_l")
+    mh = rig.fixture("mh_l")
+    a = BreakColorHoldClear().render(rig, _snap(bar=0, energy=0.1), 1.0)
+    b = BreakColorHoldClear().render(rig, _snap(bar=5, energy=1.0), 1.0)
+    r, g, bl = (round(v * 255) for v in DEEP_BLUE)
+    assert (a.values[par.offset + 1], a.values[par.offset + 2], a.values[par.offset + 3]) == (r, g, bl)
+    assert a.values[par.offset + 1:par.offset + 4] == b.values[par.offset + 1:par.offset + 4]
+    assert a.values[mh.offset] == b.values[mh.offset]  # pan static too
 
 
 def test_safe_default_renders_static_neutral_wash_no_motion_no_laser():

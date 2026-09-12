@@ -364,6 +364,137 @@ class PeakAltHitsClear(Scene):
         return c
 
 
+# --- break family, Bible-integration Phase 5, third wave (docs/bible_
+# integration/LOOK_CATALOG.md's unnumbered break_* looks, §5 lines 743-761 +
+# 859-861) -- built after DROP/BUILD/PEAK per the plan's stated wave order.
+# Reuses BLOOD_RED/COLD_STEEL's named-palette pattern (DEEP_BLUE, defined
+# alongside them above) and the same disclosed-gap habit as BuildRiserWash/
+# PeakFullRig for anything the Bible doesn't fully specify for a given look.
+
+DEEP_BLUE = (0.1, 0.1, 0.9)  # matches DeepWashBreathe's existing inline "deep blue" literal -- named here for reuse, not a new color choice
+
+
+class BreakLowWash(Scene):
+    """LIGHTING_BIBLE.md §5: the default break -- "wash 15-35%, cold_steel...
+    only a slow envelope earns reactivity... hue static to avoid churn... a
+    break has no transients to chase."
+
+    Wash intensity is deliberately NOT set here (same pattern as
+    BuildRiserWash/PeakColorPulseClear) -- the 15-35% breathing envelope is
+    already produced by ReactiveLayerEngine's own BREAK branch
+    (`_bucket_wash_level`'s low-pass `_break_breath` envelope; name and
+    range match this exact look). This class's job is only the color: a
+    fixed cold_steel (shared constant with DropBlackoutHit's alternate drop
+    color), never audio-band-driven -- "static:[hue]" per the Bible's own
+    reactivity block."""
+
+    name = "Break Low Wash"
+    bucket = EnergyBucket.BREAK
+    dark_pct = 0.60
+    min_hold_bars = 16
+    # peak_strobe_blackout isn't built yet (PEAK-family backlog) -- declared
+    # here anyway per the Bible's conflicts[] pairing; harmless forward
+    # reference, matches nothing until that scene exists, same bidirectional
+    # conflict check SceneCatalog._conflicts already does for every pair.
+    conflicts = frozenset({"Peak Strobe Blackout"})
+    reactivity_note = "audio:[wash.dimmer, soft RMS breathing] (via ReactiveLayerEngine, not this scene), static:[hue], kick_follow:false"
+    color_note = "cold_steel"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = COLD_STEEL
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, 0.25 * intensity)  # dim ambient presence -- not the focal point of a break
+        return c
+
+
+class BreakSingleSpotSpecial(Scene):
+    """LIGHTING_BIBLE.md §5: a single narrow spot special -- "spot 40-70%,
+    position dj_booth," fully static, degrading to break_low_wash if the
+    rig lacks a spot/pan_tilt capability.
+
+    GAP, disclosed not faked: there is no "named position" mechanism
+    anywhere in this codebase (only raw pan01/tilt01 -- same absence noted
+    in docs/bible_integration/LOOK_CATALOG.md itself). `position dj_booth`
+    is expressed here as a literal hardcoded pan/tilt guess, NOT measured
+    against Josh's actual rig/DJ-booth geometry (same disclosed-placeholder
+    status as the MH slew-rate constants in fixtures/profiles.py) -- re-aim
+    once the real booth position relative to the rig is known."""
+
+    name = "Break Single Spot Special"
+    bucket = EnergyBucket.BREAK
+    degrade_to = BreakLowWash
+    dark_pct = 0.80
+    min_hold_bars = 16
+    reactivity_note = "static all, kick_follow:false"
+    color_note = "not specified by the Bible for this look -- reuses cold_steel for family consistency with break_low_wash"
+
+    SPOT_LEVEL = 0.55  # mid of the Bible's stated 40-70% range, not itself tuned by ear
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = COLD_STEEL
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, self.SPOT_LEVEL * intensity)
+        for fx in rig.by_role("spot"):
+            fx.set_position(c, 0.5, 0.70)  # dj_booth guess: centered, angled down -- see class docstring
+        return c
+
+
+class BreakCeilingDrift(Scene):
+    """LIGHTING_BIBLE.md §5 (techhouse): "slow ceiling-bounce tilt drift" --
+    `movement{tilt_drift, sine, period_bars 8, tilt_amp 15%}`. Same sine
+    approach as PeakFullRig's pan fan, just on the TILT axis, slower
+    (period_bars 8 vs. 4), smaller (15% vs. 30%), and NOT mirrored L/R --
+    a synchronized drift reads calmer than a fan/spread, matching "drift"
+    rather than "fan" in the Bible's own wording. That sync-vs-mirror choice
+    isn't itself a stated Bible detail -- disclosed as an interpretation,
+    not a measured fact."""
+
+    name = "Break Ceiling Drift"
+    bucket = EnergyBucket.BREAK
+    dark_pct = 0.50
+    min_hold_bars = 16
+    reactivity_note = "movement only (tilt_drift); no reactivity{} block given by the Bible for this look"
+    color_note = "not specified by the Bible for this look -- reuses cold_steel for family consistency"
+
+    PERIOD_BARS = 8.0
+    TILT_AMP = 0.15
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = COLD_STEEL
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, 0.30 * intensity)
+        pos = musical_bar_position(snap)
+        tilt = 0.5 + self.TILT_AMP * math.sin(pos * (2 * math.pi / self.PERIOD_BARS))
+        for fx in rig.by_role("spot"):
+            fx.set_position(c, 0.5, tilt)
+        return c
+
+
+class BreakColorHoldClear(Scene):
+    """LIGHTING_BIBLE.md §5: the simplest break look -- "deep_blue," fully
+    static. Clear-air variant (atm 0.0). Same static-position pattern as
+    DropBlackoutHit (no sweep, no drift -- the look itself is the effect)."""
+
+    name = "Break Color Hold Clear"
+    bucket = EnergyBucket.BREAK
+    dark_pct = 0.50
+    min_hold_bars = 16
+    reactivity_note = "static all -- \"fully static,\" no reactivity{} block given by the Bible for this look"
+    color_note = "deep_blue"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = DEEP_BLUE
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, 0.30 * intensity)
+        for fx in rig.by_role("spot"):
+            fx.set_position(c, 0.5, 0.5)  # static -- no sweep, no drift
+        return c
+
+
 # --- hold / sustain (loops, post-transition, plateaus) ----------------------
 
 class PulseAndDriftSustain(Scene):
@@ -418,4 +549,9 @@ ALL_SCENES: list[type[Scene]] = [
     PeakFullRig,
     PeakColorPulseClear,
     PeakAltHitsClear,
+    # Bible-integration Phase 5, third wave -- BREAK family:
+    BreakLowWash,
+    BreakSingleSpotSpecial,
+    BreakCeilingDrift,
+    BreakColorHoldClear,
 ]
