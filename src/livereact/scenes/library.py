@@ -34,7 +34,7 @@ class DeepWashBreathe(Scene):
     """
 
     name = "Deep Wash Breathe"
-    bucket = EnergyBucket.BREAKDOWN
+    bucket = EnergyBucket.BREAK
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
@@ -50,7 +50,7 @@ class SlowColorCycleAmbient(Scene):
     """Soft full-rig wash whose hue drifts one step per bar; never hits white."""
 
     name = "Slow Color Cycle"
-    bucket = EnergyBucket.BREAKDOWN
+    bucket = EnergyBucket.BREAK
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
@@ -182,7 +182,7 @@ class PulseAndDriftSustain(Scene):
     """Steady mid-energy groove: wash ~65%, slow MH drift, hue holds; no strobe/laser."""
 
     name = "Pulse & Drift Sustain"
-    bucket = EnergyBucket.HOLD
+    bucket = EnergyBucket.BUILD  # HOLD removed, Phase 2 -- folded into BUILD's upper tail
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
@@ -201,7 +201,7 @@ class LockedHold(Scene):
     mandatory post-transition hold."""
 
     name = "Locked Hold"
-    bucket = EnergyBucket.HOLD
+    bucket = EnergyBucket.BUILD  # HOLD removed, Phase 2 -- folded into BUILD's upper tail
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()

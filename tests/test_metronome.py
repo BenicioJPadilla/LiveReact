@@ -20,8 +20,15 @@ from livereact.core.messages import (
     StatusMessage,
     TransitionMessage,
 )
-from livereact.core.metronome import Metronome
+from livereact.core.metronome import (
+    EXIT_CONFIRM_DWELL_S,
+    FAST_ENTRY_DWELL_S,
+    Metronome,
+    OUTRO_LOOKBACK_S,
+    PER_STATE_DWELL_S,
+)
 from livereact.core.show_state import ShowState
+from livereact.scenes.base import EnergyBucket
 
 
 def _metronome(clock: FakeClock):
@@ -242,31 +249,35 @@ def test_energy_norm_passes_raw_energy_through_when_audio_is_stale():
 # same white-box style as the laser trigger's duty-cap tests.
 
 
-def test_bucket_starts_at_breakdown():
+def test_bucket_starts_at_break():
     clock = FakeClock()
     m = _metronome(clock)
-    assert m.tick().bucket == "breakdown"
+    assert m.tick().bucket == "break"
 
 
-def test_bucket_ignores_a_brief_blip_below_the_dwell_time():
+def test_bucket_ignores_a_brief_upward_blip_below_fast_entry_dwell():
+    """Bible-integration Phase 2: entering a higher-energy bucket uses the
+    short FAST_ENTRY_DWELL_S (~0.94s at the nominal 128 BPM), not the old
+    flat 3.0s -- but a blip shorter than even that should still never
+    commit."""
     clock = FakeClock()
     m = _metronome(clock)
     m._energy_norm = 0.9  # DROP-range
     m._derive_bucket(clock.monotonic())
-    clock.advance(0.5)  # well under BUCKET_MIN_DWELL_S -- a blip, not a real change
+    clock.advance(0.3)  # well under FAST_ENTRY_DWELL_S -- a blip, not a real change
     m._derive_bucket(clock.monotonic())
-    m._energy_norm = 0.0  # back to BREAKDOWN-range before the blip could commit
+    m._energy_norm = 0.0  # back to BREAK-range before the blip could commit
     clock.advance(0.1)
     m._derive_bucket(clock.monotonic())
-    assert m._bucket_committed.value == "breakdown"  # never actually changed
+    assert m._base_committed.value == "break"  # never actually changed
 
 
-def test_bucket_commits_after_persisting_past_the_dwell_time():
+def test_bucket_commits_after_persisting_past_fast_entry_dwell():
     clock = FakeClock()
     m = _metronome(clock)
     m._energy_norm = 0.9  # DROP-range
     m._derive_bucket(clock.monotonic())
-    clock.advance(3.1)  # past BUCKET_MIN_DWELL_S (3.0), still DROP-range the whole time
+    clock.advance(1.0)  # past FAST_ENTRY_DWELL_S (~0.94s), still DROP-range the whole time
     m._derive_bucket(clock.monotonic())
     assert m._bucket_committed.value == "drop"
 
@@ -277,40 +288,40 @@ def test_bucket_candidate_restarts_if_a_different_bucket_appears_first():
     elapsed time."""
     clock = FakeClock()
     m = _metronome(clock)
-    m._energy_norm = 0.9  # DROP-range candidate begins
+    m._energy_norm = 0.5  # BUILD-range candidate begins (base starts at BREAK)
     m._derive_bucket(clock.monotonic())
-    clock.advance(2.9)  # close to committing, but not quite
-    m._energy_norm = 0.65  # HOLD-range (comfortably past BUILD_MAX+HYSTERESIS_MARGIN=0.60,
-                            # so this is unambiguously a HOLD candidate) -- pre-empts DROP
+    clock.advance(0.5)  # close to FAST_ENTRY_DWELL_S (~0.94s), but not quite
+    m._energy_norm = 0.9  # DROP-range -- pre-empts the BUILD candidate; still "up" from
+                           # base=BREAK (hasn't committed to BUILD yet), so still fast-entry
     m._derive_bucket(clock.monotonic())
-    clock.advance(2.9)  # would have been enough time for the ORIGINAL candidate
+    clock.advance(0.5)  # would have been enough time for the ORIGINAL (BUILD) candidate
     m._derive_bucket(clock.monotonic())
-    assert m._bucket_committed.value == "breakdown"  # HOLD hasn't dwelled long enough yet
-    clock.advance(0.2)  # now past 3.0s since HOLD became the candidate
+    assert m._base_committed.value == "break"  # DROP candidate restarted, hasn't dwelled long enough yet
+    clock.advance(0.6)  # now past FAST_ENTRY_DWELL_S since DROP became the candidate
     m._derive_bucket(clock.monotonic())
-    assert m._bucket_committed.value == "hold"
+    assert m._bucket_committed.value == "drop"
 
 
 def test_bucket_hovering_within_the_margin_of_a_boundary_never_becomes_a_candidate():
     """The actual live bug (2026-09-07 real capture): energy_norm can sit
     within a hair of a boundary for a real stretch of a song. Once settled in
-    HOLD, hovering just above/below HOLD_MAX (0.80) without ever clearing it
-    by HYSTERESIS_MARGIN must never commit to DROP -- the committed bucket
-    should just stay put, however long real time passes."""
+    BUILD, hovering just above/below BUILD_MAX (0.80) without ever clearing
+    it by HYSTERESIS_MARGIN_UP must never commit to DROP -- the committed
+    bucket should just stay put, however long real time passes."""
     clock = FakeClock()
     m = _metronome(clock)
-    m._energy_norm = 0.65  # squarely HOLD, nowhere near a boundary
+    m._energy_norm = 0.65  # squarely BUILD, nowhere near a boundary
     m._derive_bucket(clock.monotonic())
-    clock.advance(3.1)  # past BUCKET_MIN_DWELL_S -- HOLD is now the committed bucket
+    clock.advance(1.0)  # past FAST_ENTRY_DWELL_S -- BUILD is now the committed bucket
     m._derive_bucket(clock.monotonic())
-    assert m._bucket_committed.value == "hold"
+    assert m._bucket_committed.value == "build"
 
-    for energy in (0.78, 0.81, 0.79, 0.82, 0.80):  # all within +-0.03 of HOLD_MAX=0.80,
-                                                     # i.e. inside the +-0.05 margin
+    for energy in (0.78, 0.81, 0.79, 0.82, 0.80):  # all within +-0.03 of BUILD_MAX=0.80,
+                                                     # i.e. inside the +-0.05 HYSTERESIS_MARGIN_UP
         m._energy_norm = energy
         m._derive_bucket(clock.monotonic())
         clock.advance(1.0)
-    assert m._bucket_committed.value == "hold"  # never even started a real DROP candidate
+    assert m._bucket_committed.value == "build"  # never even started a real DROP candidate
 
 
 def test_midi_and_transition_and_status_update_state():
@@ -326,3 +337,168 @@ def test_midi_and_transition_and_status_update_state():
 
     m.queue.put(TransitionMessage(0.0, active=False))
     assert m.tick().in_transition is False
+
+
+# --- Bible-integration Phase 2: legal transition matrix, PEAK/OUTRO overlay,
+# manual override, drop marker (2026-09-11) -----------------------------------
+
+def test_legal_transition_matrix_rejects_drop_falling_back_to_build():
+    """LIGHTING_BIBLE.md §9.8 (TIME-13): DROP -> BUILD is explicitly illegal
+    -- a real drop doesn't downgrade back to "still building." It must
+    resolve through BREAK instead, however long BUILD-range energy persists."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9  # commit to DROP
+    m._derive_bucket(clock.monotonic())
+    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+
+    m._energy_norm = 0.5  # BUILD-range -- the illegal downgrade
+    for _ in range(10):
+        clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+        m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP  # never became BUILD, however long this persists
+
+    m._energy_norm = 0.1  # BREAK-range -- DROP -> BREAK IS legal
+    clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # DROP's own floor must clear before any exit
+    m._derive_bucket(clock.monotonic())
+    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BREAK
+
+
+def test_drop_escalates_to_peak_after_sustained_dwell():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == EnergyBucket.DROP  # not yet -- hasn't sustained DROP's own dwell
+
+    clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # now past DROP's own floor, still DROP-range
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == EnergyBucket.PEAK
+    assert m._base_committed == EnergyBucket.DROP  # base classifier itself is untouched by the overlay
+
+
+def test_break_promotes_to_outro_after_a_recent_drop_then_reverts():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9  # commit to DROP -- sets _last_drop_or_peak_t
+    m._derive_bucket(clock.monotonic())
+    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == EnergyBucket.DROP
+
+    m._energy_norm = 0.1  # fall legally to BREAK
+    clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # DROP's own floor must clear before any exit
+    m._derive_bucket(clock.monotonic())
+    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BREAK
+    assert m._bucket_committed == EnergyBucket.OUTRO  # promoted -- a drop just happened
+
+    clock.advance(OUTRO_LOOKBACK_S + 1.0)  # long enough that the drop is no longer "recent"
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == EnergyBucket.BREAK  # overlay expired on its own -- no forced reset needed
+
+
+def test_outro_does_not_illegally_block_a_real_second_build():
+    """Deliberate deviation from the Bible's literal "OUTRO has no legal
+    exit" (see the module-level comment in metronome.py): this system can't
+    tell a real ending from a mid-song breather, so a genuine energy rise is
+    allowed to simply un-promote OUTRO rather than illegally blocking a real
+    second build/drop in the same track."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+    m._energy_norm = 0.1
+    clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # DROP's own floor must clear before any exit
+    m._derive_bucket(clock.monotonic())
+    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == EnergyBucket.OUTRO
+
+    m._energy_norm = 0.5  # a real second build starting, well within the lookback window
+    m._derive_bucket(clock.monotonic())  # registers the candidate
+    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    m._derive_bucket(clock.monotonic())  # confirms it
+    assert m._base_committed == EnergyBucket.BUILD
+    assert m._bucket_committed == EnergyBucket.BUILD  # not stuck in OUTRO
+
+
+def test_manual_bucket_override_takes_priority_and_is_consumed_once():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.0  # would otherwise settle at BREAK
+    m.request_manual_bucket(EnergyBucket.DROP)
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == EnergyBucket.DROP
+    assert m._manual_bucket_override is None  # consumed
+
+    # a further tick with no new override falls back to the automated classifier,
+    # which holds at DROP (just committed, hasn't dwelled long enough to move again)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+
+
+def test_drop_marker_fires_after_a_qualifying_dip_and_rebound():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._derive_drop_marker(clock.monotonic())
+    assert m.drop_cycle == 0
+
+    m._energy_norm = 0.02  # dip below DIP_THRESHOLD
+    m._derive_drop_marker(clock.monotonic())
+    clock.advance(1.5)  # >= MIN_DIP_S -- a qualifying dip, not just a normal beat gap
+    m._derive_drop_marker(clock.monotonic())
+
+    m._energy_norm = 0.85  # rebound, above REBOUND_THRESHOLD, within the rebound window
+    m._derive_drop_marker(clock.monotonic())
+    assert m.drop_cycle == 1
+    assert m._drop_marker_pulse is True
+
+    m._derive_drop_marker(clock.monotonic())  # next tick -- the pulse is one-shot
+    assert m._drop_marker_pulse is False
+    assert m.drop_cycle == 1  # doesn't keep re-firing
+
+
+def test_drop_marker_does_not_fire_on_a_normal_short_gap():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._derive_drop_marker(clock.monotonic())
+
+    m._energy_norm = 0.02
+    m._derive_drop_marker(clock.monotonic())
+    clock.advance(0.2)  # well under MIN_DIP_S -- an ordinary quiet beat, not a real cut
+    m._derive_drop_marker(clock.monotonic())
+
+    m._energy_norm = 0.85
+    m._derive_drop_marker(clock.monotonic())
+    assert m.drop_cycle == 0
+    assert m._drop_marker_pulse is False
+
+
+def test_drop_cycle_resets_on_a_track_transition():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._derive_drop_marker(clock.monotonic())
+    m._energy_norm = 0.02
+    m._derive_drop_marker(clock.monotonic())
+    clock.advance(1.5)
+    m._derive_drop_marker(clock.monotonic())
+    m._energy_norm = 0.85
+    m._derive_drop_marker(clock.monotonic())
+    assert m.drop_cycle == 1
+
+    m.queue.put(TransitionMessage(clock.monotonic(), active=True))
+    m.tick()
+    assert m.drop_cycle == 0

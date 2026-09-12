@@ -17,10 +17,25 @@ from ..merge.merge import Contribution
 
 
 class EnergyBucket(Enum):
-    BREAKDOWN = "breakdown"
+    """LIGHTING_BIBLE.md §9.8's 5-state model (Bible-integration Phase 2,
+    2026-09-11 -- /Users/joshuaracimora/.claude/plans/adaptive-squishing-
+    pebble.md). Replaces the old 4-state BREAKDOWN/BUILD/HOLD/DROP:
+    BREAKDOWN is renamed BREAK (naming match only, same concept); HOLD
+    (0.55-0.80 energy, LiveReact's own invention with no Bible equivalent)
+    is REMOVED -- its energy range folds into BUILD's upper tail (Phase 2's
+    Open Question #1 default: DROP should mean an actual high-energy hit,
+    not "energy got moderately high," so the ambiguous middle range keeps
+    reading as "still building" rather than "maybe already dropped").
+    PEAK and OUTRO are genuinely new and are NOT reachable via a raw energy
+    threshold at all -- see core/metronome.py's `_derive_bucket` for how
+    they're actually entered (DROP escalates to PEAK on sustained dwell;
+    BREAK promotes to OUTRO after a recent DROP/PEAK)."""
+
+    BREAK = "break"
     BUILD = "build"
     DROP = "drop"
-    HOLD = "hold"
+    PEAK = "peak"
+    OUTRO = "outro"
 
 
 class Scene:
@@ -40,7 +55,7 @@ class Scene:
     """
 
     name: str = "scene"
-    bucket: EnergyBucket = EnergyBucket.HOLD
+    bucket: EnergyBucket = EnergyBucket.BUILD
     uses_lasers: bool = False
 
     # --- Schema v2 (Phase 1) ---
@@ -70,7 +85,7 @@ class SafeDefault(Scene):
     """
 
     name = "Safe Default"
-    bucket = EnergyBucket.BREAKDOWN  # nominal only -- never selected via pick()
+    bucket = EnergyBucket.BREAK  # nominal only -- never selected via pick()
     uses_lasers = False
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:

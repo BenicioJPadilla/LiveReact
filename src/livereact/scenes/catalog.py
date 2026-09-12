@@ -15,9 +15,18 @@ from .library import ALL_SCENES
 # Named so other modules (e.g. engines/reactive.py's per-bucket wash model,
 # LIGHTING_BIBLE.md §5/§9.1) can normalize energy *within* a bucket's own
 # range without duplicating these numbers and risking drift.
-BREAKDOWN_MAX = 0.30
-BUILD_MAX = 0.55
-HOLD_MAX = 0.80
+#
+# Bible-integration Phase 2 (2026-09-11): BREAKDOWN_MAX -> BREAK_MAX (rename
+# only). HOLD's old 0.55-0.80 range folds into BUILD (Open Question #1's
+# default -- see EnergyBucket's own docstring in scenes/base.py), so
+# BUILD_MAX now sits where HOLD_MAX used to. PEAK and OUTRO are NOT
+# threshold-based at all -- they're reached only via the stateful escalation
+# logic in core/metronome.py's `_derive_bucket` (DROP -> PEAK on sustained
+# dwell; BREAK -> OUTRO after a recent DROP/PEAK), never by a raw energy
+# reading landing in some range. This function (and _BUCKET_ORDER/
+# _BUCKET_BOUNDARIES below) only ever walks among BREAK/BUILD/DROP.
+BREAK_MAX = 0.30
+BUILD_MAX = 0.80
 
 # Bucket-boundary hysteresis (2026-09-07 real --hardware --record session,
 # see [[livereact-project]] memory): BUCKET_MIN_DWELL_S alone (metronome.py)
@@ -33,36 +42,75 @@ HOLD_MAX = 0.80
 # candidate -- not just touch it. `bucket_for_energy` itself (stateless,
 # tested directly in several places) is left untouched; this wraps it with
 # the committed bucket as the anchor, used only by metronome.py's debounce.
-HYSTERESIS_MARGIN = 0.05
+#
+# ASYMMETRIC as of Phase 2 (LIGHTING_BIBLE.md §9.8, TIME-12 -- was a flat
+# 0.05 both directions, a confirmed FAIL against the Bible's explicit
+# "fast/easy entry, slow/hard exit, ±15% band" design): entering a
+# higher-energy bucket clears by the smaller UP margin (keeps the original,
+# already-tuned-against-real-data flapping fix for the common case); falling
+# back to a lower-energy bucket must clear by the larger DOWN margin, so a
+# momentary dip doesn't downgrade a real drop/build. Bible's own number is
+# [CONVENTION], not measured -- both margins are tunable by ear against real
+# captures, same as everything else here.
+HYSTERESIS_MARGIN_UP = 0.05
+HYSTERESIS_MARGIN_DOWN = 0.15
+HYSTERESIS_MARGIN = HYSTERESIS_MARGIN_UP  # kept for any caller still using the old flat name
 
-_BUCKET_ORDER = (EnergyBucket.BREAKDOWN, EnergyBucket.BUILD, EnergyBucket.HOLD, EnergyBucket.DROP)
-_BUCKET_BOUNDARIES = (BREAKDOWN_MAX, BUILD_MAX, HOLD_MAX)  # boundary i sits between order[i]/order[i+1]
+_BUCKET_ORDER = (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP)
+_BUCKET_BOUNDARIES = (BREAK_MAX, BUILD_MAX)  # boundary i sits between order[i]/order[i+1]
+
+# LIGHTING_BIBLE.md §9.8's legal transition matrix (TIME-13): a bucket may
+# only move to one of the states listed here; anything else is "ignored,
+# state holds" until a legal path opens up. Applied in core/metronome.py
+# against the FULL committed bucket (which may be PEAK/OUTRO, an escalation
+# on top of this module's BREAK/BUILD/DROP), not just the raw 3-way walk
+# above -- e.g. DROP -> BUILD is explicitly illegal in the Bible (a real drop
+# doesn't downgrade back to "still building"; it either keeps going, escalates
+# to PEAK, or fully resolves through BREAK first).
+LEGAL_TRANSITIONS: dict[EnergyBucket, set[EnergyBucket]] = {
+    EnergyBucket.BREAK: {EnergyBucket.BUILD, EnergyBucket.DROP, EnergyBucket.OUTRO},
+    EnergyBucket.BUILD: {EnergyBucket.BREAK, EnergyBucket.DROP},
+    EnergyBucket.DROP: {EnergyBucket.BREAK, EnergyBucket.PEAK, EnergyBucket.OUTRO},
+    EnergyBucket.PEAK: {EnergyBucket.BREAK, EnergyBucket.DROP, EnergyBucket.OUTRO},
+    EnergyBucket.OUTRO: set(),  # terminal -- no legal exit (a fresh track/transition resets it)
+}
 
 
 def bucket_for_energy(energy: float) -> EnergyBucket:
-    if energy < BREAKDOWN_MAX:
-        return EnergyBucket.BREAKDOWN
+    """Stateless 3-way threshold check (BREAK/BUILD/DROP only -- PEAK/OUTRO
+    are never reachable from a raw level, see the module docstring above)."""
+    if energy < BREAK_MAX:
+        return EnergyBucket.BREAK
     if energy < BUILD_MAX:
         return EnergyBucket.BUILD
-    if energy < HOLD_MAX:
-        return EnergyBucket.HOLD
     return EnergyBucket.DROP
 
 
 def bucket_for_energy_with_hysteresis(
-    energy: float, committed: EnergyBucket, margin: float = HYSTERESIS_MARGIN
+    energy: float,
+    committed: EnergyBucket,
+    margin_up: float = HYSTERESIS_MARGIN_UP,
+    margin_down: float = HYSTERESIS_MARGIN_DOWN,
 ) -> EnergyBucket:
     """Like `bucket_for_energy`, but anchored on the currently-committed
-    bucket: a boundary only counts as crossed once `energy` clears it by
-    `margin` in the direction of travel, so hovering within `margin` of a
-    boundary (found live, see above) can't even start a new debounce
-    candidate. Walks one boundary at a time from `committed` toward wherever
-    `energy` actually is, so a big jump (e.g. a real drop) still resolves to
-    the right bucket in one call, not just the adjacent one."""
-    idx = _BUCKET_ORDER.index(committed)
-    while idx < len(_BUCKET_BOUNDARIES) and energy >= _BUCKET_BOUNDARIES[idx] + margin:
+    bucket: a boundary only counts as crossed once `energy` clears it by the
+    direction-appropriate margin, so hovering near a boundary (found live,
+    see above) can't even start a new debounce candidate. Walks one boundary
+    at a time from `committed` toward wherever `energy` actually is, so a big
+    jump (e.g. a real drop) still resolves to the right bucket in one call.
+
+    `committed` may be PEAK or OUTRO (an escalation this module doesn't know
+    about, applied by core/metronome.py on top of this 3-way walk) -- treated
+    as equivalent to DROP/BREAK respectively for the purposes of the walk
+    itself, since PEAK's underlying energy range is DROP's and OUTRO's is
+    BREAK's; the caller is responsible for re-applying the escalation/legal-
+    transition logic to whatever this returns.
+    """
+    anchor = {EnergyBucket.PEAK: EnergyBucket.DROP, EnergyBucket.OUTRO: EnergyBucket.BREAK}.get(committed, committed)
+    idx = _BUCKET_ORDER.index(anchor)
+    while idx < len(_BUCKET_BOUNDARIES) and energy >= _BUCKET_BOUNDARIES[idx] + margin_up:
         idx += 1
-    while idx > 0 and energy < _BUCKET_BOUNDARIES[idx - 1] - margin:
+    while idx > 0 and energy < _BUCKET_BOUNDARIES[idx - 1] - margin_down:
         idx -= 1
     return _BUCKET_ORDER[idx]
 
@@ -80,7 +128,7 @@ class SceneCatalog:
 
     def default(self) -> Scene:
         """A calm starting scene."""
-        for bucket in (EnergyBucket.BREAKDOWN, EnergyBucket.HOLD, EnergyBucket.BUILD, EnergyBucket.DROP):
+        for bucket in (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP, EnergyBucket.PEAK, EnergyBucket.OUTRO):
             if self._by_bucket[bucket]:
                 return self._by_bucket[bucket][0]
         raise ValueError("catalog has no scenes")

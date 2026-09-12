@@ -16,10 +16,17 @@ def _snap(**kw) -> ShowSnapshot:
 
 
 def test_eight_scenes_across_all_buckets():
+    """Bible-integration Phase 2: PEAK and OUTRO are genuinely new states
+    (see EnergyBucket's own docstring) that no scene declares yet -- an
+    expected, interim gap, not a bug; Phase 5 is what actually builds looks
+    for them. Only BREAK/BUILD/DROP (the buckets this interim 8-scene
+    catalog still covers) are checked here."""
     cat = SceneCatalog()
     assert len(ALL_SCENES) == 8
-    for bucket in EnergyBucket:
+    for bucket in (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP):
         assert cat.bucket(bucket), f"{bucket} has no scenes"
+    for bucket in (EnergyBucket.PEAK, EnergyBucket.OUTRO):
+        assert not cat.bucket(bucket), f"{bucket} unexpectedly has a scene already -- update this test"
 
 
 def test_every_scene_renders_some_output():
@@ -50,9 +57,13 @@ def test_scenes_are_visually_distinct():
 
 
 def test_bucket_thresholds():
-    assert bucket_for_energy(0.1) == EnergyBucket.BREAKDOWN
+    """Bible-integration Phase 2: BUILD_MAX moved 0.55 -> 0.80 (HOLD's old
+    range folded into BUILD's upper tail); PEAK/OUTRO aren't reachable from
+    a raw level at all (see EnergyBucket's docstring), so this stateless
+    function only ever returns BREAK/BUILD/DROP."""
+    assert bucket_for_energy(0.1) == EnergyBucket.BREAK
     assert bucket_for_energy(0.45) == EnergyBucket.BUILD
-    assert bucket_for_energy(0.7) == EnergyBucket.HOLD
+    assert bucket_for_energy(0.7) == EnergyBucket.BUILD
     assert bucket_for_energy(0.95) == EnergyBucket.DROP
 
 

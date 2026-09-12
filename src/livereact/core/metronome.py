@@ -28,7 +28,7 @@ from collections import deque
 
 from ..clock import Clock, LoopTimer
 from ..scenes.base import EnergyBucket
-from ..scenes.catalog import bucket_for_energy_with_hysteresis
+from ..scenes.catalog import _BUCKET_ORDER, BUILD_MAX, bucket_for_energy_with_hysteresis
 from .messages import AudioLevelMessage, BeatMessage, MidiControlMessage, StatusMessage, TransitionMessage
 from .show_state import ShowSnapshot, ShowState
 
@@ -128,7 +128,71 @@ ENERGY_NORM_MIN_CEILING = 0.05        # if nothing above this has happened
 # `bucket_for_energy_with_hysteresis` (scenes/catalog.py) so a candidate now
 # has to both clear the boundary by a margin AND persist -- two independent
 # defenses against the same "reads as random flutter" failure mode.
-BUCKET_MIN_DWELL_S = 3.0
+#
+# Bible-integration Phase 2 (2026-09-11): replaced by a PER-STATE dwell dict,
+# converted from LIGHTING_BIBLE.md §9.8's bar counts (BREAK 8, BUILD 4, DROP
+# 8, PEAK 8, OUTRO 16) at a nominal tempo -- real sets in this project's own
+# captures have run 124-138 BPM, so NOMINAL_BPM is a rough middle, not a
+# measurement, exactly like every other [CONVENTION] number here. Flat
+# BUCKET_MIN_DWELL_S=3.0 (close to old BUILD's 3.0s) is kept only as the
+# floor for EXITING a state quickly is not what changed here -- see
+# EXIT_CONFIRM_DWELL_S/FAST_ENTRY_DWELL_S below for the actual asymmetric
+# entry/exit split (TIME-12).
+NOMINAL_BPM = 128.0
+SECONDS_PER_BAR = 4.0 * 60.0 / NOMINAL_BPM  # ~1.875s at 128 BPM
+
+PER_STATE_DWELL_BARS = {
+    EnergyBucket.BREAK: 8.0,
+    EnergyBucket.BUILD: 4.0,
+    EnergyBucket.DROP: 8.0,
+    EnergyBucket.PEAK: 8.0,
+    EnergyBucket.OUTRO: 16.0,
+}
+PER_STATE_DWELL_S = {b: bars * SECONDS_PER_BAR for b, bars in PER_STATE_DWELL_BARS.items()}
+
+# Asymmetric entry/exit (LIGHTING_BIBLE.md §9.8, TIME-12): entering a
+# higher-energy state needs only a fast confirmation (~2 beats); exiting to a
+# lower-energy state needs a slower, more-sustained confirmation (~4 beats) --
+# ON TOP OF the per-state floor above (a state's own PER_STATE_DWELL_S must
+# already have elapsed before an exit is even considered at all; these two
+# numbers gate the CANDIDATE's own persistence once that floor is cleared).
+FAST_ENTRY_DWELL_S = 2.0 * 60.0 / NOMINAL_BPM   # ~0.94s at 128 BPM
+EXIT_CONFIRM_DWELL_S = 4.0 * 60.0 / NOMINAL_BPM  # ~1.88s at 128 BPM
+
+# PEAK escalation / OUTRO promotion (Bible-integration Phase 2): neither is
+# reachable from a raw energy level (see EnergyBucket's own docstring) --
+# both are overlays computed from how long the BASE (BREAK/BUILD/DROP)
+# classifier has been sitting in a state. A sustained DROP (past its own
+# dwell floor, energy still high) escalates the FINAL bucket to PEAK without
+# disturbing the base classifier underneath. A BREAK that followed a DROP/
+# PEAK within OUTRO_LOOKBACK_S gets promoted to OUTRO the same way.
+#
+# Deliberately NOT treated as a truly terminal/blocking state the way
+# LIGHTING_BIBLE.md's legal-transition matrix describes OUTRO (no legal
+# exit): this system has no real way to know a set is actually ending vs.
+# just between two builds in the same track, so a genuine energy rise is
+# allowed to simply un-promote OUTRO back to whatever the base classifier
+# says, rather than illegally blocking a real second build/drop in the same
+# track because a `EnergyBucket.OUTRO` currently non-empty. See _base_committed
+# and _last_drop_or_peak_t below.
+OUTRO_LOOKBACK_S = 32.0 * SECONDS_PER_BAR  # ~60s at 128 BPM -- [CONVENTION], tunable
+
+# Loud-to-quiet-to-loud drop marker (Josh's idea, 2026-09-11 -- a real,
+# already-observed pattern: the first real --hardware --record capture
+# showed the drums cutting to near-total silence for ~4.3s immediately
+# before the first drop, see [[livereact-project]] memory). This is a
+# CORROBORATING signal, not a gate on bucket classification itself -- DROP
+# still commits off the energy-threshold+dwell machinery above regardless,
+# so a real drop with no preceding hush still gets classified correctly.
+# What this adds: a `drop_marker` pulse + a same-track occurrence counter
+# (`drop_cycle`) that other consumers (e.g. a future beat-locked flash
+# effect, or TIME-20's look-history) can condition on for higher confidence
+# than "energy crossed a threshold" alone.
+DIP_THRESHOLD = 0.08       # energy_norm below this counts as "near silence"
+MIN_DIP_S = 1.0            # must stay under DIP_THRESHOLD at least this long -- rules out an
+                           # ordinary quiet beat/gap, not a real "cut." [CONVENTION], tunable.
+REBOUND_THRESHOLD = 0.70   # energy_norm at or above this, after a qualifying dip, confirms the marker
+MAX_REBOUND_WINDOW_S = 8.0  # how long after a qualifying dip ends a rebound still counts
 
 
 class Metronome(threading.Thread):
@@ -187,10 +251,22 @@ class Metronome(threading.Thread):
         self._last_energy_sample_t: float | None = None
         self._energy_norm = 0.0
 
-        # bucket debounce state (see BUCKET_MIN_DWELL_S above)
-        self._bucket_committed = EnergyBucket.BREAKDOWN  # safe default: the calm/quiet state
+        # bucket debounce state (Bible-integration Phase 2 -- see PER_STATE_DWELL_S above)
+        self._base_committed = EnergyBucket.BREAK  # BREAK/BUILD/DROP only -- see EnergyBucket's docstring
+        self._base_committed_since = clock.monotonic()
+        self._bucket_committed = EnergyBucket.BREAK  # the FULL exposed state (may be PEAK/OUTRO overlay)
         self._bucket_candidate: EnergyBucket | None = None
         self._bucket_candidate_since: float | None = None
+        self._last_drop_or_peak_t: float | None = None  # for OUTRO promotion, see OUTRO_LOOKBACK_S
+        self._manual_bucket_override: EnergyBucket | None = None  # Phase 2 hook, unused until Phase 5's
+                                                                    # DJ-trigger buttons -- see request_manual_bucket()
+
+        # loud-to-quiet-to-loud drop marker (see DIP_THRESHOLD etc. above)
+        self._dip_started_at: float | None = None
+        self._awaiting_rebound_until: float | None = None
+        self.drop_cycle = 0           # same-track drop-marker occurrence count; reset on a track transition
+        self._drop_marker_pulse = False  # True only on the exact tick a marker confirms
+        self._prev_in_transition = False  # rising-edge detector for the drop_cycle reset
 
         # real audio (docs/14) — kept separate from _midi's fields; see
         # AudioLevelMessage's docstring for why band_low_abs stays un-normalized
@@ -226,6 +302,7 @@ class Metronome(threading.Thread):
         self._derive_energy(now)
         self._derive_energy_norm(now)
         self._derive_bucket(now)
+        self._derive_drop_marker(now)
         snap = self._build_snapshot(now)
         self.show_state.publish(snap)
         self._maybe_log(now, snap)
@@ -403,27 +480,129 @@ class Metronome(threading.Thread):
         span = max(self._energy_ceiling - self._energy_floor, ENERGY_NORM_MIN_SPAN)
         self._energy_norm = max(0.0, min(1.0, (self._energy_smooth - self._energy_floor) / span))
 
+    def request_manual_bucket(self, bucket: EnergyBucket) -> None:
+        """Bible-integration Phase 2 hook: a future DJ-triggered cue ("the
+        drop is now," "the drop is coming") can call this to force an
+        immediate commitment on the NEXT tick, taking priority over the
+        automated classifier entirely -- a manual, in-the-moment call from
+        the person who actually knows the track beats a guess from energy
+        levels alone. Nothing calls this yet (Phase 5's job); the seam just
+        needs to exist now so that work doesn't require reopening this
+        file. Consumed once, then cleared."""
+        self._manual_bucket_override = bucket
+
     def _derive_bucket(self, now: float) -> None:
-        """Debounce bucket_for_energy's output (see BUCKET_MIN_DWELL_S above):
-        a candidate bucket must persist for BUCKET_MIN_DWELL_S before it's
-        actually committed to, instead of flipping the instant energy_norm
-        crosses a boundary. Also anchored on the currently-committed bucket
-        via `bucket_for_energy_with_hysteresis` (scenes/catalog.py) -- energy
-        must clear a boundary by HYSTERESIS_MARGIN, not just touch it, before
-        it even becomes a candidate at all."""
-        raw = bucket_for_energy_with_hysteresis(self._energy_norm, self._bucket_committed)
-        if raw == self._bucket_committed:
+        """Debounce bucket_for_energy's output against the base 3-state
+        classifier (BREAK/BUILD/DROP -- see EnergyBucket's own docstring for
+        why PEAK/OUTRO are handled separately, below), then apply the
+        PEAK-escalation/OUTRO-promotion overlay every tick regardless of
+        whether the base itself changed this tick.
+
+        A manual override (see request_manual_bucket above) short-circuits
+        all of this and commits directly, on priority alone -- unused today,
+        but the classifier defers to it unconditionally once something calls it.
+        """
+        if self._manual_bucket_override is not None:
+            self._base_committed = self._manual_bucket_override
+            self._base_committed_since = now
+            self._bucket_committed = self._manual_bucket_override
             self._bucket_candidate = None
             self._bucket_candidate_since = None
+            self._manual_bucket_override = None
             return
-        if raw != self._bucket_candidate:
-            self._bucket_candidate = raw
-            self._bucket_candidate_since = now
-            return
-        if now - self._bucket_candidate_since >= BUCKET_MIN_DWELL_S:
-            self._bucket_committed = raw
+
+        raw = bucket_for_energy_with_hysteresis(self._energy_norm, self._base_committed)
+        if raw == self._base_committed:
             self._bucket_candidate = None
             self._bucket_candidate_since = None
+        else:
+            # LIGHTING_BIBLE.md §9.8's legal-transition matrix, restricted to
+            # this module's 3-value base (PEAK/OUTRO are overlays that never
+            # block the base -- see the OUTRO_LOOKBACK_S comment above for
+            # why NOT doing that matters). Every BREAK/BUILD/DROP pair is
+            # legal except one: a committed DROP falling straight back to
+            # BUILD ("still building") is explicitly forbidden -- a real
+            # drop either keeps going, escalates to PEAK, or fully resolves
+            # through BREAK first, never downgrades to "not quite there yet."
+            illegal = self._base_committed == EnergyBucket.DROP and raw == EnergyBucket.BUILD
+            if illegal:
+                self._bucket_candidate = None
+                self._bucket_candidate_since = None
+            else:
+                direction_up = _BUCKET_ORDER.index(raw) > _BUCKET_ORDER.index(self._base_committed)
+                if direction_up:
+                    floor_ok = True  # fast entry bypasses the outgoing state's own dwell floor
+                    confirm_s = FAST_ENTRY_DWELL_S
+                else:
+                    floor_ok = now - self._base_committed_since >= PER_STATE_DWELL_S[self._base_committed]
+                    confirm_s = EXIT_CONFIRM_DWELL_S
+                if not floor_ok:
+                    self._bucket_candidate = None
+                    self._bucket_candidate_since = None
+                elif raw != self._bucket_candidate:
+                    self._bucket_candidate = raw
+                    self._bucket_candidate_since = now
+                elif now - self._bucket_candidate_since >= confirm_s:
+                    self._base_committed = raw
+                    self._base_committed_since = now
+                    self._bucket_candidate = None
+                    self._bucket_candidate_since = None
+
+        self._apply_bucket_overlay(now)
+
+    def _apply_bucket_overlay(self, now: float) -> None:
+        """PEAK escalation and OUTRO promotion (see the module-level comment
+        above PER_STATE_DWELL_S) -- computed fresh every tick from the base
+        classifier's own state, never itself gating the base."""
+        if self._base_committed == EnergyBucket.DROP:
+            sustained = now - self._base_committed_since >= PER_STATE_DWELL_S[EnergyBucket.DROP]
+            final = EnergyBucket.PEAK if (sustained and self._energy_norm >= BUILD_MAX) else EnergyBucket.DROP
+        elif self._base_committed == EnergyBucket.BREAK:
+            recent_drop = (
+                self._last_drop_or_peak_t is not None
+                and now - self._last_drop_or_peak_t <= OUTRO_LOOKBACK_S
+            )
+            final = EnergyBucket.OUTRO if recent_drop else EnergyBucket.BREAK
+        else:  # BUILD has no overlay
+            final = self._base_committed
+
+        if final in (EnergyBucket.DROP, EnergyBucket.PEAK):
+            self._last_drop_or_peak_t = now
+        self._bucket_committed = final
+
+    def _derive_drop_marker(self, now: float) -> None:
+        """Loud-to-quiet-to-loud drop marker (see DIP_THRESHOLD etc. above):
+        a corroborating signal alongside (not a gate on) bucket
+        classification. Also resets `drop_cycle` on a track transition
+        (rising edge of `in_transition`) -- see the module-level comment for
+        the known limitation (relies on the same transition detection
+        everything else here does, so a very smooth beatmatched blend with
+        no clean cut might not reset it)."""
+        self._drop_marker_pulse = False
+        in_transition_now = now < self._transition_until
+        if in_transition_now and not self._prev_in_transition:
+            self.drop_cycle = 0
+        self._prev_in_transition = in_transition_now
+
+        if self._energy_norm < DIP_THRESHOLD:
+            if self._dip_started_at is None:
+                self._dip_started_at = now
+            self._awaiting_rebound_until = None  # still dipping -- not armed for rebound yet
+            return
+
+        if self._dip_started_at is not None:
+            dip_duration = now - self._dip_started_at
+            self._dip_started_at = None
+            if dip_duration >= MIN_DIP_S:
+                self._awaiting_rebound_until = now + MAX_REBOUND_WINDOW_S
+
+        if self._awaiting_rebound_until is not None:
+            if now > self._awaiting_rebound_until:
+                self._awaiting_rebound_until = None  # window expired, no rebound in time
+            elif self._energy_norm >= REBOUND_THRESHOLD:
+                self.drop_cycle += 1
+                self._drop_marker_pulse = True
+                self._awaiting_rebound_until = None
 
     # ------------------------------------------------------------------ health
     def _is_pdl_fresh(self, now: float) -> bool:
@@ -464,6 +643,8 @@ class Metronome(threading.Thread):
             energy=self._energy,
             energy_norm=self._energy_norm,
             bucket=self._bucket_committed.value,
+            drop_cycle=self.drop_cycle,
+            drop_marker=self._drop_marker_pulse,
             in_transition=now < self._transition_until,
             free_running=not self._is_pdl_fresh(now),
             pdl_fresh=self._is_pdl_fresh(now),

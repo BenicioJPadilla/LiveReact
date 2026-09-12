@@ -464,46 +464,78 @@ def test_breakdown_bucket_breathes_slowly_toward_its_range():
 
 def test_non_drop_bucket_change_crossfades_instead_of_snapping():
     """The generalized fix (2026-09-07 real --hardware --record capture, see
-    [[livereact-project]] memory): NOT just BUILD's own restart (see the test
-    above) -- ANY bucket change other than entering DROP should blend, not
-    snap. The confirmed-live capture's flutter was dominated by DROP<->HOLD/
-    BUILD swings, but the mechanism applies to every non-DROP seam, e.g. a
-    real HOLD->BREAKDOWN drop-off."""
+    [[livereact-project]] memory): ANY bucket change other than entering
+    DROP or PEAK should blend, not snap. Bible-integration Phase 2 (HOLD
+    removed): reworked to use BUILD (ramped up to its ceiling) -> BREAK as
+    the large-gap pair, since HOLD no longer exists as a bucket at all."""
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
 
-    # settle into HOLD at a clearly mid-range level
-    for _ in range(20):
-        eng.tick(_snap(energy=0.65, beat_phase=0.0), rig)
+    # settle into BUILD, ramped all the way to its ceiling (BUILD_HIGH=0.95)
+    eng.tick(_snap(energy=0.5, bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    for bar in range(1, 9):
         clock.advance(0.5)
+        eng.tick(_snap(energy=0.5, bar=bar, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
     # one more tick right after the loop's last advance, so _last_bucket_tick_t
     # reflects "now" -- otherwise the upcoming small clock.advance(0.05) would
     # actually hand the crossfade the loop's full unconsumed 0.5s dt instead
-    eng.tick(_snap(energy=0.65, beat_phase=0.0), rig)
-    settled_hold = eng.wash_level
-    assert 0.35 <= settled_hold <= 0.65
+    eng.tick(_snap(energy=0.5, bar=8, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    settled_build = eng.wash_level
+    assert settled_build >= 0.9  # ramped to (near) BUILD_HIGH=0.95
 
-    # drop straight to BREAKDOWN
+    # drop straight to BREAK
     clock.advance(0.05)
-    eng.tick(_snap(energy=0.15, beat_phase=0.0), rig)
+    eng.tick(_snap(energy=0.15, beat_phase=0.0, bucket="break"), rig)
     just_after = eng.wash_level
-    assert just_after > 0.35  # still blending down, not snapped into BREAKDOWN's own range yet
+    assert just_after > 0.5  # still blending down, not snapped into BREAK's own range yet
 
     clock.advance(2.0)  # past WASH_TRANSITION_WINDOW_S -- blend has settled
-    eng.tick(_snap(energy=0.15, beat_phase=0.0), rig)
-    assert eng.wash_level <= 0.35  # now genuinely settled into BREAKDOWN's range
+    eng.tick(_snap(energy=0.15, beat_phase=0.0, bucket="break"), rig)
+    assert eng.wash_level <= 0.35  # now genuinely settled into BREAK's range
 
 
-def test_hold_bucket_breathes_faster_than_breakdown():
-    """This project's own extrapolation (no direct Bible state) -- same
-    principle as breakdown, brighter range, faster time constant."""
-    clock = FakeClock()
+def test_old_hold_range_energy_now_ramps_like_build():
+    """Bible-integration Phase 2, Open Question #1's default: HOLD (the old
+    0.55-0.80 energy range, no Bible equivalent) is REMOVED -- that range now
+    folds into BUILD's upper tail, so it should follow BUILD's bar-position
+    ramp, not a fixed breathing envelope. energy=0.65 used to mean "HOLD";
+    it's squarely inside BUILD's range now (0.30-0.80)."""
     rig = load_rig()
-    eng = ReactiveLayerEngine(clock)
+    eng = ReactiveLayerEngine(FakeClock())
 
-    eng.tick(_snap(energy=0.65, beat_phase=0.0), rig)
-    for _ in range(20):
-        clock.advance(0.5)
-        eng.tick(_snap(energy=0.65, beat_phase=0.0), rig)
-    assert 0.35 <= eng.wash_level <= 0.65
+    eng.tick(_snap(energy=0.65, bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    start = eng.wash_level
+    eng.tick(_snap(energy=0.65, bar=8, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    full = eng.wash_level
+
+    assert start == 0.2   # BUILD_LOW, at entry -- not a breathing-envelope value
+    assert full == 0.95   # BUILD_HIGH, after a full ramp -- confirms it's really following BUILD
+
+
+def test_peak_holds_a_constant_intensity_above_drop():
+    """Bible-integration Phase 2: PEAK is genuinely new, reached only by
+    escalating out of a sustained DROP (core/metronome.py) -- this engine-
+    level test just confirms PEAK's own target is a static value, held
+    instantly like DROP, and brighter than it ("more committed than the
+    drop")."""
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+    eng.tick(_snap(energy=1.0, bucket="peak"), rig)
+    assert eng.wash_level == 0.97  # PEAK_INTENSITY
+    assert eng.wash_level > 0.9    # brighter than DROP_INTENSITY
+
+
+def test_outro_fades_down_from_bar_position_not_audio():
+    """outro_fade_wash: "wash 40->15%" -- a one-way bar-position-driven
+    decay, same mechanism shape as BUILD's ramp, just descending."""
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+
+    eng.tick(_snap(energy=0.1, bar=0, beat_in_bar=1, beat_phase=0.0, bucket="outro"), rig)
+    start = eng.wash_level
+    eng.tick(_snap(energy=0.1, bar=16, beat_in_bar=1, beat_phase=0.0, bucket="outro"), rig)
+    full = eng.wash_level
+
+    assert start == 0.40           # OUTRO_HIGH, at entry
+    assert abs(full - 0.15) < 1e-9  # OUTRO_LOW, after a full fade (OUTRO_FADE_BARS=16)

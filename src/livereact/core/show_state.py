@@ -83,7 +83,17 @@ class ShowSnapshot:
     # imports scenes/base.py's own Scene.render(snap: ShowSnapshot) type hint,
     # so the reverse import would be circular) -- reconstruct via
     # EnergyBucket(snap.bucket) at call sites that already import it.
-    bucket: str = "breakdown"
+    bucket: str = "break"
+    # Bible-integration Phase 2 (2026-09-11): loud-to-quiet-to-loud drop
+    # marker (core/metronome.py's `_derive_drop_marker`) -- a corroborating
+    # signal alongside bucket classification, not a replacement for it.
+    # `drop_marker` is True for exactly one tick, the moment a marker
+    # confirms; `drop_cycle` is how many have fired since the last detected
+    # track transition (see `in_transition` below) -- an approximate,
+    # same-track occurrence count ("this is drop #2"), not true song-
+    # structure knowledge.
+    drop_cycle: int = 0
+    drop_marker: bool = False
     in_transition: bool = False          # inferred / synthetic
 
     # --- health / confidence ---

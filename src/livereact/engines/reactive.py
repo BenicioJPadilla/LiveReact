@@ -23,7 +23,7 @@ from ..fixtures.profiles import Par, WashBar
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
 from ..scenes.base import EnergyBucket
-from ..scenes.catalog import BREAKDOWN_MAX, BUILD_MAX, HOLD_MAX
+from ..scenes.catalog import BREAK_MAX, BUILD_MAX
 from .color import band_levels, two_axis_color
 
 PULSE_MIN = 0.03        # fallback-only now (see KICK_* below) — used solely when real
@@ -255,41 +255,53 @@ HUE_UPDATE_BARS = 16
 # BUILD and DROP) and its numbers below are this project's own extrapolation,
 # clearly marked, not sourced from the doc.
 #
-# DROP/PEAK ([VERIFIED against the Bible's own look defs] `peak_full_rig`:
-# "wash 85-100%... reactivity: static hue+pan, kick_follow:false";
-# `drop_blackout_hit`: "reactivity: static all, kick_follow:false, the cut IS
-# the effect, nothing reacts"): held, mostly-static, near-full intensity —
-# NOT audio-tracked at all. A single fixed value is the most literal reading
-# of "static."
+# DROP ([VERIFIED against the Bible's own look defs] `drop_blackout_hit`:
+# "reactivity: static all, kick_follow:false, the cut IS the effect, nothing
+# reacts"): held, mostly-static, near-full intensity — NOT audio-tracked at
+# all. A single fixed value is the most literal reading of "static."
 DROP_INTENSITY = 0.9  # within the Bible's stated 85-100% range
+
+# PEAK (`peak_full_rig`: "wash 85-100%... reactivity: static hue+pan,
+# kick_follow:false") -- Bible-integration Phase 2: PEAK is genuinely new
+# (see EnergyBucket's docstring, scenes/base.py) and is reached only by
+# escalating out of a sustained DROP, never from a raw energy level. Held
+# static like DROP, just a hair brighter -- "more committed than the drop,"
+# matching the Bible's own PEAK-comes-after-DROP narrative.
+PEAK_INTENSITY = 0.97  # within the Bible's stated 85-100% range, above DROP_INTENSITY
 
 # BUILD (`build_riser_wash`, the Bible's own "canonical build"): "intensity
 # climbs across the build... the ramp IS the build; drive it from bar
 # position, not audio, to stay predictable." Structural, not audio-reactive
-# at all -- deliberately the opposite of kick-follow.
+# at all -- deliberately the opposite of kick-follow. Phase 2: this range now
+# also covers the old HOLD bucket's energy (0.55-0.80, folded in per Open
+# Question #1) -- the ramp formula itself is unchanged, just a wider energy
+# range now reads as "still building" rather than downgrading to a calmer
+# breathing look.
 BUILD_RAMP_BARS = 8.0   # the Bible's own typical build length
 BUILD_LOW = 0.2         # Bible: "20->95%"
 BUILD_HIGH = 0.95
 
-# BREAKDOWN (`break_low_wash`): "a break has no transients to chase, so only
-# a slow envelope earns reactivity... wash 15-35%." A heavily low-pass-
-# filtered version of real energy -- a slow "breathing" rise/fall, not
-# beat-locked spikes. BREAKDOWN_BREATH_TAU_S itself isn't given an exact
-# number by the doc; a few seconds is what "slow envelope"/"breathing"
-# implies, NOT yet tuned by ear on real hardware.
-BREAKDOWN_LOW = 0.15
-BREAKDOWN_HIGH = 0.35
-BREAKDOWN_BREATH_TAU_S = 3.0
+# BREAK (`break_low_wash`; renamed from BREAKDOWN, Phase 2, naming match only
+# -- same concept): "a break has no transients to chase, so only a slow
+# envelope earns reactivity... wash 15-35%." A heavily low-pass-filtered
+# version of real energy -- a slow "breathing" rise/fall, not beat-locked
+# spikes. BREAK_BREATH_TAU_S itself isn't given an exact number by the doc; a
+# few seconds is what "slow envelope"/"breathing" implies, NOT yet tuned by
+# ear on real hardware.
+BREAK_LOW = 0.15
+BREAK_HIGH = 0.35
+BREAK_BREATH_TAU_S = 3.0
 
-# HOLD -- this project's own extrapolation (NOT in the Bible, which has no
-# state between BUILD and DROP/PEAK): same "slow envelope, no kick-follow"
-# principle as BREAKDOWN, just brighter and a bit more responsive since HOLD
-# is a sustained *present* groove, not a hushed breakdown. Flagging this
-# explicitly as a gap in the Bible's 5-state model against this project's
-# 4-state one, not something to treat as doc-sourced.
-HOLD_LOW = 0.35
-HOLD_HIGH = 0.65
-HOLD_BREATH_TAU_S = 1.0
+# OUTRO (`outro_fade_wash`: "wash 40->15%") -- Bible-integration Phase 2:
+# genuinely new, reached only by promoting out of BREAK after a recent
+# DROP/PEAK (see core/metronome.py's `_derive_bucket`), never from a raw
+# energy level. A slow, one-way bar-position-driven fade (same mechanism
+# shape as BUILD's ramp, just descending) rather than a breathing envelope --
+# "warm fade, decreasing intensity" is a one-time decay, not an ongoing
+# oscillation.
+OUTRO_FADE_BARS = 16.0  # matches outro_fade_wash's own min_hold
+OUTRO_HIGH = 0.40
+OUTRO_LOW = 0.15
 
 # Crossfade across a BUCKET CHANGE itself (2026-09-07, first real --hardware
 # --record capture, see [[livereact-project]] memory): each branch above
@@ -332,8 +344,8 @@ class ReactiveLayerEngine:
         self._hue_update_bar: int | None = None  # which HUE_UPDATE_BARS bucket _hue_idx was picked in
         self._prev_bucket: EnergyBucket | None = None    # to detect a bucket change
         self._build_entry_pos: float | None = None       # musical position (bars) BUILD was entered at
-        self._breakdown_breath = 0.0    # slow low-pass envelope, BREAKDOWN's "breathing"
-        self._hold_breath = 0.0         # slow low-pass envelope, HOLD's (this project's own)
+        self._break_breath = 0.0        # slow low-pass envelope, BREAK's "breathing"
+        self._outro_entry_pos: float | None = None  # bar position OUTRO was entered at, for its fade
         self._last_bucket_tick_t: float | None = None    # dt for the breathing envelopes above
         self.wash_level = 0.0       # exposed for the console/tests: last computed 0..1 wash/par level
         self._wash_transition_until = 0.0  # see WASH_CROSSFADE_TAU_S above -- 0.0 means "no
@@ -443,20 +455,20 @@ class ReactiveLayerEngine:
     def _bucket_wash_level(self, snap: ShowSnapshot) -> float:
         """Wash/par brightness per LIGHTING_BIBLE.md's per-energy-state model
         (see the module-level constants above for exactly what's Bible-
-        sourced vs. this project's own extrapolation for HOLD). Replaces
-        kick-follow as the default driver -- see the retirement note above
-        `HUE_UPDATE_BARS`."""
+        sourced vs. this project's own extrapolation for PEAK/OUTRO's exact
+        numbers). Replaces kick-follow as the default driver -- see the
+        retirement note above `HUE_UPDATE_BARS`."""
         now = self.clock.monotonic()
         dt = (now - self._last_bucket_tick_t) if self._last_bucket_tick_t is not None else 1 / 60
         self._last_bucket_tick_t = now
 
-        # snap.bucket -- an ALREADY-DEBOUNCED bucket_for_energy(energy_norm),
-        # computed once in metronome.py (see BUCKET_MIN_DWELL_S there), NOT a
-        # fresh call here. energy_norm itself (vs. raw snap.energy) matters
-        # too -- bucket_for_energy's thresholds are meaningless against a fixed
-        # absolute number tuned to one mixer gain staging (found live
-        # 2026-09-07: a real drop never crossed the old raw-energy DROP
-        # threshold at all). See show_state.py's bucket/energy_norm docstrings.
+        # snap.bucket -- an ALREADY-DEBOUNCED, already-escalated (PEAK/OUTRO
+        # included) bucket, computed once in metronome.py, NOT a fresh call
+        # here. energy_norm itself (vs. raw snap.energy) matters too --
+        # bucket thresholds are meaningless against a fixed absolute number
+        # tuned to one mixer gain staging (found live 2026-09-07: a real drop
+        # never crossed the old raw-energy DROP threshold at all). See
+        # show_state.py's bucket/energy_norm docstrings.
         energy_bucket = EnergyBucket(snap.bucket)
         # BARS, not beats -- `_musical_position` (used by MH movement) is
         # beat-denominated; a "BUILD_RAMP_BARS" ramp needs the bar-denominated
@@ -469,46 +481,51 @@ class ReactiveLayerEngine:
         entering_new_bucket = energy_bucket != self._prev_bucket
         if entering_new_bucket and energy_bucket == EnergyBucket.BUILD:
             self._build_entry_pos = pos
+        if entering_new_bucket and energy_bucket == EnergyBucket.OUTRO:
+            self._outro_entry_pos = pos
         # Crossfade-arming is guarded on `self._prev_bucket is not None`,
         # UNLIKE the build-entry reset above: the engine's very first tick
         # ever has no meaningful prior state to blend FROM, and must land
         # exactly on its bucket's target (existing tests rely on this) --
         # which `now >= self._wash_transition_until` already gives it for
         # free (0.0 initial value) as long as this stays unarmed that tick.
-        if self._prev_bucket is not None and entering_new_bucket and energy_bucket != EnergyBucket.DROP:
+        # DROP and PEAK both stay instant snaps (not just DROP) -- PEAK is an
+        # escalation of an already-instant DROP hit, not a fresh transition
+        # that should ease in.
+        if self._prev_bucket is not None and entering_new_bucket and energy_bucket not in (
+            EnergyBucket.DROP, EnergyBucket.PEAK,
+        ):
             # (Re-)arm the crossfade window -- see WASH_CROSSFADE_TAU_S above.
-            # Entering DROP is deliberately excluded: that snap stays instant.
             self._wash_transition_until = now + WASH_TRANSITION_WINDOW_S
         self._prev_bucket = energy_bucket
 
         if energy_bucket == EnergyBucket.DROP:
             target = DROP_INTENSITY
+        elif energy_bucket == EnergyBucket.PEAK:
+            target = PEAK_INTENSITY
         elif energy_bucket == EnergyBucket.BUILD:
             entry = self._build_entry_pos if self._build_entry_pos is not None else pos
             progress = max(0.0, min(1.0, (pos - entry) / BUILD_RAMP_BARS))
             target = BUILD_LOW + (BUILD_HIGH - BUILD_LOW) * progress
-        elif energy_bucket == EnergyBucket.BREAKDOWN:
-            # Normalize energy WITHIN this bucket's own range (0..BREAKDOWN_MAX)
+        elif energy_bucket == EnergyBucket.OUTRO:
+            entry = self._outro_entry_pos if self._outro_entry_pos is not None else pos
+            progress = max(0.0, min(1.0, (pos - entry) / OUTRO_FADE_BARS))
+            target = OUTRO_HIGH + (OUTRO_LOW - OUTRO_HIGH) * progress  # descending
+        else:  # BREAK
+            # Normalize energy WITHIN this bucket's own range (0..BREAK_MAX)
             # before using it as the breathing target -- using the raw value
             # directly (found via testing) can never actually reach
-            # BREAKDOWN_HIGH, since it's capped below BREAKDOWN_MAX by
-            # definition of being in this bucket at all. energy_norm, not raw
-            # snap.energy -- same reasoning as the bucket boundary above, this
-            # threshold means nothing against a fixed absolute number.
-            breath_target = min(1.0, snap.energy_norm / BREAKDOWN_MAX)
-            coeff = 1 - math.exp(-dt / BREAKDOWN_BREATH_TAU_S)
-            self._breakdown_breath += coeff * (breath_target - self._breakdown_breath)
-            target = BREAKDOWN_LOW + (BREAKDOWN_HIGH - BREAKDOWN_LOW) * self._breakdown_breath
-        else:  # HOLD -- this project's own extrapolation, see the constants
-            # above. Same within-bucket normalization as BREAKDOWN, over
-            # HOLD's own [BUILD_MAX, HOLD_MAX) range, same energy_norm reasoning.
-            breath_target = min(1.0, max(0.0, (snap.energy_norm - BUILD_MAX) / (HOLD_MAX - BUILD_MAX)))
-            coeff = 1 - math.exp(-dt / HOLD_BREATH_TAU_S)
-            self._hold_breath += coeff * (breath_target - self._hold_breath)
-            target = HOLD_LOW + (HOLD_HIGH - HOLD_LOW) * self._hold_breath
+            # BREAK_HIGH, since it's capped below BREAK_MAX by definition of
+            # being in this bucket at all. energy_norm, not raw snap.energy --
+            # same reasoning as the bucket boundary above, this threshold
+            # means nothing against a fixed absolute number.
+            breath_target = min(1.0, snap.energy_norm / BREAK_MAX)
+            coeff = 1 - math.exp(-dt / BREAK_BREATH_TAU_S)
+            self._break_breath += coeff * (breath_target - self._break_breath)
+            target = BREAK_LOW + (BREAK_HIGH - BREAK_LOW) * self._break_breath
 
-        if energy_bucket == EnergyBucket.DROP or now >= self._wash_transition_until:
-            self.wash_level = target  # settled, or a deliberately-instant DROP cut
+        if energy_bucket in (EnergyBucket.DROP, EnergyBucket.PEAK) or now >= self._wash_transition_until:
+            self.wash_level = target  # settled, or a deliberately-instant DROP/PEAK cut
         else:
             crossfade_coeff = 1 - math.exp(-dt / WASH_CROSSFADE_TAU_S)
             self.wash_level += crossfade_coeff * (target - self.wash_level)
