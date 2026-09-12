@@ -194,6 +194,30 @@ MIN_DIP_S = 1.0            # must stay under DIP_THRESHOLD at least this long --
 REBOUND_THRESHOLD = 0.70   # energy_norm at or above this, after a qualifying dip, confirms the marker
 MAX_REBOUND_WINDOW_S = 8.0  # how long after a qualifying dip ends a rebound still counts
 
+# Second, INDEPENDENT drop-marker path (2026-09-11, Josh's correction: "not
+# all drops go quiet... it should only signal drop when its intensity is
+# sharply rising"): the quiet-then-rebound path above only catches the
+# build-quiet-drop pattern. A drop that goes straight from building to
+# hitting, with no cut in between, needs its own detector -- a fast, large
+# rise in energy_norm on its own, no preceding silence required. Per Josh's
+# explicit instruction, this is NOT an additional requirement layered onto
+# the quiet-then-rebound path (an AND) -- it's a second, independent, either-
+# one-is-sufficient path (an OR): whichever condition is met first signals
+# the drop. MARKER_COOLDOWN_S is shared across both paths so a classic
+# build-quiet-drop (which can satisfy BOTH conditions at once) doesn't get
+# double-counted as two separate drop_cycle increments.
+SHARP_RISE_WINDOW_S = 3.0  # look back this far for the rise comparison
+SHARP_RISE_DELTA = 0.5     # energy_norm must have climbed at least this much within the window
+MARKER_COOLDOWN_S = 4.0    # shared across both paths -- one real event, one count
+
+# Drop/PEAK intensity now reflects how loud the actual hit was (Josh, same
+# correction), not a fixed constant regardless of the real sound -- see
+# _drop_hit_intensity below and engines/reactive.py's DROP/PEAK branches.
+# Range chosen to stay within LIGHTING_BIBLE.md's own stated 85-100% for
+# `peak_full_rig`, just no longer flat within it.
+DROP_INTENSITY_FLOOR = 0.85
+DROP_INTENSITY_CEIL = 1.0
+
 
 class Metronome(threading.Thread):
     """Drains input messages and publishes the live ShowState at a fixed rate."""
@@ -267,6 +291,13 @@ class Metronome(threading.Thread):
         self.drop_cycle = 0           # same-track drop-marker occurrence count; reset on a track transition
         self._drop_marker_pulse = False  # True only on the exact tick a marker confirms
         self._prev_in_transition = False  # rising-edge detector for the drop_cycle reset
+        # sharp-rise-alone path (see SHARP_RISE_WINDOW_S etc. above) -- an
+        # independent OR, not an AND, with the dip/rebound path above
+        self._recent_energy: deque[tuple[float, float]] = deque()  # (t, energy_norm) within SHARP_RISE_WINDOW_S
+        self._marker_cooldown_until = 0.0  # shared between both paths, see MARKER_COOLDOWN_S
+        # captured once per real DROP commitment, held static (see DROP_INTENSITY_FLOOR/CEIL
+        # above and engines/reactive.py) -- how loud THIS hit actually was, not a fixed constant
+        self.drop_hit_intensity = DROP_INTENSITY_FLOOR
 
         # real audio (docs/14) — kept separate from _midi's fields; see
         # AudioLevelMessage's docstring for why band_low_abs stays un-normalized
@@ -503,6 +534,8 @@ class Metronome(threading.Thread):
         but the classifier defers to it unconditionally once something calls it.
         """
         if self._manual_bucket_override is not None:
+            if self._manual_bucket_override == EnergyBucket.DROP:
+                self.drop_hit_intensity = DROP_INTENSITY_CEIL  # a manual "drop now" cue is by definition the real thing
             self._base_committed = self._manual_bucket_override
             self._base_committed_since = now
             self._bucket_committed = self._manual_bucket_override
@@ -543,6 +576,16 @@ class Metronome(threading.Thread):
                     self._bucket_candidate = raw
                     self._bucket_candidate_since = now
                 elif now - self._bucket_candidate_since >= confirm_s:
+                    if raw == EnergyBucket.DROP:
+                        # Capture how loud THIS hit actually was (2026-09-11,
+                        # Josh's correction) -- held static from here (see
+                        # engines/reactive.py's DROP/PEAK branches), not
+                        # chased continuously; scaled within
+                        # [DROP_INTENSITY_FLOOR, DROP_INTENSITY_CEIL] against
+                        # energy_norm's real range at commitment time.
+                        span = 1.0 - BUILD_MAX
+                        progress = max(0.0, min(1.0, (self._energy_norm - BUILD_MAX) / span)) if span > 0 else 1.0
+                        self.drop_hit_intensity = DROP_INTENSITY_FLOOR + (DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR) * progress
                     self._base_committed = raw
                     self._base_committed_since = now
                     self._bucket_candidate = None
@@ -571,38 +614,66 @@ class Metronome(threading.Thread):
         self._bucket_committed = final
 
     def _derive_drop_marker(self, now: float) -> None:
-        """Loud-to-quiet-to-loud drop marker (see DIP_THRESHOLD etc. above):
-        a corroborating signal alongside (not a gate on) bucket
-        classification. Also resets `drop_cycle` on a track transition
-        (rising edge of `in_transition`) -- see the module-level comment for
-        the known limitation (relies on the same transition detection
-        everything else here does, so a very smooth beatmatched blend with
-        no clean cut might not reset it)."""
+        """Two INDEPENDENT drop-signal paths (2026-09-11, Josh's correction:
+        "not all drops go quiet... [this should be] criteria that can help
+        signify a drop, not criteria that must be met"): quiet-then-rebound
+        (the classic build-quiet-drop pattern, see DIP_THRESHOLD etc. above)
+        and a sharp-rise-alone path (a drop with no preceding cut, see
+        SHARP_RISE_WINDOW_S etc. above). Either ALONE is sufficient -- this
+        is an OR, not an AND. MARKER_COOLDOWN_S is shared between them (via
+        `_fire_marker`) so a classic drop, which can satisfy both paths at
+        once, only counts as one `drop_cycle` increment.
+
+        Both are corroborating signals alongside bucket classification, not
+        a gate on it -- DROP still commits off the energy-threshold+dwell
+        machinery in `_derive_bucket` regardless of whether either path here
+        ever fires. Also resets `drop_cycle` on a track transition (rising
+        edge of `in_transition`) -- see the module-level comment for the
+        known limitation (relies on the same transition detection everything
+        else here does, so a very smooth beatmatched blend with no clean cut
+        might not reset it)."""
         self._drop_marker_pulse = False
         in_transition_now = now < self._transition_until
         if in_transition_now and not self._prev_in_transition:
             self.drop_cycle = 0
         self._prev_in_transition = in_transition_now
 
+        self._recent_energy.append((now, self._energy_norm))
+        while self._recent_energy and now - self._recent_energy[0][0] > SHARP_RISE_WINDOW_S:
+            self._recent_energy.popleft()
+
+        # --- path 1: quiet, then a rebound ---
         if self._energy_norm < DIP_THRESHOLD:
             if self._dip_started_at is None:
                 self._dip_started_at = now
             self._awaiting_rebound_until = None  # still dipping -- not armed for rebound yet
-            return
+        else:
+            if self._dip_started_at is not None:
+                dip_duration = now - self._dip_started_at
+                self._dip_started_at = None
+                if dip_duration >= MIN_DIP_S:
+                    self._awaiting_rebound_until = now + MAX_REBOUND_WINDOW_S
 
-        if self._dip_started_at is not None:
-            dip_duration = now - self._dip_started_at
-            self._dip_started_at = None
-            if dip_duration >= MIN_DIP_S:
-                self._awaiting_rebound_until = now + MAX_REBOUND_WINDOW_S
+            if self._awaiting_rebound_until is not None:
+                if now > self._awaiting_rebound_until:
+                    self._awaiting_rebound_until = None  # window expired, no rebound in time
+                elif self._energy_norm >= REBOUND_THRESHOLD:
+                    self._awaiting_rebound_until = None
+                    self._fire_marker(now)
 
-        if self._awaiting_rebound_until is not None:
-            if now > self._awaiting_rebound_until:
-                self._awaiting_rebound_until = None  # window expired, no rebound in time
-            elif self._energy_norm >= REBOUND_THRESHOLD:
-                self.drop_cycle += 1
-                self._drop_marker_pulse = True
-                self._awaiting_rebound_until = None
+        # --- path 2: a sharp rise, on its own -- no preceding quiet required ---
+        if now >= self._marker_cooldown_until and self._energy_norm >= REBOUND_THRESHOLD and self._recent_energy:
+            window_min = min(e for _, e in self._recent_energy)
+            if self._energy_norm - window_min >= SHARP_RISE_DELTA:
+                self._fire_marker(now)
+
+    def _fire_marker(self, now: float) -> None:
+        """Shared by both drop-marker paths -- see _derive_drop_marker."""
+        if now < self._marker_cooldown_until:
+            return  # this real event was already counted via the other path
+        self.drop_cycle += 1
+        self._drop_marker_pulse = True
+        self._marker_cooldown_until = now + MARKER_COOLDOWN_S
 
     # ------------------------------------------------------------------ health
     def _is_pdl_fresh(self, now: float) -> bool:
@@ -644,6 +715,7 @@ class Metronome(threading.Thread):
             energy_norm=self._energy_norm,
             bucket=self._bucket_committed.value,
             drop_cycle=self.drop_cycle,
+            drop_hit_intensity=self.drop_hit_intensity,
             drop_marker=self._drop_marker_pulse,
             in_transition=now < self._transition_until,
             free_running=not self._is_pdl_fresh(now),

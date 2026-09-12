@@ -94,6 +94,12 @@ class ShowSnapshot:
     # structure knowledge.
     drop_cycle: int = 0
     drop_marker: bool = False
+    # Captured once per real DROP commitment (core/metronome.py's
+    # _derive_bucket), held static from there, not chased continuously --
+    # how loud THIS hit actually measured (2026-09-11, Josh's correction:
+    # drop intensity should reflect the real sound, not a fixed constant).
+    # Default matches DROP_INTENSITY_FLOOR for callers/tests predating this.
+    drop_hit_intensity: float = 0.85
     in_transition: bool = False          # inferred / synthetic
 
     # --- health / confidence ---

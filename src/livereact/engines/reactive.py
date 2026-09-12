@@ -257,17 +257,24 @@ HUE_UPDATE_BARS = 16
 #
 # DROP ([VERIFIED against the Bible's own look defs] `drop_blackout_hit`:
 # "reactivity: static all, kick_follow:false, the cut IS the effect, nothing
-# reacts"): held, mostly-static, near-full intensity — NOT audio-tracked at
-# all. A single fixed value is the most literal reading of "static."
-DROP_INTENSITY = 0.9  # within the Bible's stated 85-100% range
+# reacts"): held, near-full intensity — NOT continuously audio-tracked
+# (matches "static... nothing reacts"). Bible-integration Phase 2 correction
+# (2026-09-11, Josh: drop intensity should reflect how loud the real sound
+# actually was, not a fixed number regardless of it): the target now comes
+# from `snap.drop_hit_intensity` -- captured ONCE, in core/metronome.py, at
+# the exact moment DROP was committed, then held static from there (same
+# "chosen once, not chased" principle as before, just no longer a flat
+# constant). See core/metronome.py's DROP_INTENSITY_FLOOR/CEIL for the range
+# it's scaled within (still the Bible's stated 85-100%).
 
 # PEAK (`peak_full_rig`: "wash 85-100%... reactivity: static hue+pan,
-# kick_follow:false") -- Bible-integration Phase 2: PEAK is genuinely new
-# (see EnergyBucket's docstring, scenes/base.py) and is reached only by
-# escalating out of a sustained DROP, never from a raw energy level. Held
-# static like DROP, just a hair brighter -- "more committed than the drop,"
-# matching the Bible's own PEAK-comes-after-DROP narrative.
-PEAK_INTENSITY = 0.97  # within the Bible's stated 85-100% range, above DROP_INTENSITY
+# kick_follow:false") -- PEAK is genuinely new (see EnergyBucket's
+# docstring, scenes/base.py) and is reached only by escalating out of a
+# sustained DROP, never from a raw energy level. Held static like DROP, with
+# a small additive boost on top of that SAME drop's captured hit intensity
+# -- "more committed than the drop" scales with how big the drop already
+# was, rather than jumping to an unrelated fixed ceiling.
+PEAK_BOOST = 0.03  # added to snap.drop_hit_intensity, clamped to 1.0
 
 # BUILD (`build_riser_wash`, the Bible's own "canonical build"): "intensity
 # climbs across the build... the ramp IS the build; drive it from bar
@@ -500,9 +507,9 @@ class ReactiveLayerEngine:
         self._prev_bucket = energy_bucket
 
         if energy_bucket == EnergyBucket.DROP:
-            target = DROP_INTENSITY
+            target = snap.drop_hit_intensity  # how loud THIS hit was, captured once (core/metronome.py)
         elif energy_bucket == EnergyBucket.PEAK:
-            target = PEAK_INTENSITY
+            target = min(1.0, snap.drop_hit_intensity + PEAK_BOOST)
         elif energy_bucket == EnergyBucket.BUILD:
             entry = self._build_entry_pos if self._build_entry_pos is not None else pos
             progress = max(0.0, min(1.0, (pos - entry) / BUILD_RAMP_BARS))

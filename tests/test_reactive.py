@@ -385,9 +385,9 @@ def test_drop_bucket_holds_a_constant_intensity_regardless_of_beat():
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     bar = rig.fixture("bar_l")
-    on_beat = eng.tick(_snap(energy=0.9, beat_phase=0.0, audio_band_low_abs=50.0), rig)
-    late_beat = eng.tick(_snap(energy=0.9, beat_phase=0.9, audio_band_low_abs=0.0), rig)
-    assert on_beat.values[bar.offset] == late_beat.values[bar.offset] == 202  # DROP_INTENSITY=0.9
+    on_beat = eng.tick(_snap(energy=0.9, beat_phase=0.0, audio_band_low_abs=50.0, drop_hit_intensity=0.9), rig)
+    late_beat = eng.tick(_snap(energy=0.9, beat_phase=0.9, audio_band_low_abs=0.0, drop_hit_intensity=0.9), rig)
+    assert on_beat.values[bar.offset] == late_beat.values[bar.offset] == 202  # snap.drop_hit_intensity=0.9, fixed for this test
 
 
 def test_build_bucket_ramps_from_bar_position_not_audio():
@@ -429,8 +429,8 @@ def test_build_ramp_restarts_on_a_fresh_entry():
 
     eng.tick(_snap(energy=0.4, bar=0, beat_in_bar=1, beat_phase=0.0), rig)
     eng.tick(_snap(energy=0.4, bar=8, beat_in_bar=1, beat_phase=0.0), rig)  # ramp completes
-    eng.tick(_snap(energy=0.9, bar=9, beat_in_bar=1, beat_phase=0.0), rig)  # a drop happens
-    assert eng.wash_level == 0.9  # DROP_INTENSITY -- entering DROP always snaps instantly
+    eng.tick(_snap(energy=0.9, bar=9, beat_in_bar=1, beat_phase=0.0, drop_hit_intensity=0.9), rig)  # a drop happens
+    assert eng.wash_level == 0.9  # snap.drop_hit_intensity=0.9 -- entering DROP always snaps instantly
 
     clock.advance(0.05)
     eng.tick(_snap(energy=0.4, bar=20, beat_in_bar=1, beat_phase=0.0), rig)  # BUILD re-entered
@@ -514,16 +514,41 @@ def test_old_hold_range_energy_now_ramps_like_build():
 
 
 def test_peak_holds_a_constant_intensity_above_drop():
-    """Bible-integration Phase 2: PEAK is genuinely new, reached only by
-    escalating out of a sustained DROP (core/metronome.py) -- this engine-
-    level test just confirms PEAK's own target is a static value, held
-    instantly like DROP, and brighter than it ("more committed than the
-    drop")."""
+    """Bible-integration Phase 2 (+ 2026-09-11 correction): PEAK is
+    genuinely new, reached only by escalating out of a sustained DROP
+    (core/metronome.py) -- static like DROP, with a small additive boost on
+    top of that SAME drop's captured hit intensity ("more committed than
+    the drop" scales with how big the drop already was)."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
-    eng.tick(_snap(energy=1.0, bucket="peak"), rig)
-    assert eng.wash_level == 0.97  # PEAK_INTENSITY
-    assert eng.wash_level > 0.9    # brighter than DROP_INTENSITY
+    eng.tick(_snap(energy=1.0, bucket="peak", drop_hit_intensity=0.9), rig)
+    assert eng.wash_level == 0.93  # snap.drop_hit_intensity(0.9) + PEAK_BOOST(0.03)
+    assert eng.wash_level > 0.9    # brighter than the drop it escalated from
+
+
+def test_peak_intensity_scales_with_the_drop_it_escalated_from():
+    """2026-09-11 correction: PEAK isn't a fixed ceiling -- a bigger drop
+    escalates to a brighter PEAK than a smaller one."""
+    rig = load_rig()
+    quiet_peak = ReactiveLayerEngine(FakeClock())
+    quiet_peak.tick(_snap(energy=1.0, bucket="peak", drop_hit_intensity=0.85), rig)
+    loud_peak = ReactiveLayerEngine(FakeClock())
+    loud_peak.tick(_snap(energy=1.0, bucket="peak", drop_hit_intensity=1.0), rig)
+    assert loud_peak.wash_level > quiet_peak.wash_level
+    assert loud_peak.wash_level == 1.0  # clamped, doesn't exceed full
+
+
+def test_drop_intensity_reflects_the_actual_hit_not_a_fixed_constant():
+    """2026-09-11 correction: a bigger real hit renders brighter than a
+    smaller one, both still classified DROP."""
+    rig = load_rig()
+    quiet_drop = ReactiveLayerEngine(FakeClock())
+    quiet_drop.tick(_snap(energy=0.85, bucket="drop", drop_hit_intensity=0.85), rig)
+    loud_drop = ReactiveLayerEngine(FakeClock())
+    loud_drop.tick(_snap(energy=1.0, bucket="drop", drop_hit_intensity=1.0), rig)
+    assert loud_drop.wash_level > quiet_drop.wash_level
+    assert quiet_drop.wash_level == 0.85
+    assert loud_drop.wash_level == 1.0
 
 
 def test_outro_fades_down_from_bar_position_not_audio():

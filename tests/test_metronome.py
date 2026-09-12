@@ -469,7 +469,13 @@ def test_drop_marker_fires_after_a_qualifying_dip_and_rebound():
     assert m.drop_cycle == 1  # doesn't keep re-firing
 
 
-def test_drop_marker_does_not_fire_on_a_normal_short_gap():
+def test_drop_marker_path1_ignores_a_short_gap_but_path2_still_catches_the_real_rise():
+    """A short gap (well under MIN_DIP_S) correctly doesn't qualify for the
+    quiet-then-rebound path (path 1) -- but Josh's correction means that's
+    NOT the only path: a genuinely sharp rise counts on its own (path 2),
+    regardless of whether the dip before it was long enough to "count" as a
+    real cut. This is intentional, not a bug -- see _derive_drop_marker's
+    own docstring (an OR, not an AND, between the two paths)."""
     clock = FakeClock()
     m = _metronome(clock)
     m._energy_norm = 0.9
@@ -477,11 +483,26 @@ def test_drop_marker_does_not_fire_on_a_normal_short_gap():
 
     m._energy_norm = 0.02
     m._derive_drop_marker(clock.monotonic())
-    clock.advance(0.2)  # well under MIN_DIP_S -- an ordinary quiet beat, not a real cut
+    clock.advance(0.2)  # well under MIN_DIP_S -- doesn't qualify path 1's dip requirement
     m._derive_drop_marker(clock.monotonic())
 
-    m._energy_norm = 0.85
+    m._energy_norm = 0.85  # still a genuinely sharp rise from 0.02 -- path 2 catches it
     m._derive_drop_marker(clock.monotonic())
+    assert m.drop_cycle == 1
+    assert m._drop_marker_pulse is True
+
+
+def test_drop_marker_does_not_fire_on_an_ordinary_gradual_rise():
+    """Neither path should fire for energy that just gradually climbs --
+    path 1 needs a real qualifying dip first, and path 2 needs the rise
+    itself to clear SHARP_RISE_DELTA within SHARP_RISE_WINDOW_S, not just
+    any increase."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    for energy in (0.3, 0.4, 0.5, 0.6, 0.7):  # a gradual build, well under SHARP_RISE_DELTA per step
+        m._energy_norm = energy
+        m._derive_drop_marker(clock.monotonic())
+        clock.advance(1.0)
     assert m.drop_cycle == 0
     assert m._drop_marker_pulse is False
 
