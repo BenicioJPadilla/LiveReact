@@ -177,6 +177,21 @@ EXIT_CONFIRM_DWELL_S = 4.0 * 60.0 / NOMINAL_BPM  # ~1.88s at 128 BPM
 # and _last_drop_or_peak_t below.
 OUTRO_LOOKBACK_S = 32.0 * SECONDS_PER_BAR  # ~60s at 128 BPM -- [CONVENTION], tunable
 
+# `transition_likely` heuristic (Bible-integration Phase 3, D1 in
+# docs/bible_integration/SPEC_DEVIATIONS.md's "partial mitigation" note --
+# Josh, 2026-09-12): a plain heuristic, NOT prediction or machine learning,
+# using signals already computed elsewhere in this file as soft leading
+# indicators that a transition out of a sustained DROP/PEAK is statistically
+# due soon -- real dance tracks don't hold a peak forever, and a track that's
+# already had several drops is more likely winding down than starting a
+# fresh one. Exposed on ShowSnapshot; NOT consumed by anything yet (same
+# unused-seam pattern as request_manual_bucket in Phase 2) -- a future phase
+# can use it to bias look selection away from starting something elaborate
+# right as the set seems likely to turn a corner. [CONVENTION], tunable.
+TYPICAL_EXTENDED_PEAK_BARS = 16.0
+TYPICAL_EXTENDED_PEAK_S = TYPICAL_EXTENDED_PEAK_BARS * SECONDS_PER_BAR
+TRANSITION_LIKELY_DROP_CYCLE_THRESHOLD = 2
+
 # Loud-to-quiet-to-loud drop marker (Josh's idea, 2026-09-11 -- a real,
 # already-observed pattern: the first real --hardware --record capture
 # showed the drums cutting to near-total silence for ~4.3s immediately
@@ -284,6 +299,8 @@ class Metronome(threading.Thread):
         self._last_drop_or_peak_t: float | None = None  # for OUTRO promotion, see OUTRO_LOOKBACK_S
         self._manual_bucket_override: EnergyBucket | None = None  # Phase 2 hook, unused until Phase 5's
                                                                     # DJ-trigger buttons -- see request_manual_bucket()
+        self._pending_drop_release = False  # Phase 3: confirmed DROP, waiting for the next downbeat
+        self.transition_likely = False  # Phase 3 heuristic, see TYPICAL_EXTENDED_PEAK_S above
 
         # loud-to-quiet-to-loud drop marker (see DIP_THRESHOLD etc. above)
         self._dip_started_at: float | None = None
@@ -522,6 +539,21 @@ class Metronome(threading.Thread):
         file. Consumed once, then cleared."""
         self._manual_bucket_override = bucket
 
+    def _commit_drop(self, now: float) -> None:
+        """Actually commit to DROP -- called either immediately (already on
+        a downbeat when confirmed) or once a pending beat-quantized release
+        arrives (see _pending_drop_release in _derive_bucket). Captures how
+        loud THIS hit actually was (2026-09-11, Josh's correction) -- held
+        static from here (see engines/reactive.py's DROP/PEAK branches), not
+        chased continuously; scaled within [DROP_INTENSITY_FLOOR,
+        DROP_INTENSITY_CEIL] against energy_norm's real range at the moment
+        of commitment."""
+        span = 1.0 - BUILD_MAX
+        progress = max(0.0, min(1.0, (self._energy_norm - BUILD_MAX) / span)) if span > 0 else 1.0
+        self.drop_hit_intensity = DROP_INTENSITY_FLOOR + (DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR) * progress
+        self._base_committed = EnergyBucket.DROP
+        self._base_committed_since = now
+
     def _derive_bucket(self, now: float) -> None:
         """Debounce bucket_for_energy's output against the base 3-state
         classifier (BREAK/BUILD/DROP -- see EnergyBucket's own docstring for
@@ -545,6 +577,25 @@ class Metronome(threading.Thread):
             return
 
         raw = bucket_for_energy_with_hysteresis(self._energy_norm, self._base_committed)
+
+        # Beat-quantized DROP release (Bible-integration Phase 3, D1 in
+        # docs/bible_integration/SPEC_DEVIATIONS.md): a confirmed DROP
+        # doesn't commit the instant its dwell timer clears -- it waits for
+        # the next real downbeat, so the hit always lands on a clean beat
+        # boundary rather than wherever the confirming tick happened to
+        # fall. Cancelled if energy backs off before a downbeat arrives --
+        # this is a short wait (at most one bar), not a real prediction, so
+        # there's nothing to "keep believing" if the sound itself changes
+        # its mind first.
+        if self._pending_drop_release:
+            if raw != EnergyBucket.DROP:
+                self._pending_drop_release = False  # energy backed off before the downbeat arrived
+            elif self._beat_in_bar == 1:
+                self._commit_drop(now)
+                self._pending_drop_release = False
+            self._apply_bucket_overlay(now)
+            return
+
         if raw == self._base_committed:
             self._bucket_candidate = None
             self._bucket_candidate_since = None
@@ -577,19 +628,17 @@ class Metronome(threading.Thread):
                     self._bucket_candidate_since = now
                 elif now - self._bucket_candidate_since >= confirm_s:
                     if raw == EnergyBucket.DROP:
-                        # Capture how loud THIS hit actually was (2026-09-11,
-                        # Josh's correction) -- held static from here (see
-                        # engines/reactive.py's DROP/PEAK branches), not
-                        # chased continuously; scaled within
-                        # [DROP_INTENSITY_FLOOR, DROP_INTENSITY_CEIL] against
-                        # energy_norm's real range at commitment time.
-                        span = 1.0 - BUILD_MAX
-                        progress = max(0.0, min(1.0, (self._energy_norm - BUILD_MAX) / span)) if span > 0 else 1.0
-                        self.drop_hit_intensity = DROP_INTENSITY_FLOOR + (DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR) * progress
-                    self._base_committed = raw
-                    self._base_committed_since = now
-                    self._bucket_candidate = None
-                    self._bucket_candidate_since = None
+                        self._bucket_candidate = None
+                        self._bucket_candidate_since = None
+                        if self._beat_in_bar == 1:
+                            self._commit_drop(now)  # already on a downbeat -- no wait needed
+                        else:
+                            self._pending_drop_release = True  # confirmed -- wait for the next downbeat
+                    else:
+                        self._base_committed = raw
+                        self._base_committed_since = now
+                        self._bucket_candidate = None
+                        self._bucket_candidate_since = None
 
         self._apply_bucket_overlay(now)
 
@@ -612,6 +661,13 @@ class Metronome(threading.Thread):
         if final in (EnergyBucket.DROP, EnergyBucket.PEAK):
             self._last_drop_or_peak_t = now
         self._bucket_committed = final
+
+        dwelling_long = (
+            self._base_committed == EnergyBucket.DROP
+            and now - self._base_committed_since >= TYPICAL_EXTENDED_PEAK_S
+        )
+        many_drops = self.drop_cycle >= TRANSITION_LIKELY_DROP_CYCLE_THRESHOLD
+        self.transition_likely = dwelling_long or many_drops
 
     def _derive_drop_marker(self, now: float) -> None:
         """Two INDEPENDENT drop-signal paths (2026-09-11, Josh's correction:
@@ -716,6 +772,7 @@ class Metronome(threading.Thread):
             bucket=self._bucket_committed.value,
             drop_cycle=self.drop_cycle,
             drop_hit_intensity=self.drop_hit_intensity,
+            transition_likely=self.transition_likely,
             drop_marker=self._drop_marker_pulse,
             in_transition=now < self._transition_until,
             free_running=not self._is_pdl_fresh(now),

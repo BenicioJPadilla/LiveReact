@@ -100,6 +100,12 @@ class ShowSnapshot:
     # drop intensity should reflect the real sound, not a fixed constant).
     # Default matches DROP_INTENSITY_FLOOR for callers/tests predating this.
     drop_hit_intensity: float = 0.85
+    # Bible-integration Phase 3 heuristic (core/metronome.py's
+    # _apply_bucket_overlay) -- a plain rule, NOT prediction or ML: true when
+    # a sustained DROP/PEAK has run past a typical duration, or the track's
+    # already had several drops. Not consumed by anything yet -- see
+    # docs/bible_integration/SPEC_DEVIATIONS.md's D1 entry.
+    transition_likely: bool = False
     in_transition: bool = False          # inferred / synthetic
 
     # --- health / confidence ---

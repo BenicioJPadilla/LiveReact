@@ -84,6 +84,15 @@ Plan: `/Users/joshuaracimora/.claude/plans/adaptive-squishing-pebble.md`.
 
 **Re-verified via the same real capture used for Phase 1's scene-rotation fix**: 17 total bucket-state transitions across the ~300s track (vs. the pre-fix baseline's 26 flips in ~4 minutes that originally motivated `BUCKET_MIN_DWELL_S`/`HYSTERESIS_MARGIN`) — no flapping regression from the new per-state dwell/asymmetric-hysteresis/legal-transition machinery. One noted characteristic, not a bug: PEAK can toggle back to a plain DROP display on a single tick where `energy_norm` dips just under `BUILD_MAX(0.80)` (seen twice in the real capture, at t=49.4s and t=131.3s) -- both states render at nearly the same brightness (`DROP_INTENSITY=0.9` vs `PEAK_INTENSITY=0.97`), so this is a low-risk, likely-imperceptible category of transition, unlike the old BREAK<->DROP-class flapping.
 
+## Phase 3 delta log (2026-09-12 -- beat-quantized DROP release, transition_likely heuristic)
+
+| Rule | Before | After | Evidence |
+|---|---|---|---|
+| `TIME-01`/`TIME-04`/`LOOK-09`/`TRANS-03` | NOT-IMPLEMENTED (different architecture -- no PDL phrase prediction exists on this hardware, confirmed a genuine data-source limitation, not an unbuilt feature) | PARTIAL — intent satisfied via a disclosed substitution, not literal §9.6 | `docs/bible_integration/SPEC_DEVIATIONS.md`'s D1 entry (formal, disclosed deviation, matching the project's `spec/03-lighting-bible-corrections.md` pattern); `core/metronome.py`'s `_pending_drop_release`/`_commit_drop` (a confirmed DROP waits for the next real downbeat rather than committing mid-bar); tests: `tests/test_metronome.py::test_drop_commits_immediately_when_already_on_a_downbeat`, `::test_drop_waits_for_the_next_downbeat_when_confirmed_mid_bar`, `::test_pending_drop_release_cancels_if_energy_backs_off_first` |
+| — (new, not a numbered rule) | — | `transition_likely` heuristic (dwell-in-DROP/PEAK past a typical duration, or several drops already in-track) -- plain rule, not ML, unconsumed seam for a future phase | `core/metronome.py`'s `TYPICAL_EXTENDED_PEAK_S`/`TRANSITION_LIKELY_DROP_CYCLE_THRESHOLD`; tests: `tests/test_metronome.py::test_transition_likely_after_a_typically_long_peak`, `::test_transition_likely_after_several_drops_in_one_track` |
+
+**Re-verified against the same real capture, this time feeding its actual recorded `beat` field** (earlier Phase 1/2 verification passes left `beat_in_bar` at the Metronome's default the whole time, meaning they never actually exercised beat-quantization at all -- caught and corrected here): the track's first drop happened to land already on beat 1 (no delay); the second drop incurred a real, small 0.4s wait for the next downbeat -- both well within the expected "at most one bar" bound, no correctness issue. `transition_likely` fired at exactly 30.0s into the first sustained drop (16 bars × 1.875s/bar at the nominal 128 BPM), precisely matching the configured threshold, and correctly did NOT fire for the second drop (which only lasted ~24s, genuinely under the threshold).
+
 ## Phase 1 delta log (updated as Phase 1 code lands)
 
 | Rule | Before | After | Evidence |

@@ -507,6 +507,93 @@ def test_drop_marker_does_not_fire_on_an_ordinary_gradual_rise():
     assert m._drop_marker_pulse is False
 
 
+# --- Bible-integration Phase 3: beat-quantized DROP release -----------------
+
+def test_drop_commits_immediately_when_already_on_a_downbeat():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._beat_in_bar = 1  # _metronome()'s own default, spelled out here for clarity
+    m._energy_norm = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP  # no wait needed -- already aligned
+    assert not m._pending_drop_release
+
+
+def test_drop_waits_for_the_next_downbeat_when_confirmed_mid_bar():
+    """LIGHTING_BIBLE.md's own language ("releases on the downbeat") --
+    Bible-integration Phase 3 (D1 in docs/bible_integration/
+    SPEC_DEVIATIONS.md): a confirmed DROP doesn't commit the instant its
+    dwell timer clears if that happens mid-bar -- it waits for beat 1."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._beat_in_bar = 3  # mid-bar
+    m._energy_norm = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed != EnergyBucket.DROP  # confirmed, but not released yet
+    assert m._pending_drop_release
+
+    m._beat_in_bar = 4  # still not a downbeat
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed != EnergyBucket.DROP
+    assert m._pending_drop_release
+
+    m._beat_in_bar = 1  # the next real downbeat arrives
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+    assert not m._pending_drop_release
+
+
+def test_pending_drop_release_cancels_if_energy_backs_off_first():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._beat_in_bar = 3
+    m._energy_norm = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._pending_drop_release
+
+    m._energy_norm = 0.3  # the sound itself backed off before the downbeat arrived
+    m._derive_bucket(clock.monotonic())
+    assert not m._pending_drop_release
+
+    m._beat_in_bar = 1  # even once a downbeat does arrive, nothing to release anymore
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed != EnergyBucket.DROP
+
+
+# --- Bible-integration Phase 3: transition_likely heuristic -----------------
+
+def test_transition_likely_after_a_typically_long_peak():
+    from livereact.core.metronome import TYPICAL_EXTENDED_PEAK_S
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+    assert not m.transition_likely  # hasn't been dwelling long yet
+
+    clock.advance(TYPICAL_EXTENDED_PEAK_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+    assert m.transition_likely
+
+
+def test_transition_likely_after_several_drops_in_one_track():
+    from livereact.core.metronome import TRANSITION_LIKELY_DROP_CYCLE_THRESHOLD
+    clock = FakeClock()
+    m = _metronome(clock)
+    m.drop_cycle = TRANSITION_LIKELY_DROP_CYCLE_THRESHOLD
+    m._energy_norm = 0.1  # squarely BREAK -- not dwelling in DROP/PEAK at all
+    m._derive_bucket(clock.monotonic())
+    assert m.transition_likely  # drop_cycle alone is enough, independent of dwell time
+
+
 def test_drop_cycle_resets_on_a_track_transition():
     clock = FakeClock()
     m = _metronome(clock)
