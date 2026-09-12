@@ -142,20 +142,35 @@ class SceneCatalog:
         ``rig`` (Bible-integration Phase 1, optional/default None): when given,
         applies LIGHTING_BIBLE.md §5's `requires{}`/`min_atmosphere_density`
         capability gate before round-robining, walking one `degrade_to` hop on
-        failure (LOOK-01; recursive-degrade beyond one hop and conflict
-        arbitration are NOT specified anywhere in the Bible -- see this
-        project's plan doc's Open Questions #3/#4 for the deliberately
-        conservative defaults applied here: one hop only, then fall back to
-        round-robin among whatever's actually eligible, never hard-fail).
-        Omitting ``rig`` (the default) skips this gate entirely -- existing
-        callers that don't pass a rig get byte-identical behavior to before
-        this parameter existed.
+        failure (LOOK-01; recursive-degrade beyond one hop is NOT specified
+        anywhere in the Bible -- see this project's plan doc's Open Question
+        #3 for the deliberately conservative default applied here: one hop
+        only, then fall back to round-robin among whatever's actually
+        eligible, never hard-fail). Omitting ``rig`` (the default) skips this
+        gate entirely -- existing callers that don't pass a rig get
+        byte-identical behavior to before this parameter existed.
+
+        ``exclude`` (Bible-integration Phase 4, LOOK-06's `conflicts[]`):
+        besides the existing "avoid repeating the current scene" behavior,
+        any candidate whose name appears in ``exclude``'s `conflicts` (or
+        vice versa) is also excluded from selection outright -- Open
+        Question #4's approved default, since the Bible declares
+        `conflicts[]` pairs but never states an arbitration rule: a
+        conflicting look is simply never selected while the conflicting one
+        is active; the current look just keeps running until its own next
+        natural rotation point (no forced pre-emption). If literally every
+        candidate conflicts with ``exclude``, the conflict filter is skipped
+        entirely for that call (never hard-fail selection).
         """
         scenes = self._by_bucket[bucket]
         if not scenes:
             scenes = [s for b in EnergyBucket for s in self._by_bucket[b]]
         if rig is not None:
             scenes = self._capability_filter(scenes, rig)
+        if exclude is not None:
+            non_conflicting = [s for s in scenes if s is exclude or not self._conflicts(s, exclude)]
+            if non_conflicting:
+                scenes = non_conflicting
         n = len(scenes)
         for _ in range(n):
             idx = self._rr_index[bucket] % n
@@ -168,6 +183,14 @@ class SceneCatalog:
     @staticmethod
     def _eligible(scene: Scene, rig: Rig) -> bool:
         return scene.requires <= rig.capabilities() and rig.atm >= scene.min_atmosphere_density
+
+    @staticmethod
+    def _conflicts(a: Scene, b: Scene) -> bool:
+        """Bidirectional: the Bible declares `conflicts[]` one-sidedly per
+        look (e.g. `drop_blackout_hit` names its conflicts, the build looks
+        it conflicts with don't necessarily name it back) -- checked both
+        ways so a look doesn't need to be declared on both sides to work."""
+        return a.name in b.conflicts or b.name in a.conflicts
 
     def _capability_filter(self, scenes: list[Scene], rig: Rig) -> list[Scene]:
         """Replace each ineligible scene with its one-hop `degrade_to` target

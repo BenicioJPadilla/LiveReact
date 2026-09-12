@@ -90,6 +90,12 @@ class ShowEngine(threading.Thread):
         for engine in self.engines:
             try:
                 contribution = engine.tick(snap, self.rig)
+                # Bible-integration Phase 4: tag with the producing engine's
+                # own Titan-tier priority (see engines/reactive.py's own
+                # comment) so merge_contributions' LTP-by-priority resolution
+                # has something real to sort on, not an accident of this
+                # list's own order.
+                contribution.priority = engine.priority
                 self._last[engine.name] = contribution
             except Exception:  # noqa: BLE001 - isolate a faulty engine
                 log.exception("Engine %r failed; reusing last contribution", engine.name)

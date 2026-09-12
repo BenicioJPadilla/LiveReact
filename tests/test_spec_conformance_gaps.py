@@ -50,6 +50,7 @@ def test_hue_merges_by_priority_not_by_per_channel_max():
     rig = _rig()
     par = rig.fixture("par_l")
     reactive_c, phrase_c = Contribution(), Contribution()
+    reactive_c.priority, phrase_c.priority = 25, 50  # LIGHTING_BIBLE.md §2.3's Titan tiers
     par.set_color(reactive_c, 1.0, 0.0, 0.0)  # reactive layer: pure red
     par.set_color(phrase_c, 0.0, 0.0, 1.0)    # phrase layer: pure blue, higher priority
 
@@ -80,6 +81,7 @@ def test_color_wheel_slot_is_snap_by_priority_not_byte_max():
     rig = _rig()
     mh = rig.fixture("mh_l")
     reactive_c, phrase_c = Contribution(), Contribution()
+    reactive_c.priority, phrase_c.priority = 25, 50  # LIGHTING_BIBLE.md §2.3's Titan tiers
     mh.set_color(reactive_c, 1.0, 0.0, 1.0)  # magenta -> wheel slot 56 (lower priority)
     mh.set_color(phrase_c, 1.0, 0.0, 0.0)    # red -> wheel slot 8 (higher priority)
 
@@ -107,6 +109,13 @@ def test_reactive_layer_movement_is_not_wholly_discarded_by_phrase_movement():
     rig = _rig()
     mh = rig.fixture("mh_l")
     reactive_c, phrase_c = Contribution(), Contribution()
+    # Bible-integration Phase 4 (2026-09-12): priorities set explicitly to
+    # match real runtime values (core/show_engine.py tags every
+    # Contribution with its producing engine's own priority) -- WITHOUT
+    # this, both default to 0 and the test passes for the wrong reason (a
+    # tie-break accident picking whichever is listed first), which would
+    # hide that MERGE-05's real fix (additive offsets) still isn't built.
+    reactive_c.priority, phrase_c.priority = 25, 50
     mh.set_position(reactive_c, 0.1, 0.1)  # what ReactiveLayerEngine would compute
     mh.set_position(phrase_c, 0.9, 0.9)    # what a scene independently computes
 

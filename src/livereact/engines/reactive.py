@@ -360,6 +360,11 @@ class ReactiveLayerEngine:
                                             # very first tick ever a direct assignment (any
                                             # real monotonic clock reads > 0.0)
 
+    # LIGHTING_BIBLE.md §2.3's Titan tiers (Bible-integration Phase 4):
+    # Safety=255 (not a contribution -- merge/merge.py's finalize() clamp,
+    # unchanged), Transition=100, Phrase=50, Reactive=25.
+    priority = 25
+
     @property
     def name(self) -> str:
         return "reactive"

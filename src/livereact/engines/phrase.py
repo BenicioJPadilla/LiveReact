@@ -41,6 +41,10 @@ class PhraseEngine:
         self._was_in_transition = False
         self.rotations = 0  # for tests/telemetry
 
+    # LIGHTING_BIBLE.md §2.3's Titan tiers (Bible-integration Phase 4) --
+    # see engines/reactive.py's own priority comment for the full tier list.
+    priority = 50
+
     @property
     def name(self) -> str:
         return "phrase"

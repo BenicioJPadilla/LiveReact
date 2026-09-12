@@ -18,26 +18,56 @@ def _rig():
     return load_rig()
 
 
-def test_color_and_dimmer_merge_by_max():
+def test_dimmer_merges_by_max_htp():
+    """Bible-integration Phase 4: DIMMER stays genuinely HTP (max across
+    every contribution) -- true additive-brightness semantics, unaffected
+    by the priority-tiered change to COLOR/MOVEMENT/LASER/OTHER below.
+    Priorities set backwards on purpose (lower priority gets the brighter
+    value) to prove this is real max-across-all, not accidentally still
+    picking a priority winner."""
+    from livereact.fixtures.profiles import _intensity_to8
+    rig = _rig()
+    bar = rig.fixture("bar_l")
+    dim, bright = Contribution(), Contribution()
+    dim.priority, bright.priority = 50, 25  # the BRIGHTER one has LOWER priority
+    bar.set_intensity(dim, 0.2)
+    bar.set_intensity(bright, 0.8)
+    merged = merge_contributions([dim, bright], rig)
+    assert merged[bar.offset] == _intensity_to8(0.8)  # the brighter value wins regardless of priority
+
+
+def test_color_merges_ltp_by_priority_not_per_channel_max():
+    """Bible-integration Phase 4 (MERGE-02/03, closes the "still blue during
+    the drop" root cause): COLOR is no longer a per-channel max -- the
+    highest-priority contributor's whole color wins outright. Old behavior
+    (max red, max green independently) is exactly the bug that could
+    produce a third, unintended color neither engine commanded."""
     rig = _rig()
     par = rig.fixture("par_l")
-    c1, c2 = Contribution(), Contribution()
-    par.set_color(c1, 0.2, 1.0, 0.0)  # R=51,  G=255 (ch2=R, ch3=G)
-    par.set_color(c2, 0.8, 0.1, 0.0)  # R=204, G=25
-    merged = merge_contributions([c1, c2], rig)
-    assert merged[par.offset + 1] == 204  # max red
-    assert merged[par.offset + 2] == 255  # max green
+    low, high = Contribution(), Contribution()
+    low.priority, high.priority = 25, 50
+    par.set_color(low, 0.2, 1.0, 0.0)   # R=51,  G=255
+    par.set_color(high, 0.8, 0.1, 0.0)  # R=204, G=25 -- higher priority
+    merged = merge_contributions([low, high], rig)
+    assert merged[par.offset + 1] == 204  # high's red, not max(51,204)
+    assert merged[par.offset + 2] == 26   # high's green (_to8(0.1)=26), not max(255,26) -- the old bug's exact case
 
 
-def test_movement_is_last_write_wins():
+def test_movement_is_ltp_by_priority():
+    """Bible-integration Phase 4: MOVEMENT is LTP by explicit priority now,
+    not a bare accident of the caller's list order -- same practical
+    winner in this case (the higher-priority write), but for a principled
+    reason, verified by putting the higher priority on the FIRST-listed
+    contribution (which last-write-wins would have gotten wrong)."""
     rig = _rig()
     mh = rig.fixture("mh_l")
-    c1, c2 = Contribution(), Contribution()
-    mh.set_position(c1, 0.0, 0.0)
-    mh.set_position(c2, 1.0, 1.0)  # later contribution wins for movement
-    merged = merge_contributions([c1, c2], rig)
-    assert merged[mh.offset + 0] == 255  # pan from c2
-    assert merged[mh.offset + 2] == 255  # tilt from c2
+    low, high = Contribution(), Contribution()
+    low.priority, high.priority = 25, 50
+    mh.set_position(high, 1.0, 1.0)  # higher priority, but listed FIRST
+    mh.set_position(low, 0.0, 0.0)   # lower priority, listed last -- old last-write-wins would pick this
+    merged = merge_contributions([high, low], rig)
+    assert merged[mh.offset + 0] == 255  # high's pan wins despite being listed first
+    assert merged[mh.offset + 2] == 255  # high's tilt wins despite being listed first
 
 
 def test_finalize_slew_limits_moving_head_position_between_frames():

@@ -18,6 +18,10 @@ LIFT = 0.22  # white floor added during a mix (max-merges over the held look)
 
 
 class TransitionEngine:
+    # LIGHTING_BIBLE.md §2.3's Titan tiers (Bible-integration Phase 4) --
+    # see engines/reactive.py's own priority comment for the full tier list.
+    priority = 100
+
     @property
     def name(self) -> str:
         return "transition"

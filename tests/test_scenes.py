@@ -125,6 +125,47 @@ def test_pick_falls_back_to_round_robin_if_nothing_is_eligible_even_degraded():
     assert cat.pick(EnergyBucket.DROP, rig) is not None
 
 
+def test_pick_excludes_a_scene_that_conflicts_with_the_current_one():
+    """Bible-integration Phase 4, LOOK-06 + Open Question #4's approved
+    default: a conflicting look is simply never selected while the
+    conflicting one is active -- no forced pre-emption of the current look."""
+    class _A(Scene):
+        name, bucket = "A", EnergyBucket.DROP
+        conflicts = frozenset({"B"})
+    class _B(Scene):
+        name, bucket = "B", EnergyBucket.DROP
+    cat = SceneCatalog([_A(), _B()])
+    a = cat.bucket(EnergyBucket.DROP)[0]
+    for _ in range(5):  # round-robin would otherwise eventually return B
+        assert cat.pick(EnergyBucket.DROP, exclude=a).name == "A"
+
+
+def test_pick_conflict_check_is_bidirectional():
+    """The Bible declares conflicts[] one-sidedly per look -- checked both
+    ways so a look doesn't need to declare the conflict on both sides."""
+    class _A(Scene):
+        name, bucket = "A", EnergyBucket.DROP
+        conflicts = frozenset({"B"})  # only A declares the conflict
+    class _B(Scene):
+        name, bucket = "B", EnergyBucket.DROP
+    cat = SceneCatalog([_A(), _B()])
+    b = cat.bucket(EnergyBucket.DROP)[1]
+    for _ in range(5):
+        assert cat.pick(EnergyBucket.DROP, exclude=b).name == "B"  # A excluded even though B didn't declare it
+
+
+def test_pick_never_hard_fails_even_if_everything_conflicts():
+    class _A(Scene):
+        name, bucket = "A", EnergyBucket.DROP
+        conflicts = frozenset({"B"})
+    class _B(Scene):
+        name, bucket = "B", EnergyBucket.DROP
+        conflicts = frozenset({"A"})
+    cat = SceneCatalog([_A(), _B()])
+    a = cat.bucket(EnergyBucket.DROP)[0]
+    assert cat.pick(EnergyBucket.DROP, exclude=a) is not None  # never fails to select something
+
+
 def test_safe_default_renders_static_neutral_wash_no_motion_no_laser():
     """LOOK-08: safe_default is static 40% neutral_wash, no mover motion,
     no laser, no fog."""

@@ -32,6 +32,14 @@ class Contribution(Buffer):
     def __init__(self) -> None:
         self.values = bytearray(UNIVERSE_SIZE)
         self.touched = bytearray(UNIVERSE_SIZE)
+        # LIGHTING_BIBLE.md §2.3's Titan tiers (Bible-integration Phase 4):
+        # set by the caller (core/show_engine.py) to the producing engine's
+        # own `priority` class attribute right after tick() returns this.
+        # Defaults to 0 -- lower than every real engine's tier (25/50/100),
+        # so a Contribution nobody explicitly tagged never outranks a real
+        # one on a tie (matters for tests/render_universe's one-shot use
+        # that construct a bare Contribution directly).
+        self.priority = 0
 
     def set(self, channel_1based: int, value: int) -> None:
         i = channel_1based - 1
@@ -53,21 +61,49 @@ class ManualParams:
 
 
 def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearray:
-    """Fold contributions onto the rig's boot universe using per-kind rules."""
+    """Fold contributions onto the rig's boot universe using per-kind rules.
+
+    Bible-integration Phase 4 (LIGHTING_BIBLE.md §2.1/§2.3, MERGE-02/03/05/
+    06/07/08/19): DIMMER/STROBE stay genuinely HTP (max across every
+    contribution -- true additive-brightness semantics, e.g. a Reactive
+    beat-pulse and a Phrase scene both wanting the wash brighter should
+    combine, not fight). Everything else (COLOR, MOVEMENT, LASER, OTHER) is
+    now LTP **by explicit priority**, not a per-channel max or an accident
+    of the caller's list order: the highest-priority contributor that
+    touched this channel wins outright, its whole value, every time --
+    closing the "still blue during the drop" bug (a scene's own hue used to
+    out-max the Reactive layer's frozen hue on the blue channel specifically,
+    producing a color neither engine intended) and the color-wheel/gobo/
+    prism mistagging findings (a discrete slot value must never be blended
+    with another one, which max() implicitly attempted). `Contribution.
+    priority` is set by the caller (core/show_engine.py) to the producing
+    engine's own Titan-tier number (see engines/reactive.py's own comment).
+
+    NOT yet built: LIGHTING_BIBLE.md's full pan/tilt formula (`base(LTP) +
+    Σ offsets`) for MOVEMENT specifically -- that needs each layer's
+    movement expressed as a relative offset rather than an absolute
+    position, a deeper change to how the engines compute movement at all,
+    not just how the merge picks a winner. This resolves MOVEMENT's most
+    concrete prior defect (Reactive's own movement being discarded via a
+    last-write-wins accident of list order) by making the winner explicit
+    and principled instead of accidental, but Phrase (priority 50) still
+    outright wins over Reactive (25) on any channel both touch, same
+    practical outcome as before for this specific case -- see
+    docs/bible_integration/RULES_MATRIX.md's MERGE-05 row.
+    """
     out = rig.boot_universe()
     if not contributions:
         return out
 
     for ch in range(UNIVERSE_SIZE):
-        # Gather, in engine order, the contributions that touched this channel.
-        touched_vals = [c.values[ch] for c in contributions if c.touched[ch]]
-        if not touched_vals:
+        touched = [c for c in contributions if c.touched[ch]]
+        if not touched:
             continue  # untouched -> keep the boot default
         kind = rig.kind_at(ch)
-        if kind in (ChannelKind.DIMMER, ChannelKind.COLOR, ChannelKind.STROBE):
-            out[ch] = max(touched_vals)
-        else:  # MOVEMENT, LASER, OTHER -> last writer wins
-            out[ch] = touched_vals[-1]
+        if kind in (ChannelKind.DIMMER, ChannelKind.STROBE):
+            out[ch] = max(c.values[ch] for c in touched)  # HTP
+        else:  # COLOR, MOVEMENT, LASER, OTHER -> LTP by priority
+            out[ch] = max(touched, key=lambda c: c.priority).values[ch]
     return out
 
 
