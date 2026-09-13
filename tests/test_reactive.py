@@ -381,13 +381,39 @@ def test_identical_repeating_beats_produce_identical_output():
 
 def test_drop_bucket_holds_a_constant_intensity_regardless_of_beat():
     """peak_full_rig/drop_blackout_hit: "reactivity: static, kick_follow:
-    false" -- DROP must NOT vary with beat_phase or kick data at all."""
+    false" -- DROP must NOT vary with beat_phase or kick data at all,
+    EXCEPT the deliberate beat-4 accent flash (Josh's own directed design
+    call, 2026-09-13, see BEAT4_FLASH_PEAK/_beat4_flash) -- both ticks here
+    are on beat_in_bar 1 (the `_snap` default), so the flash never engages
+    and this invariant holds exactly as before."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     bar = rig.fixture("bar_l")
     on_beat = eng.tick(_snap(energy=0.9, beat_phase=0.0, audio_band_low_abs=50.0, drop_hit_intensity=0.9), rig)
     late_beat = eng.tick(_snap(energy=0.9, beat_phase=0.9, audio_band_low_abs=0.0, drop_hit_intensity=0.9), rig)
     assert on_beat.values[bar.offset] == late_beat.values[bar.offset] == 202  # snap.drop_hit_intensity=0.9, fixed for this test
+
+
+def test_drop_and_peak_flash_on_beat_four_but_not_other_beats():
+    """Josh, 2026-09-13 (after two real hardware sessions): DROP/PEAK wash
+    was "relatively static" and read as dull with only the moving head
+    beating -- explicit ask: flash on beat 4, not every beat, not
+    overkill. HTP-style: only ever raises the level above the held base,
+    never dims it."""
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+
+    for bucket, kwargs in [("drop", dict(drop_hit_intensity=0.5)), ("peak", dict(drop_hit_intensity=0.5))]:
+        eng = ReactiveLayerEngine(FakeClock())
+        beat1 = eng.tick(_snap(energy=0.9, bucket=bucket, beat_in_bar=1, beat_phase=0.0, **kwargs), rig)
+        beat3 = eng.tick(_snap(energy=0.9, bucket=bucket, beat_in_bar=3, beat_phase=0.0, **kwargs), rig)
+        beat4_start = eng.tick(_snap(energy=0.9, bucket=bucket, beat_in_bar=4, beat_phase=0.0, **kwargs), rig)
+        beat4_late = eng.tick(_snap(energy=0.9, bucket=bucket, beat_in_bar=4, beat_phase=0.9, **kwargs), rig)
+
+        assert beat1.values[bar.offset] == beat3.values[bar.offset]  # untouched on non-4 beats
+        assert beat4_start.values[bar.offset] > beat1.values[bar.offset], bucket  # flash raises it
+        assert beat4_start.values[bar.offset] > beat4_late.values[bar.offset], bucket  # decays across beat 4 itself
+        assert beat4_late.values[bar.offset] >= beat1.values[bar.offset], bucket  # HTP -- never dips below the held base
 
 
 def test_build_bucket_ramps_from_bar_position_not_audio():

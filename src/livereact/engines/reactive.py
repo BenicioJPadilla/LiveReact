@@ -276,6 +276,30 @@ HUE_UPDATE_BARS = 16
 # was, rather than jumping to an unrelated fixed ceiling.
 PEAK_BOOST = 0.03  # added to snap.drop_hit_intensity, clamped to 1.0
 
+# Beat-4 accent flash, DROP/PEAK only -- Josh's own directed design call
+# (2026-09-13, after watching two real --hardware --record sessions), NOT
+# derived from LIGHTING_BIBLE.md's text: the Bible's own "nothing reacts"
+# static-drop design (§5, kick_follow:false) read as genuinely flat and
+# disconnected on real hardware, with the moving head (still its old,
+# un-migrated raw-energy-driven intensity, see MOVE-07/`_musical_position`
+# call sites) the only thing giving any sense of the beat. Explicit ask:
+# "relatively static, and then... on beat four it flashes... shouldn't be
+# overkill where it's just all flashing." A deliberate, disclosed
+# DEVIATION from the Bible's literal text, not an oversight -- kept
+# separate from PEAK_BOOST above (a real Bible-sourced number) so this
+# doesn't get mistaken for one. HTP-style: only ever ADDS brightness on
+# top of the held DROP/PEAK level via max(), never dims it, so "relatively
+# static" the rest of the bar is genuinely untouched.
+BEAT4_FLASH_PEAK = 1.0  # ceiling the flash decays from, at the start of beat 4
+
+
+def _beat4_flash(snap: ShowSnapshot) -> float:
+    """0 outside beat 4; decays linearly from BEAT4_FLASH_PEAK to ~0 across
+    beat 4's own phase, so it reads as one accent hit per bar, not a hold."""
+    if snap.beat_in_bar != 4:
+        return 0.0
+    return BEAT4_FLASH_PEAK * (1.0 - snap.beat_phase)
+
 # BUILD (`build_riser_wash`, the Bible's own "canonical build"): "intensity
 # climbs across the build... the ramp IS the build; drive it from bar
 # position, not audio, to stay predictable." Structural, not audio-reactive
@@ -513,8 +537,10 @@ class ReactiveLayerEngine:
 
         if energy_bucket == EnergyBucket.DROP:
             target = snap.drop_hit_intensity  # how loud THIS hit was, captured once (core/metronome.py)
+            target = max(target, _beat4_flash(snap))  # Josh's beat-4 accent, see BEAT4_FLASH_PEAK above
         elif energy_bucket == EnergyBucket.PEAK:
             target = min(1.0, snap.drop_hit_intensity + PEAK_BOOST)
+            target = max(target, _beat4_flash(snap))  # same beat-4 accent
         elif energy_bucket == EnergyBucket.BUILD:
             entry = self._build_entry_pos if self._build_entry_pos is not None else pos
             progress = max(0.0, min(1.0, (pos - entry) / BUILD_RAMP_BARS))
