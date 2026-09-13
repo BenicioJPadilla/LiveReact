@@ -169,10 +169,11 @@ class PhraseEngine:
 
     @staticmethod
     def _combine(out_c: Contribution, in_c: Contribution, progress: float, rig: Rig) -> Contribution:
-        """Blend two scene contributions: brightness/color crossfade by real
-        weighted interpolation; movement and laser channels switch at the
-        midpoint (linear blending a pan value sweeps through center; blending
-        a laser mode value could land in a wrong/unsafe range).
+        """Blend two scene contributions: brightness/color/movement crossfade
+        by real weighted interpolation; only laser channels switch at the
+        midpoint (a laser mode/pattern value is a discrete enum -- landing on
+        an undefined intermediate index mid-lerp is a real, physical risk,
+        not just cosmetic).
 
         BUG FIX (2026-09-13, found via the first real --hardware --record
         session): the brightness/color branch used to take a raw per-channel
@@ -191,14 +192,31 @@ class PhraseEngine:
         (LIGHTING_BIBLE.md's own C3 correction already discloses this
         codebase hasn't adopted Oklab anywhere; not introduced here either,
         out of scope for a bug fix) -- but a genuine, smooth interpolation
-        instead of a frozen wrong value."""
+        instead of a frozen wrong value.
+
+        SECOND BUG FIX, same session, same real hardware evidence: MOVEMENT
+        was grouped with LASER under the same "snap at the midpoint" rule,
+        on the theory that "blending a pan value sweeps through center" was
+        undesirable. Confirmed live this reads as far worse than a sweep:
+        the moving head visibly stops dead for the first half of every
+        crossfade, then instantly snaps to the new scene's position at the
+        exact midpoint -- "it stops, then just cranks into position,"
+        directly contradicting LIGHTING_BIBLE.md's own §6.6 slew-rate-limit
+        intent (no instant jumps). Unlike a laser's discrete mode/pattern
+        index, pan/tilt are continuous analog values with no "undefined
+        intermediate" to land on -- every scene in this codebase already
+        computes them as an ordinary continuous function, so lerping between
+        two computed targets during a crossfade is no riskier than what a
+        single scene's own sine sweep already does every tick. MOVEMENT now
+        gets the same real interpolation as color/dimmer; LASER alone keeps
+        the snap-at-midpoint."""
         result = Contribution()
         for ch in range(len(result.values)):
             ot, it = out_c.touched[ch], in_c.touched[ch]
             if not ot and not it:
                 continue
             kind = rig.kind_at(ch)
-            if kind in (ChannelKind.MOVEMENT, ChannelKind.LASER):
+            if kind == ChannelKind.LASER:
                 if it and progress >= 0.5:
                     value = in_c.values[ch]
                 elif ot:

@@ -129,6 +129,55 @@ def test_combine_only_one_side_touching_is_unaffected_by_interpolation():
     assert result.values[r_ch] == out_c.values[r_ch]
 
 
+def test_combine_interpolates_movement_instead_of_snapping_at_midpoint():
+    """Bug fix, 2026-09-13 (found via the second real hardware session):
+    MOVEMENT used to be grouped with LASER under "snap at the midpoint" --
+    confirmed live this reads as the moving head stopping dead for half the
+    crossfade, then instantly cranking to the new position. Pan/tilt are
+    continuous, not discrete like a laser mode index, so they now get a
+    real lerp same as color."""
+    from livereact.merge.merge import Contribution
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+
+    out_c = Contribution()
+    mh.set_position(out_c, 0.2, 0.5)   # outgoing: pan far left
+    in_c = Contribution()
+    mh.set_position(in_c, 0.8, 0.5)    # incoming: pan far right
+
+    pan_ch = mh.offset  # ch1 = pan
+    at_0 = PhraseEngine._combine(out_c, in_c, 0.0, rig)
+    at_half = PhraseEngine._combine(out_c, in_c, 0.5, rig)
+    at_1 = PhraseEngine._combine(out_c, in_c, 1.0, rig)
+
+    assert at_0.values[pan_ch] == round(0.2 * 255)
+    assert at_1.values[pan_ch] == round(0.8 * 255)
+    # NOT a snap: the midpoint must be a real, distinct, in-between value --
+    # not equal to either endpoint, and close to their numeric midpoint.
+    assert at_0.values[pan_ch] < at_half.values[pan_ch] < at_1.values[pan_ch]
+    assert abs(at_half.values[pan_ch] - round(0.5 * 255)) <= 2
+
+
+def test_combine_still_snaps_laser_at_the_midpoint():
+    """Laser mode/pattern channels are discrete enums -- landing on an
+    undefined intermediate value mid-lerp is a real risk, not cosmetic.
+    Must NOT be affected by the movement fix above."""
+    from livereact.merge.merge import Contribution
+    rig = load_rig()
+    laser = rig.fixture("laser_l")
+
+    out_c = Contribution()
+    out_c.set(laser.offset + 1, 10)   # some pattern-select channel/value
+    in_c = Contribution()
+    in_c.set(laser.offset + 1, 200)
+
+    ch = laser.offset  # 0-indexed for .values
+    just_before_mid = PhraseEngine._combine(out_c, in_c, 0.49, rig)
+    just_after_mid = PhraseEngine._combine(out_c, in_c, 0.51, rig)
+    assert just_before_mid.values[ch] == 10   # still outgoing
+    assert just_after_mid.values[ch] == 200   # snapped straight to incoming, no in-between value
+
+
 def test_crossfade_completes_and_promotes_next_scene():
     rig = load_rig()
     eng = PhraseEngine()
