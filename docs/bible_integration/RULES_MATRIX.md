@@ -26,7 +26,7 @@ Plan: `/Users/joshuaracimora/.claude/plans/adaptive-squishing-pebble.md`.
 
 | Prefix | Count | Bible-integration phase | Notes |
 |---|---|---|---|
-| MANIFEST | 6 | Phase 1 (rig capability taxonomy) | |
+| MANIFEST | 6 | **Corrected 2026-09-13 (audit finding)**: Phase 1 never actually resolved this category -- its own plan text only ever promised `LOOK-08`/`FAIL-04`. Only `MANIFEST-01` has any real fix, and that's from the pre-Bible-integration Stage 6 audit, not Phase 1. `MANIFEST-02/03/04/05/06` remain NOT-IMPLEMENTED/never-evaluated -- unscheduled, not owned by any phase. | This row previously overclaimed Phase 1 ownership of the whole category; `Fixture.capabilities()`/`Rig.capabilities()` (genuinely Phase 1) cover a narrower slice than the full MANIFEST taxonomy (x_norm ordering, atmosphere-device schema fields, brand-name-free capability tiers) implies. |
 | MERGE | 22 | Phase 4 (priority-tiered merge) | MERGE-14..17 (release/fade) explicitly deferred — see plan §Phase 6 note |
 | COLOR | 15 | Phase 4 (LTP-by-priority closes most of these) | |
 | ATMO | 21 | Out of scope — no haze/fog hardware exists | Revisit only if hardware is added |

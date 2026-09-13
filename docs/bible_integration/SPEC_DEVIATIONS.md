@@ -59,3 +59,20 @@ project), requiring either a labeled dataset or self-labeling off this
 project's own imperfect classifier, a model cheap enough to run live, and
 real validation against tracks it wasn't trained on. Revisit only if the
 heuristic version above hits an evidenced ceiling worth that investment.
+
+**Untracked gap, found 2026-09-13 (full Phase 1-6 re-audit)**: §9.7's
+"Mis-prediction recovery" text ("build that doesn't resolve: hold the
+pre-drop state for max 1 bar past prediction... resume `build_riser_wash`
+at current intensity and re-predict"; "unexpected cut: audio RMS collapse
+sustained ≥1 bar → fall to `break_low_wash` via a 1-bar crossfade") has
+**no corresponding rule ID anywhere in `spec/conformance.md`'s 170-row
+taxonomy**, and isn't built. Distinct from `FAIL-03` (audio signal *loss*,
+a hardware/connection event) — this is about the track *staying connected
+but suddenly going quiet or not dropping when expected*, a musical event,
+not a signal fault. Given D1 above, this section's literal "re-predict"
+framing doesn't apply either (there's no prediction to have gotten wrong)
+— but the underlying behavioral intent (don't hang in a bad state when a
+build overruns, gracefully recover from a real unexpected quiet passage)
+is still a real, currently-unaddressed gap, independent of D1's own
+predictive-scheduling substitution. Not scheduled into any phase; flagged
+here rather than left invisible.
