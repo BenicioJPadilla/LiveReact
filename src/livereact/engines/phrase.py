@@ -108,8 +108,20 @@ class PhraseEngine:
         if snap.in_transition or snap.loop_active:
             return  # suspend rotations during a mix or loop
 
+        # Bible-integration gap fix (2026-09-13, found during a Phase 1-6
+        # re-audit): `Scene.min_hold_bars` ("per-look override of the
+        # catalog-wide HOLD_BARS," scenes/base.py's own docstring) has been
+        # populated by dozens of Phase 5 scenes with real Bible-specified
+        # values (e.g. BreakLowWash=16, DropBlinderClear=4, AllDark=1) but
+        # was NEVER actually consulted here -- every look used the same
+        # flat HOLD_BARS=4 floor regardless of what it declared. Fixed:
+        # the CURRENTLY-HELD look's own min_hold_bars now gates how long it
+        # must be shown before any rotation away from it, falling back to
+        # the catalog-wide HOLD_BARS when a scene doesn't override it (the
+        # 8 pre-Bible-integration scenes, which never set this field).
+        hold_bars = self._current.min_hold_bars if self._current.min_hold_bars is not None else HOLD_BARS
         bars_since_change = snap.bar - self._last_change_bar
-        if bars_since_change < HOLD_BARS:
+        if bars_since_change < hold_bars:
             return  # enforce the minimum hold
 
         if self._skip_requested or bars_since_change >= ROTATION_BARS:

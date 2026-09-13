@@ -15,10 +15,10 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
-def test_twentynine_scenes_across_all_buckets():
+def test_thirty_scenes_across_all_buckets():
     """Bible-integration Phase 2: OUTRO was a genuinely new state (see
     EnergyBucket's own docstring) with no scene at all until Phase 5's
-    fourth wave -- now every bucket has at least one look. 29 = the
+    fourth wave -- now every bucket has at least one look. 30 = the
     original 8 MINUS 2 (Phase 6 retired FullSpectrumHit/BeamFanLaserTunnel
     -- see the comment above the "drop / peak energy" section header in
     scenes/library.py for why) + Phase 5's first wave (DropBlackoutHit,
@@ -34,9 +34,11 @@ def test_twentynine_scenes_across_all_buckets():
     rotates onto one of them) + seventh wave (DropColorSlamBigroom,
     DropWashSlamClear, DropGoboProjectionClear, DropBlinderClear -- closes
     out Phase 5's look-building backlog; DropGoboProjectionClear always
-    degrades to nothing, same as the "no gobo hardware" gap it documents)."""
+    degrades to nothing, same as the "no gobo hardware" gap it documents)
+    + one gap-fix (PeakStrobeBlackout, found during a 2026-09-13 Phase 1-6
+    re-audit -- a real Bible look that all 7 waves had missed)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 29
+    assert len(ALL_SCENES) == 30
     for bucket in EnergyBucket:
         assert cat.bucket(bucket), f"{bucket} has no scenes"
 
@@ -707,6 +709,36 @@ def test_drop_blinder_clear_does_not_set_wash_intensity():
     bar = rig.fixture("bar_l")
     c = DropBlinderClear().render(rig, _snap(), 1.0)
     assert not c.touched[bar.offset]
+
+
+# --- gap fix, 2026-09-13: PeakStrobeBlackout (missed by all 7 Phase 5 waves)
+
+def test_peak_strobe_blackout_is_wash_only_no_spot():
+    """requires{blinder or wash, native strobe} -- no spot at all, unlike
+    every other PEAK scene in this file."""
+    from livereact.scenes.library import PeakStrobeBlackout
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    c = PeakStrobeBlackout().render(rig, _snap(), 1.0)
+    assert not any(c.touched[mh.offset:mh.offset + mh.channel_count])
+
+
+def test_peak_strobe_blackout_does_not_touch_the_strobe_channel_itself():
+    """Same restraint as DropStrobeStab -- the actual strobe stays owned by
+    ReactiveLayerEngine's own channel, this scene supplies color only."""
+    from livereact.scenes.library import PeakStrobeBlackout
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    c = PeakStrobeBlackout().render(rig, _snap(), 1.0)
+    assert not c.touched[bar.offset + 1]  # ch2 = strobe, untouched
+
+
+def test_peak_strobe_blackout_conflicts_with_break_low_wash_bidirectionally():
+    """peak_strobe_blackout doesn't declare its own conflicts[] -- BreakLowWash
+    already names it, and SceneCatalog._conflicts checks both directions."""
+    from livereact.scenes.catalog import SceneCatalog
+    from livereact.scenes.library import BreakLowWash, PeakStrobeBlackout
+    assert SceneCatalog._conflicts(PeakStrobeBlackout(), BreakLowWash())
 
 
 def test_converge_two_spots_matches_original_spread():

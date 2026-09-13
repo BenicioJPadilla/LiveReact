@@ -233,6 +233,7 @@ class BuildRiserWash(Scene):
 
     name = "Build Riser Wash"
     bucket = EnergyBucket.BUILD
+    min_hold_bars = 8  # dark_pct deliberately left unset -- the Bible gives "30->0%," a range, not a single value
     reactivity_note = "audio:[wash.dimmer tied to bar-count envelope] (via ReactiveLayerEngine, not this scene), static:[hue] -- NOT fully implemented, see class docstring"
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
@@ -255,6 +256,8 @@ class PeakFullRig(Scene):
 
     name = "Peak Full Rig"
     bucket = EnergyBucket.PEAK
+    dark_pct = 0.10
+    min_hold_bars = 8
     reactivity_note = "static hue+pan, kick_follow:false -- hue NOT fully frozen here, see class docstring (same disclosed gap as BuildRiserWash)"
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
@@ -290,6 +293,8 @@ class PeakColorPulseClear(Scene):
 
     name = "Peak Color Pulse Clear"
     bucket = EnergyBucket.PEAK
+    dark_pct = 0.15
+    min_hold_bars = 8
     reactivity_note = "audio:[wash.dimmer on bar downbeat only, 1/bar], kick_follow:false"
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
@@ -320,6 +325,7 @@ class PeakAltHitsClear(Scene):
     name = "Peak Alt Hits Clear"
     bucket = EnergyBucket.PEAK
     dark_pct = 0.25
+    min_hold_bars = 8
     reactivity_note = "static all -- snap_alternate is bar-quantized, not audio-driven"
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
@@ -1014,6 +1020,55 @@ class DropBlinderClear(Scene):
         return c
 
 
+# --- gap fix, 2026-09-13 (found during a full Phase 1-6 re-audit against
+# the primary spec/LIGHTING_BIBLE.md text, not just docs/bible_integration/
+# LOOK_CATALOG.md's own extraction): `peak_strobe_blackout` is a real,
+# named Bible look (§5, PEAK) that was never built across any of Phase 5's
+# seven waves -- `BreakLowWash`'s own `conflicts` set has referenced it by
+# name (forward-declared, unbuilt) since the THIRD wave, but it never once
+# surfaced in a "remaining backlog" list. Closing that gap here.
+
+class PeakStrobeBlackout(Scene):
+    """LIGHTING_BIBLE.md §5: `peak_strobe_blackout` -- "[PEAK], techhouse...
+    strobe bursts <=1.5s then blackout, <=§13." `requires{blinder or wash,
+    native strobe}` -- no spot at all, unlike every other PEAK scene in
+    this file; taken at face value (wash-only), matching the look's own
+    narrow, wash-native-strobe-specific character rather than painting
+    spots out of habit. `conflicts[break_low_wash]` doesn't need declaring
+    here too -- `BreakLowWash.conflicts` already names this look, and
+    `SceneCatalog._conflicts` checks both directions.
+
+    The actual strobe burst-cap/mandatory-gap timing (`STROBE_MAX_BURST_S`/
+    `STROBE_MIN_SPACING_S`, Stage 6 audit fix) is already produced by
+    `ReactiveLayerEngine`'s own strobe channel -- a separate DMX byte from
+    color/dimmer -- matching this look's "<=1.5s then blackout" SHAPE at
+    the engine level. This class supplies color/context only, same
+    restraint as `DropStrobeStab`.
+
+    DISCLOSED GAP, not fabricated: "then blackout" implies the base state
+    between bursts should read as genuinely dark, not just "not currently
+    flashing." This scene does NOT force wash intensity to 0 between
+    bursts (same "don't touch wash intensity" default as most scenes) --
+    between bursts the wash stays wherever Reactive's own PEAK-bucket hold
+    already has it (typically near-full), not actually dark. A real fix
+    would need `ReactiveLayerEngine` to expose its own burst/gap phase to
+    the Scene layer, which doesn't exist yet -- disclosed rather than
+    invented. Still subject to the separately-tracked SAFE-01..06 Hz-
+    calibration gap (unrelated to this look, not re-litigated here)."""
+
+    name = "Peak Strobe Blackout"
+    bucket = EnergyBucket.PEAK
+    min_hold_bars = 4
+    reactivity_note = "audio:[strobe bursts <=1.5s then blackout] (via ReactiveLayerEngine's own strobe channel, not this scene) -- see class docstring for the disclosed \"then blackout\" gap"
+    color_note = "not specified by the Bible for this look -- reuses bright white, same as DropStrobeStab's own accent choice"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = 1.0, 1.0, 1.0  # bright white accent -- lets the strobe channel itself read as the "stab"
+        paint_wash(c, rig, r, g, b)
+        return c
+
+
 # --- hold / sustain (loops, post-transition, plateaus) ----------------------
 
 class PulseAndDriftSustain(Scene):
@@ -1091,4 +1146,6 @@ ALL_SCENES: list[type[Scene]] = [
     DropWashSlamClear,
     DropGoboProjectionClear,
     DropBlinderClear,
+    # Gap fix, 2026-09-13 -- peak_strobe_blackout, missed by all 7 waves:
+    PeakStrobeBlackout,
 ]

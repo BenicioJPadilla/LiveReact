@@ -42,6 +42,39 @@ def test_minimum_hold_blocks_early_rotation():
     assert eng.rotations == 0  # below the minimum hold
 
 
+def test_per_look_min_hold_bars_overrides_the_catalog_wide_floor():
+    """Gap fix, 2026-09-13: Scene.min_hold_bars ("per-look override of the
+    catalog-wide HOLD_BARS," scenes/base.py's own docstring) was declared
+    by dozens of Phase 5 scenes but never actually consulted here -- every
+    look used the flat HOLD_BARS regardless. A look with a longer-than-
+    default hold (BreakLowWash, min_hold_bars=16) must not rotate away just
+    because the flat HOLD_BARS=4 floor has cleared."""
+    from livereact.scenes.library import BreakLowWash
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.force_scene(BreakLowWash())
+    eng.skip()  # request a rotation as soon as it's legal
+    eng.tick(_snap(HOLD_BARS), rig)  # past the flat default floor...
+    assert eng.rotations == 0  # ...but not past BreakLowWash's own min_hold_bars=16
+    eng.tick(_snap(16), rig)  # now past BreakLowWash's own floor
+    assert eng.rotations == 1
+
+
+def test_scene_without_min_hold_bars_falls_back_to_the_catalog_wide_floor():
+    """A pre-Bible-integration scene (no min_hold_bars override, defaults to
+    None) must still respect the flat HOLD_BARS floor, unchanged from
+    before this fix."""
+    from livereact.scenes.library import RisingTide
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.force_scene(RisingTide())
+    eng.skip()
+    eng.tick(_snap(HOLD_BARS - 1), rig)
+    assert eng.rotations == 0
+    eng.tick(_snap(HOLD_BARS), rig)
+    assert eng.rotations == 1
+
+
 def test_rotation_suspended_during_transition_and_loop():
     rig = load_rig()
     eng = PhraseEngine()
