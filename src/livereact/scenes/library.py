@@ -202,6 +202,7 @@ class DropBlackoutHit(Scene):
     conflicts = frozenset({
         "Rising Tide", "Converge", "Pulse & Drift Sustain", "Locked Hold", "Build Riser Wash",
         "Chase Wash L/R",  # added Phase 5 fifth wave -- also a BUILD-bucket look
+        "Build Beam Raise",  # added Phase 5 sixth wave -- also a BUILD-bucket look
     })  # "conflicts[all build looks]"
     min_hold_bars = 8
     dark_pct = 0.10
@@ -648,6 +649,258 @@ class ChaseWashLr(Scene):
         return c
 
 
+# --- atmosphere-gated stubs, Bible-integration Phase 5, sixth wave (docs/
+# bible_integration/LOOK_CATALOG.md's 6 looks whose `requires{}` names an
+# `atm` (haze density) threshold > 0: `build_beam_raise` (0.5),
+# `drop_beam_fan` (0.6), `drop_laser_punctuation` (0.6), `peak_beam_sweep`
+# (0.6), `peak_laser_tunnel` (0.7), `mirror_cross_beam` (0.6). This rig has
+# no haze/fog fixture at all -- `Rig.atm` is a hardcoded `0.0` with no way
+# to raise it (fixtures/rig.py) -- so EVERY one of these ALWAYS fails
+# `SceneCatalog._eligible()`'s atm check and degrades via its one-hop
+# `degrade_to`, exactly as the plan intended ("built as data, exercised via
+# the degrade path, not live"). This is genuinely the first wave where
+# `requires`/`min_atmosphere_density` are set to real, load-bearing values
+# on any Scene in this file -- every earlier scene left them at the
+# always-satisfied defaults, so the capability-gating machinery (Phase 1)
+# has been present but functionally untested by real gating until now.
+#
+# `spot>=2`/`wash>=2`-style COUNT requirements (`drop_beam_fan`,
+# `mirror_cross_beam`) are NOT separately modeled -- there's no fixture-
+# count check anywhere in `Rig.capabilities()`, only token membership.
+# Not needed for correctness here: the atm gate alone already guarantees
+# "always degrades on this rig" for both, since atm is permanently 0.0.
+# Disclosed as a real, known limitation of the current `requires{}` model,
+# not silently ignored.
+#
+# THIN STUBS throughout, per the plan's own wording: each `render()` is a
+# best-effort, unverified implementation of the Bible's stated roles/
+# movement -- these paths are essentially unreachable via normal
+# `SceneCatalog.pick()` on this rig, so "thin and correct-shaped" is the
+# bar, not "tuned by ear" like the rest of this file's live-verified looks.
+
+class BuildBeamRaise(Scene):
+    """LIGHTING_BIBLE.md §5: `build_beam_raise` -- "[BUILD]... movement{
+    tilt_raise, ramp, period=build, tilt 20->70%}." `atm 0.5` -- always
+    degrades to `build_riser_wash` on this rig (see section note above).
+
+    "period=build" means the ramp should span the whole build section, the
+    same real progress `ReactiveLayerEngine._build_entry_pos` already
+    tracks for the wash-intensity ramp -- but that state lives in a
+    different engine and isn't exposed on `ShowSnapshot`. Approximated here
+    with `snap.energy` directly as a progress proxy instead of threading
+    that state through -- a real simplification, disclosed rather than
+    silently assumed equivalent, and acceptable given this path is
+    essentially unreachable (see section note above)."""
+
+    name = "Build Beam Raise"
+    bucket = EnergyBucket.BUILD
+    requires = frozenset({"spot", "pan_tilt"})
+    min_atmosphere_density = 0.5
+    degrade_to = BuildRiserWash
+    min_hold_bars = 8
+    reactivity_note = "movement only (tilt_raise ramp); no reactivity{} block given by the Bible for this look"
+    color_note = "not specified by the Bible for this look -- reuses two_axis_color for BUILD-family consistency"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, (0.5 + 0.5 * snap.energy) * intensity)
+        progress = max(0.0, min(1.0, snap.energy))  # progress proxy -- see class docstring
+        tilt = 0.20 + 0.50 * progress  # "tilt 20->70%"
+        for fx in rig.by_role("spot"):
+            fx.set_position(c, 0.5, tilt)
+        return c
+
+
+class DropBeamFan(Scene):
+    """LIGHTING_BIBLE.md §5: `drop_beam_fan` -- "[DROP,PEAK]... movement{
+    fan, sine, period_bars 2, phase_offset 180, pan_amp 30%, tilt_amp 15%,
+    mirror_pan true}... color{cold_steel, unison}." `atm 0.6` + `spot>=2` --
+    always degrades to `drop_blackout_hit` on this rig (see section note
+    above; the atm gate alone is sufficient, `spot>=2` isn't separately
+    modeled). Filed under DROP only (Bible tags `[DROP,PEAK]`, `Scene.bucket`
+    is single-valued in this codebase, same disclosed limitation as
+    ChaseWashLr's own bucket choice) -- matches its own `degrade_to` target,
+    also DROP."""
+
+    name = "Drop Beam Fan"
+    bucket = EnergyBucket.DROP
+    requires = frozenset({"spot", "pan_tilt", "wheel_discrete"})
+    min_atmosphere_density = 0.6
+    degrade_to = DropBlackoutHit
+    dark_pct = 0.25
+    min_hold_bars = 8
+    reactivity_note = "static pan+hue, kick_follow:false -- \"choreographed motion reads pro; audio-reacting a fan looks broken\""
+    color_note = "cold_steel, unison"
+
+    PERIOD_BARS = 2.0
+    PAN_AMP = 0.30
+    TILT_AMP = 0.15
+    SPOT_LEVEL = 0.80  # midpoint of the Bible's stated "spot 60-100%" range
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = COLD_STEEL
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, self.SPOT_LEVEL * intensity)
+        pos = musical_bar_position(snap)
+        angle = pos * (2 * math.pi / self.PERIOD_BARS)
+        for fx in rig.by_role("spot"):
+            mirror = 1.0 if fx.side == "left" else -1.0
+            pan = 0.5 + self.PAN_AMP * math.sin(angle) * mirror
+            # "phase_offset 180" -- tilt runs a half-cycle behind pan, written
+            # as an explicit "+ pi" rather than folded into a bare "-sin" so
+            # the Bible's own named field stays visible in the code.
+            tilt = 0.5 + self.TILT_AMP * math.sin(angle + math.pi) * mirror
+            fx.set_position(c, pan, tilt)
+        return c
+
+
+class DropLaserPunctuation(Scene):
+    """LIGHTING_BIBLE.md §5: `drop_laser_punctuation` -- "[DROP,PEAK]...
+    roles{laser active, pattern static beam-fan held in 0-127 band}."
+    `atm 0.6` -- always degrades on this rig (see section note above).
+    `degrade_to: drop_beam_fan` is itself ALSO always-ineligible on this
+    rig (also atm-gated) -- a genuine recursive-degrade case (matches the
+    Bible's own note on this look): `SceneCatalog._capability_filter` only
+    ever walks one hop (the plan's Open Question #3 default), so when this
+    scene comes up in DROP's round-robin it is simply dropped from that
+    call's eligible set, never double-hopped through to
+    `drop_blackout_hit`.
+
+    Deliberately touches ONLY the laser channels -- "punctuation," not a
+    full-rig look (LIGHTING_BIBLE.md §8.5's restraint principle, already
+    the design behind `LaserOnsetDetector` elsewhere) -- wash/spot are left
+    to whatever else is already rendering, same restraint as
+    OutroSingleBeam's own wash omission."""
+
+    name = "Drop Laser Punctuation"
+    bucket = EnergyBucket.DROP
+    uses_lasers = True
+    requires = frozenset({"laser"})
+    min_atmosphere_density = 0.6
+    degrade_to = DropBeamFan
+    # "conflicts[break looks]" -- every BREAK-bucket scene by name, same
+    # hardcoded-list-by-name pattern as DropBlackoutHit's own
+    # conflicts[all build looks]; keep in sync if a future BREAK scene is
+    # added (see test_drop_laser_punctuation_conflicts_with_every_break_scene).
+    conflicts = frozenset({
+        "Deep Wash Breathe", "Slow Color Cycle", "Break Low Wash",
+        "Break Single Spot Special", "Break Ceiling Drift", "Break Color Hold Clear",
+    })
+    min_hold_bars = 8
+    reactivity_note = "no reactivity{} block given by the Bible for this look"
+    color_note = "not specified by the Bible for this look"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        for fx in rig.by_role("laser"):
+            fx.set_dotted_line_sweep(c, color=laser_color_for_bands(snap), sweep_intensity=snap.energy)
+        return c
+
+
+class PeakBeamSweep(Scene):
+    """LIGHTING_BIBLE.md §5: `peak_beam_sweep` -- "[PEAK]... movement{sweep,
+    triangle, period_bars 2, pan_amp 40%, mirror_pan true}." `atm 0.6` --
+    always degrades to `peak_full_rig` on this rig (see section note
+    above). "triangle," not "sine" like every other movement scene in this
+    file, is a real, distinct detail -- implemented as an actual triangle
+    wave rather than quietly reusing `math.sin`."""
+
+    name = "Peak Beam Sweep"
+    bucket = EnergyBucket.PEAK
+    requires = frozenset({"spot", "pan_tilt"})
+    min_atmosphere_density = 0.6
+    degrade_to = PeakFullRig
+    dark_pct = 0.15
+    min_hold_bars = 8
+    reactivity_note = "no reactivity{} block given by the Bible for this look"
+    color_note = "not specified by the Bible for this look -- reuses two_axis_color for PEAK-family consistency"
+
+    PERIOD_BARS = 2.0
+    PAN_AMP = 0.40
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, intensity)
+        pos = musical_bar_position(snap)
+        frac = (pos / self.PERIOD_BARS) % 1.0
+        triangle = 4.0 * abs(frac - 0.5) - 1.0  # a real triangle wave, range [-1, 1]
+        for fx in rig.by_role("spot"):
+            mirror = 1.0 if fx.side == "left" else -1.0
+            fx.set_position(c, 0.5 + self.PAN_AMP * triangle * mirror, 0.5)
+        return c
+
+
+class PeakLaserTunnel(Scene):
+    """LIGHTING_BIBLE.md §5: `peak_laser_tunnel` -- "[PEAK]... roles{laser
+    tunnel pattern, static rotation band}." `atm 0.7` -- always degrades on
+    this rig (see section note above). `degrade_to: peak_beam_sweep` is
+    itself ALSO always-ineligible here -- the same recursive-degrade,
+    one-hop-only case as DropLaserPunctuation. Same laser-only restraint as
+    DropLaserPunctuation -- see that class's docstring."""
+
+    name = "Peak Laser Tunnel"
+    bucket = EnergyBucket.PEAK
+    uses_lasers = True
+    requires = frozenset({"laser"})
+    min_atmosphere_density = 0.7
+    degrade_to = PeakBeamSweep
+    min_hold_bars = 8
+    reactivity_note = "static rotation band -- no further reactivity{} detail given by the Bible for this look"
+    color_note = "not specified by the Bible for this look"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        for fx in rig.by_role("laser"):
+            fx.set_dotted_line_sweep(c, color=laser_color_for_bands(snap), sweep_intensity=snap.energy)
+        return c
+
+
+class MirrorCrossBeam(Scene):
+    """LIGHTING_BIBLE.md §5: `mirror_cross_beam` -- "[DROP,PEAK]... movement{
+    cross, sine, period_bars 4, phase 180, pan_amp 25%, mirror_pan true}."
+    `atm 0.6` + `spot>=2` (this rig has 1) -- always degrades on this rig
+    (see section note above; `spot>=2` isn't separately modeled, the atm
+    gate alone already guarantees the always-degrade outcome).
+
+    Filed under PEAK only here (Bible tags `[DROP,PEAK]`, `Scene.bucket` is
+    single-valued in this codebase) -- chosen to match its own `degrade_to`
+    target (`peak_beam_sweep`, itself PEAK), same reasoning as
+    DropBeamFan's/ChaseWashLr's own bucket choices. `degrade_to:
+    peak_beam_sweep` is itself ALSO always-ineligible -- another
+    recursive-degrade, one-hop-only case, same as PeakLaserTunnel's."""
+
+    name = "Mirror Cross Beam"
+    bucket = EnergyBucket.PEAK
+    requires = frozenset({"pan_tilt"})
+    min_atmosphere_density = 0.6
+    degrade_to = PeakBeamSweep
+    min_hold_bars = 8
+    reactivity_note = "no reactivity{} block given by the Bible for this look"
+    color_note = "not specified by the Bible for this look -- reuses two_axis_color for PEAK-family consistency"
+
+    PERIOD_BARS = 4.0
+    PAN_AMP = 0.25
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, intensity)
+        pos = musical_bar_position(snap)
+        for fx in rig.by_role("spot"):
+            # "cross, phase 180" -- mirrored fixtures already sit a half-
+            # cycle apart via `mirror` itself; called out explicitly since
+            # it's a named Bible field, not folded away silently.
+            mirror = 1.0 if fx.side == "left" else -1.0
+            fx.set_position(c, 0.5 + self.PAN_AMP * math.sin(pos * (2 * math.pi / self.PERIOD_BARS)) * mirror, 0.5)
+        return c
+
+
 # --- hold / sustain (loops, post-transition, plateaus) ----------------------
 
 class PulseAndDriftSustain(Scene):
@@ -712,4 +965,12 @@ ALL_SCENES: list[type[Scene]] = [
     OutroSingleBeam,
     # Bible-integration Phase 5, fifth wave -- bridge/utility:
     ChaseWashLr,
+    # Bible-integration Phase 5, sixth wave -- atmosphere-gated stubs
+    # (always degrade on this rig -- no haze hardware exists):
+    BuildBeamRaise,
+    DropBeamFan,
+    DropLaserPunctuation,
+    PeakBeamSweep,
+    PeakLaserTunnel,
+    MirrorCrossBeam,
 ]

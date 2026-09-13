@@ -15,18 +15,22 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
-def test_twentyone_scenes_across_all_buckets():
+def test_twentyseven_scenes_across_all_buckets():
     """Bible-integration Phase 2: OUTRO was a genuinely new state (see
     EnergyBucket's own docstring) with no scene at all until Phase 5's
-    fourth wave -- now every bucket has at least one look. 21 = the
+    fourth wave -- now every bucket has at least one look. 27 = the
     original 8 + Phase 5's first wave (DropBlackoutHit, DropStrobeStab,
     BuildRiserWash) + second wave (PeakFullRig, PeakColorPulseClear,
     PeakAltHitsClear) + third wave (BreakLowWash, BreakSingleSpotSpecial,
     BreakCeilingDrift, BreakColorHoldClear) + fourth wave (OutroFadeWash,
     OutroSingleBeam) + fifth wave (ChaseWashLr -- AllDark, like SafeDefault,
-    is deliberately NOT part of ALL_SCENES, see scenes/base.py)."""
+    is deliberately NOT part of ALL_SCENES, see scenes/base.py) + sixth
+    wave (BuildBeamRaise, DropBeamFan, DropLaserPunctuation, PeakBeamSweep,
+    PeakLaserTunnel, MirrorCrossBeam -- all 6 always degrade on this rig,
+    but are real ALL_SCENES members so SceneCatalog actually exercises the
+    degrade-walk machinery when it rotates onto one of them)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 21
+    assert len(ALL_SCENES) == 27
     for bucket in EnergyBucket:
         assert cat.bucket(bucket), f"{bucket} has no scenes"
 
@@ -39,12 +43,15 @@ def test_every_scene_renders_some_output():
         assert any(c.touched), f"{cls.__name__} rendered nothing"
 
 
-def test_only_drop_scenes_touch_laser_channels():
-    """One-directional: a non-DROP scene must NEVER touch laser channels.
-    The reverse isn't required -- Bible-integration Phase 5 added DROP
-    scenes (DropBlackoutHit, DropStrobeStab) that deliberately don't use
-    lasers at all (restraint, TIME-21 -- not every DROP look needs every
-    fixture)."""
+def test_only_drop_or_peak_scenes_touch_laser_channels():
+    """One-directional: a BREAK/BUILD/OUTRO scene must NEVER touch laser
+    channels. The reverse isn't required -- Bible-integration Phase 5 added
+    DROP scenes (DropBlackoutHit, DropStrobeStab) that deliberately don't
+    use lasers at all (restraint, TIME-21 -- not every DROP look needs
+    every fixture). PEAK was added to the allowed set in the sixth wave
+    (atmosphere-gated stubs): LIGHTING_BIBLE.md's `peak_laser_tunnel` is a
+    genuinely PEAK-only laser look, not `[DROP,PEAK]` like most other
+    laser-using looks -- so this invariant could no longer stay DROP-only."""
     rig = load_rig()
     snap = _snap(energy=1.0)
     laser = rig.fixture("laser_l")
@@ -53,7 +60,7 @@ def test_only_drop_scenes_touch_laser_channels():
         c = scene.render(rig, snap, 1.0)
         touched_laser = any(c.touched[laser.offset + i] for i in range(12))
         if touched_laser:
-            assert scene.bucket == EnergyBucket.DROP, cls.__name__
+            assert scene.bucket in (EnergyBucket.DROP, EnergyBucket.PEAK), cls.__name__
 
 
 def test_scenes_are_visually_distinct():
@@ -512,6 +519,97 @@ def test_chase_wash_lr_does_not_touch_spots():
     mh = rig.fixture("mh_l")
     c = ChaseWashLr().render(rig, _snap(), 1.0)
     assert not any(c.touched[mh.offset:mh.offset + mh.channel_count])
+
+
+# --- Bible-integration Phase 5, sixth wave: BuildBeamRaise, DropBeamFan,
+# DropLaserPunctuation, PeakBeamSweep, PeakLaserTunnel, MirrorCrossBeam --
+# all 6 always degrade on this rig (rig.atm is permanently 0.0, no haze
+# hardware exists), so the tests here are about the DEGRADE behavior, not
+# about these looks ever actually winning a live pick().
+
+def test_all_six_atmosphere_gated_scenes_are_always_ineligible_on_this_rig():
+    from livereact.scenes.catalog import SceneCatalog
+    from livereact.scenes.library import (
+        BuildBeamRaise, DropBeamFan, DropLaserPunctuation,
+        MirrorCrossBeam, PeakBeamSweep, PeakLaserTunnel,
+    )
+    rig = load_rig()
+    cat = SceneCatalog()
+    for cls in (BuildBeamRaise, DropBeamFan, DropLaserPunctuation, PeakBeamSweep, PeakLaserTunnel, MirrorCrossBeam):
+        scene = next(s for s in cat.bucket(cls.bucket) if type(s) is cls)
+        assert not cat._eligible(scene, rig), f"{cls.__name__} should never be eligible on this rig"
+
+
+def test_build_bucket_pick_never_surfaces_build_beam_raise_directly():
+    """BuildBeamRaise always degrades to BuildRiserWash -- round-robining
+    through BUILD with a rig should never actually return it by name."""
+    from livereact.scenes.catalog import SceneCatalog
+    rig = load_rig()
+    cat = SceneCatalog()
+    seen = {cat.pick(EnergyBucket.BUILD, rig=rig).name for _ in range(20)}
+    assert "Build Beam Raise" not in seen
+
+
+def test_drop_bucket_pick_never_surfaces_beam_fan_or_laser_punctuation_directly():
+    """Both always degrade (DropBeamFan -> DropBlackoutHit; DropLaser
+    Punctuation -> DropBeamFan, which is ALSO ineligible -- so it gets
+    dropped from the eligible set entirely, a genuine recursive-degrade,
+    one-hop-only case, not just a single successful hop like the others)."""
+    from livereact.scenes.catalog import SceneCatalog
+    rig = load_rig()
+    cat = SceneCatalog()
+    seen = {cat.pick(EnergyBucket.DROP, rig=rig).name for _ in range(30)}
+    assert "Drop Beam Fan" not in seen
+    assert "Drop Laser Punctuation" not in seen
+
+
+def test_peak_bucket_pick_never_surfaces_the_three_atmosphere_gated_looks_directly():
+    """PeakBeamSweep -> PeakFullRig (single successful hop). PeakLaserTunnel
+    and MirrorCrossBeam both degrade to PeakBeamSweep, which is ALSO
+    ineligible -- both get dropped from the eligible set entirely (the same
+    recursive-degrade, one-hop-only case as DropLaserPunctuation's)."""
+    from livereact.scenes.catalog import SceneCatalog
+    rig = load_rig()
+    cat = SceneCatalog()
+    seen = {cat.pick(EnergyBucket.PEAK, rig=rig).name for _ in range(30)}
+    assert "Peak Beam Sweep" not in seen
+    assert "Peak Laser Tunnel" not in seen
+    assert "Mirror Cross Beam" not in seen
+
+
+def test_drop_laser_punctuation_conflicts_with_every_break_scene():
+    from livereact.scenes.library import ALL_SCENES, DropLaserPunctuation
+    break_scene_names = {cls().name for cls in ALL_SCENES if cls().bucket == EnergyBucket.BREAK}
+    assert break_scene_names <= DropLaserPunctuation.conflicts
+
+
+def test_drop_laser_punctuation_touches_only_laser_channels():
+    from livereact.scenes.library import DropLaserPunctuation
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    mh = rig.fixture("mh_l")
+    c = DropLaserPunctuation().render(rig, _snap(energy=1.0), 1.0)
+    assert not any(c.touched[bar.offset:bar.offset + bar.channel_count])
+    assert not any(c.touched[mh.offset:mh.offset + mh.channel_count])
+
+
+def test_peak_beam_sweep_uses_a_real_triangle_wave_not_a_sine():
+    """"movement{sweep, triangle...}" -- a triangle wave is piecewise-linear,
+    so equally-spaced bar samples across a quarter-period should show a
+    constant slope; a sine would not."""
+    from livereact.scenes.library import PeakBeamSweep
+    rig = load_rig()
+    mh = rig.fixture("mh_l")
+    scene = PeakBeamSweep()
+
+    def pan_at(bar: float) -> float:
+        return scene.render(rig, _snap(bar=bar, beat_in_bar=1, beat_phase=0.0), 1.0).values[mh.offset]
+
+    # 0.0/0.2/0.4 (not 0.0/0.25/0.5) -- deliberately avoids landing exactly on
+    # a *.5 DMX-byte boundary, where round-half-to-even would add up to 1
+    # byte of noise to each step and mask the real per-step equality.
+    p0, p1, p2 = pan_at(0.0), pan_at(0.2), pan_at(0.4)
+    assert abs((p1 - p0) - (p2 - p1)) <= 1  # constant slope across the rising quarter-period (+-1 byte rounding)
 
 
 def test_converge_two_spots_matches_original_spread():
