@@ -15,10 +15,10 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
-def test_twentyseven_scenes_across_all_buckets():
+def test_thirtyone_scenes_across_all_buckets():
     """Bible-integration Phase 2: OUTRO was a genuinely new state (see
     EnergyBucket's own docstring) with no scene at all until Phase 5's
-    fourth wave -- now every bucket has at least one look. 27 = the
+    fourth wave -- now every bucket has at least one look. 31 = the
     original 8 + Phase 5's first wave (DropBlackoutHit, DropStrobeStab,
     BuildRiserWash) + second wave (PeakFullRig, PeakColorPulseClear,
     PeakAltHitsClear) + third wave (BreakLowWash, BreakSingleSpotSpecial,
@@ -28,9 +28,13 @@ def test_twentyseven_scenes_across_all_buckets():
     wave (BuildBeamRaise, DropBeamFan, DropLaserPunctuation, PeakBeamSweep,
     PeakLaserTunnel, MirrorCrossBeam -- all 6 always degrade on this rig,
     but are real ALL_SCENES members so SceneCatalog actually exercises the
-    degrade-walk machinery when it rotates onto one of them)."""
+    degrade-walk machinery when it rotates onto one of them) + seventh,
+    final wave (DropColorSlamBigroom, DropWashSlamClear,
+    DropGoboProjectionClear, DropBlinderClear -- closes out Phase 5's
+    look-building backlog; DropGoboProjectionClear always degrades to
+    nothing, same as the "no gobo hardware" gap it documents)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 27
+    assert len(ALL_SCENES) == 31
     for bucket in EnergyBucket:
         assert cat.bucket(bucket), f"{bucket} has no scenes"
 
@@ -610,6 +614,97 @@ def test_peak_beam_sweep_uses_a_real_triangle_wave_not_a_sine():
     # byte of noise to each step and mask the real per-step equality.
     p0, p1, p2 = pan_at(0.0), pan_at(0.2), pan_at(0.4)
     assert abs((p1 - p0) - (p2 - p1)) <= 1  # constant slope across the rising quarter-period (+-1 byte rounding)
+
+
+# --- Bible-integration Phase 5, seventh (final) wave: DropColorSlamBigroom,
+# DropWashSlamClear, DropGoboProjectionClear, DropBlinderClear
+
+def test_drop_color_slam_bigroom_splits_wash_and_spot_hues():
+    """Wash (Par/WashBar) has real RGB channels; the moving head only has a
+    single discrete color-wheel byte (ch8) -- `rgb_to_color_wheel` picks the
+    nearest slot to SUNSET_SPOT, so the two fixtures are checked differently,
+    not by decomposing the MH into 3 nonexistent RGB channels."""
+    from livereact.fixtures.profiles import _to8, rgb_to_color_wheel
+    from livereact.scenes.library import SUNSET_SPOT, SUNSET_WASH, DropColorSlamBigroom
+    rig = load_rig()
+    par = rig.fixture("par_l")
+    mh = rig.fixture("mh_l")
+    c = DropColorSlamBigroom().render(rig, _snap(beat_in_bar=1, beat_phase=0.0), 1.0)
+    wr, wg, wb = (round(v * 255) for v in SUNSET_WASH)
+    assert (c.values[par.offset + 1], c.values[par.offset + 2], c.values[par.offset + 3]) == (wr, wg, wb)
+    sr, sg, sb = SUNSET_SPOT
+    expected_wheel_slot = rgb_to_color_wheel(_to8(sr), _to8(sg), _to8(sb))
+    assert c.values[mh.offset + 7] == expected_wheel_slot  # ch8 = color wheel
+
+
+def test_drop_color_slam_bigroom_pulses_wash_dimmer_only_on_the_downbeat():
+    """"audio:[wash.dimmer emphasis on first beat of each bar only]" --
+    same mechanic as PeakColorPulseClear's own bar-downbeat pulse."""
+    from livereact.scenes.library import DropColorSlamBigroom
+    rig = load_rig()
+    par = rig.fixture("par_l")
+    scene = DropColorSlamBigroom()
+    on_beat = scene.render(rig, _snap(beat_in_bar=1, beat_phase=0.0), 1.0)
+    off_beat = scene.render(rig, _snap(beat_in_bar=2, beat_phase=0.0), 1.0)
+    assert on_beat.values[par.offset] > 0
+    assert off_beat.values[par.offset] == 0
+
+
+def test_drop_wash_slam_clear_is_static_blood_red():
+    from livereact.scenes.library import BLOOD_RED, DropWashSlamClear
+    rig = load_rig()
+    par = rig.fixture("par_l")
+    quiet = DropWashSlamClear().render(rig, _snap(energy=0.1), 1.0)
+    loud = DropWashSlamClear().render(rig, _snap(energy=1.0), 1.0)
+    r, g, b = (round(v * 255) for v in BLOOD_RED)
+    assert (quiet.values[par.offset + 1], quiet.values[par.offset + 2], quiet.values[par.offset + 3]) == (r, g, b)
+    assert quiet.values[par.offset + 1:par.offset + 4] == loud.values[par.offset + 1:par.offset + 4]
+
+
+def test_drop_gobo_projection_clear_is_always_ineligible_and_has_no_degrade_target():
+    """"gobo" is a capability token that exists nowhere in this codebase --
+    always ineligible on any rig it can currently describe, and unlike the
+    atm-gated stubs, no degrade_to means it's just dropped, not substituted."""
+    from livereact.scenes.catalog import SceneCatalog
+    from livereact.scenes.library import DropGoboProjectionClear
+    rig = load_rig()
+    cat = SceneCatalog()
+    scene = next(s for s in cat.bucket(EnergyBucket.DROP) if type(s) is DropGoboProjectionClear)
+    assert not cat._eligible(scene, rig)
+    assert DropGoboProjectionClear.degrade_to is None
+
+
+def test_drop_bucket_pick_never_surfaces_gobo_projection_directly():
+    from livereact.scenes.catalog import SceneCatalog
+    rig = load_rig()
+    cat = SceneCatalog()
+    seen = {cat.pick(EnergyBucket.DROP, rig=rig).name for _ in range(30)}
+    assert "Drop Gobo Projection Clear" not in seen
+
+
+def test_drop_blinder_clear_is_eligible_and_reachable_via_round_robin():
+    """Unlike DropGoboProjectionClear, this one genuinely satisfies its
+    (rig-specific) requires -- "wash or blinder" resolves to "wash" alone
+    on a rig with no blinder fixture, so it should actually surface."""
+    from livereact.scenes.catalog import SceneCatalog
+    from livereact.scenes.library import DropBlinderClear
+    rig = load_rig()
+    cat = SceneCatalog()
+    scene = next(s for s in cat.bucket(EnergyBucket.DROP) if type(s) is DropBlinderClear)
+    assert cat._eligible(scene, rig)
+    seen = {cat.pick(EnergyBucket.DROP, rig=rig).name for _ in range(30)}
+    assert "Drop Blinder Clear" in seen
+
+
+def test_drop_blinder_clear_does_not_set_wash_intensity():
+    """No reactivity{} override given by the Bible for this look -- wash
+    intensity stays owned by ReactiveLayerEngine, same default as most
+    scenes in this file."""
+    from livereact.scenes.library import DropBlinderClear
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    c = DropBlinderClear().render(rig, _snap(), 1.0)
+    assert not c.touched[bar.offset]
 
 
 def test_converge_two_spots_matches_original_spread():

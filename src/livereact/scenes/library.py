@@ -901,6 +901,146 @@ class MirrorCrossBeam(Scene):
         return c
 
 
+# --- remaining DROP looks, Bible-integration Phase 5, seventh (and per the
+# plan doc's stated order, final) wave. This closes out Phase 5's look-
+# building backlog -- what's left after this is build_snare_accent (needs
+# new audio-transient-detection infrastructure, tracked as its own separate
+# initiative, not a quick add) and Phase 6 (Cutover).
+
+SUNSET_WASH = (1.0, 0.45, 0.10)   # vivid warm orange
+SUNSET_SPOT = (0.75, 0.10, 0.35)  # deep pink/magenta -- the other half of the "split" palette
+
+
+class DropColorSlamBigroom(Scene):
+    """LIGHTING_BIBLE.md §5: `drop_color_slam_bigroom` -- "[DROP,PEAK],
+    bigroom... color{sunset_split, split_by_role, <=3 hues}... reactivity{
+    static hue, audio:[wash.dimmer emphasis on first beat of each bar
+    only], kick_follow:false}." Filed under DROP only (Bible tags
+    `[DROP,PEAK]`, `Scene.bucket` is single-valued in this codebase, same
+    disclosed limitation as ChaseWashLr/DropBeamFan/MirrorCrossBeam) --
+    this one has no `degrade_to` to align a bucket choice against, so DROP
+    is picked to match its own name.
+
+    "split_by_role": wash and spot each get a DIFFERENT static sunset hue
+    (`SUNSET_WASH`/`SUNSET_SPOT` above) -- 2 named hues, comfortably within
+    the "<=3 hues" cap. "audio:[wash.dimmer emphasis on first beat of each
+    bar only]" is the same mechanic and justification as
+    PeakColorPulseClear's own bar-downbeat pulse -- another deliberate,
+    disclosed exception to `paint_wash`'s "never set intensity" rule, for
+    the same reason: the Bible explicitly wants a bar-quantized dimmer
+    emphasis here, not a continuous ambient level."""
+
+    name = "Drop Color Slam Bigroom"
+    bucket = EnergyBucket.DROP
+    dark_pct = 0.10
+    min_hold_bars = 8
+    reactivity_note = "static hue, audio:[wash.dimmer emphasis on first beat of each bar only], kick_follow:false"
+    color_note = "sunset_split, split_by_role (wash vs spot), <=3 hues"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        # "emphasis on first beat of each bar only" -- same downbeat-pulse
+        # shape as PeakColorPulseClear (short pulse at beat 1, decaying
+        # across the rest of the bar).
+        on_downbeat = snap.beat_in_bar == 1
+        pulse = (1.0 - snap.beat_phase) if on_downbeat else 0.0
+        wr, wg, wb = SUNSET_WASH
+        for fx in rig.by_role("wash"):
+            if isinstance(fx, (Par, WashBar)):
+                fx.set_intensity(c, pulse * intensity)
+                fx.set_color(c, wr, wg, wb)
+        sr, sg, sb = SUNSET_SPOT
+        paint_spots(c, rig, sr, sg, sb, intensity)
+        return c
+
+
+class DropWashSlamClear(Scene):
+    """LIGHTING_BIBLE.md §5: `drop_wash_slam_clear` -- "[DROP,PEAK]...
+    color{blood_red, unison}. Static." Reuses the existing `BLOOD_RED`
+    constant (shared with DropBlackoutHit's own alternate drop color).
+    Filed under DROP only, same single-bucket-model disclosure as
+    DropColorSlamBigroom above; no `degrade_to` given by the Bible."""
+
+    name = "Drop Wash Slam Clear"
+    bucket = EnergyBucket.DROP
+    dark_pct = 0.20
+    min_hold_bars = 8
+    reactivity_note = "static all -- \"Static,\" no reactivity{} block given by the Bible for this look"
+    color_note = "blood_red, unison"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = BLOOD_RED
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, intensity)
+        return c
+
+
+class DropGoboProjectionClear(Scene):
+    """LIGHTING_BIBLE.md §5: `drop_gobo_projection_clear` -- "[DROP]...
+    requires{spot, gobo, atm 0.0}... roles{gobo rotate, position back_wall,
+    wide zoom}. Static." "gobo" is a capability token that literally never
+    exists anywhere in this codebase's `Rig.capabilities()` (no fixture
+    declares it; `MovingHead` has no dedicated zoom channel either, per its
+    15CH layout in fixtures/profiles.py) -- so this look is, by
+    construction, ALWAYS ineligible on any rig this codebase can currently
+    describe, exactly matching the Bible's own note: "No gobo capability
+    exists on this rig -- always degrades."
+
+    No `degrade_to` is declared either (the Bible names none for this
+    look) -- so unlike the atm-gated stubs' one-hop substitution, this one
+    is simply DROPPED from its bucket's eligible set every time a pick()
+    call reaches it, falling back to round-robin among whatever else is
+    eligible (`SceneCatalog._capability_filter`'s own documented behavior
+    for a scene with no `degrade_to`) -- a genuinely different, and
+    equally real, code path from every other stub in this file.
+
+    THIN STUB, unreachable by construction -- "position back_wall"/"wide
+    zoom" aren't meaningfully implementable anyway (no named-position
+    mechanism, no zoom channel), so render() below is deliberately minimal."""
+
+    name = "Drop Gobo Projection Clear"
+    bucket = EnergyBucket.DROP
+    requires = frozenset({"spot", "gobo"})
+    dark_pct = 0.20
+    min_hold_bars = 8
+    reactivity_note = "static all -- \"Static,\" no reactivity{} block given by the Bible for this look"
+    color_note = "not specified by the Bible for this look -- reuses cold_steel for family consistency"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = COLD_STEEL
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, intensity)
+        return c
+
+
+class DropBlinderClear(Scene):
+    """LIGHTING_BIBLE.md §5: `drop_blinder_clear` -- "[DROP]... requires{
+    wash or blinder, atm 0.0}... roles{full white/warm}." `Scene.requires`
+    only supports AND/subset-checking (see `SceneCatalog._eligible`), not
+    a real OR -- not modeled generically here, disclosed rather than
+    faked, but harmless: this rig has wash fixtures and no blinder fixture
+    type at all, so "wash or blinder" resolves to "wash" alone being
+    sufficient regardless. Genuinely reachable via round-robin (fully
+    satisfied requires, atm 0.0 always met) -- unlike
+    DropGoboProjectionClear above, NOT a degrade-only stub."""
+
+    name = "Drop Blinder Clear"
+    bucket = EnergyBucket.DROP
+    requires = frozenset({"wash"})
+    min_hold_bars = 4
+    reactivity_note = "static all -- no reactivity{} block given by the Bible for this look"
+    color_note = "full white/warm"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = WARM_WHITE
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, intensity)
+        return c
+
+
 # --- hold / sustain (loops, post-transition, plateaus) ----------------------
 
 class PulseAndDriftSustain(Scene):
@@ -973,4 +1113,9 @@ ALL_SCENES: list[type[Scene]] = [
     PeakBeamSweep,
     PeakLaserTunnel,
     MirrorCrossBeam,
+    # Bible-integration Phase 5, seventh (final) wave -- remaining DROP looks:
+    DropColorSlamBigroom,
+    DropWashSlamClear,
+    DropGoboProjectionClear,
+    DropBlinderClear,
 ]
