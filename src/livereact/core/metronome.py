@@ -650,11 +650,25 @@ class Metronome(threading.Thread):
             sustained = now - self._base_committed_since >= PER_STATE_DWELL_S[EnergyBucket.DROP]
             final = EnergyBucket.PEAK if (sustained and self._energy_norm >= BUILD_MAX) else EnergyBucket.DROP
         elif self._base_committed == EnergyBucket.BREAK:
+            # Sustained-dwell requirement added 2026-09-13 (first real
+            # --hardware --record session): PEAK escalation above already
+            # requires the base to have sat past its own PER_STATE_DWELL_S
+            # before escalating -- OUTRO promotion had no equivalent floor
+            # at all, so it fired on the VERY FIRST tick of a fresh BREAK
+            # if a drop had happened recently. On a real energetic track
+            # (drops recurring every 15-20 bars), that meant almost every
+            # ordinary breather between drops got immediately mislabeled
+            # OUTRO -- confirmed live: 61.6% of one real session's bars
+            # landed in BREAK/OUTRO combined, most of them OUTRO. Requiring
+            # BREAK's own dwell floor first (same symmetry as DROP->PEAK)
+            # gives a fresh break a real chance to just be BREAK before
+            # this heuristic even considers promoting it.
+            sustained = now - self._base_committed_since >= PER_STATE_DWELL_S[EnergyBucket.BREAK]
             recent_drop = (
                 self._last_drop_or_peak_t is not None
                 and now - self._last_drop_or_peak_t <= OUTRO_LOOKBACK_S
             )
-            final = EnergyBucket.OUTRO if recent_drop else EnergyBucket.BREAK
+            final = EnergyBucket.OUTRO if (sustained and recent_drop) else EnergyBucket.BREAK
         else:  # BUILD has no overlay
             final = self._base_committed
 

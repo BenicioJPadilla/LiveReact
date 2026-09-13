@@ -398,11 +398,50 @@ def test_break_promotes_to_outro_after_a_recent_drop_then_reverts():
     clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.BREAK
-    assert m._bucket_committed == EnergyBucket.OUTRO  # promoted -- a drop just happened
+    # Sustained-dwell requirement (2026-09-13, found via the first real
+    # hardware session): OUTRO promotion now requires BREAK to have ALREADY
+    # sat past its own PER_STATE_DWELL_S first (same symmetry as DROP->PEAK
+    # above), so a break barely a moment old doesn't get immediately
+    # mislabeled OUTRO just because a drop happened recently -- confirmed
+    # NOT promoted yet, right at BREAK's commit.
+    assert m._bucket_committed == EnergyBucket.BREAK
 
-    clock.advance(OUTRO_LOOKBACK_S + 1.0)  # long enough that the drop is no longer "recent"
+    clock.advance(PER_STATE_DWELL_S[EnergyBucket.BREAK])  # BREAK's own floor now clears too
     m._derive_bucket(clock.monotonic())
-    assert m._bucket_committed == EnergyBucket.BREAK  # overlay expired on its own -- no forced reset needed
+    assert m._bucket_committed == EnergyBucket.OUTRO  # NOW promoted -- sustained AND a drop was recent
+
+
+def test_a_fast_recovering_break_never_gets_promoted_to_outro_at_all():
+    """The actual bug found live, 2026-09-13: on a real energetic track,
+    drops recur every 15-20 bars, so most breaks recover into a new build
+    well before BREAK's own 8-bar dwell floor -- those must never be
+    mislabeled OUTRO at all, not just delayed. Confirmed against the real
+    capture: OUTRO's share of one real session dropped from 31.4% to
+    16.5%, BREAK correctly rose to 45.4%, once this fix landed."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9  # commit to DROP
+    m._derive_bucket(clock.monotonic())
+    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+
+    m._energy_norm = 0.1  # fall to BREAK
+    clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])
+    m._derive_bucket(clock.monotonic())
+    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BREAK
+    assert m._bucket_committed == EnergyBucket.BREAK  # not OUTRO, correctly
+
+    # Recovers into a new build well before BREAK's 8-bar floor -- a real,
+    # ordinary breather between drops, not the set ending.
+    clock.advance(1.0)
+    m._energy_norm = 0.5
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BUILD
+    assert m._bucket_committed == EnergyBucket.BUILD  # never touched OUTRO at any point
 
 
 def test_outro_does_not_illegally_block_a_real_second_build():
@@ -421,6 +460,8 @@ def test_outro_does_not_illegally_block_a_real_second_build():
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # DROP's own floor must clear before any exit
     m._derive_bucket(clock.monotonic())
     clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    m._derive_bucket(clock.monotonic())
+    clock.advance(PER_STATE_DWELL_S[EnergyBucket.BREAK])  # BREAK's own sustained-dwell floor (2026-09-13 fix)
     m._derive_bucket(clock.monotonic())
     assert m._bucket_committed == EnergyBucket.OUTRO
 

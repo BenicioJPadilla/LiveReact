@@ -87,6 +87,48 @@ def test_rotation_suspended_during_transition_and_loop():
     assert eng.rotations == 1
 
 
+def test_combine_interpolates_color_instead_of_max_blending():
+    """Bug fix, 2026-09-13 (found via the first real hardware session):
+    _combine used to take a raw per-channel max() for color/dimmer, the
+    exact anti-pattern Phase 4 fixed at the cross-engine level but never
+    touched here -- confirmed live to freeze at a wrong, neither-scene
+    color for an entire crossfade. Must now be a real weighted lerp."""
+    from livereact.merge.merge import Contribution
+    rig = load_rig()
+    par = rig.fixture("par_l")
+
+    out_c = Contribution()
+    par.set_color(out_c, 0.0, 0.0, 0.0)   # outgoing: black (R=0)
+    in_c = Contribution()
+    par.set_color(in_c, 1.0, 0.0, 0.0)    # incoming: full red (R=255)
+
+    r_ch = par.offset + 1  # ch2 = R on this Par layout (ch1 dimmer, 2/3/4 R/G/B)
+    at_0 = PhraseEngine._combine(out_c, in_c, 0.0, rig)
+    at_half = PhraseEngine._combine(out_c, in_c, 0.5, rig)
+    at_1 = PhraseEngine._combine(out_c, in_c, 1.0, rig)
+
+    assert at_0.values[r_ch] == 0
+    assert at_1.values[r_ch] == 255
+    assert 100 <= at_half.values[r_ch] <= 155  # genuinely ~halfway, not max()'d to 255 the instant `in_c` touches it
+
+
+def test_combine_only_one_side_touching_is_unaffected_by_interpolation():
+    """A channel only one side writes to (the overwhelmingly common case --
+    most scenes never touch wash dimmer at all) must still just pass that
+    value through untouched, same as before this fix."""
+    from livereact.merge.merge import Contribution
+    rig = load_rig()
+    par = rig.fixture("par_l")
+
+    out_c = Contribution()
+    par.set_color(out_c, 0.5, 0.5, 0.5)
+    in_c = Contribution()  # touches nothing
+
+    result = PhraseEngine._combine(out_c, in_c, 0.3, rig)
+    r_ch = par.offset + 1  # ch2 = R on this Par layout
+    assert result.values[r_ch] == out_c.values[r_ch]
+
+
 def test_crossfade_completes_and_promotes_next_scene():
     rig = load_rig()
     eng = PhraseEngine()

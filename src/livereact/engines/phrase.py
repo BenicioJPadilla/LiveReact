@@ -169,10 +169,29 @@ class PhraseEngine:
 
     @staticmethod
     def _combine(out_c: Contribution, in_c: Contribution, progress: float, rig: Rig) -> Contribution:
-        """Blend two scene contributions: brightness/color crossfade by weighted
-        max; movement and laser channels switch at the midpoint (linear blending a
-        pan value sweeps through center; blending a laser mode value could land in a
-        wrong/unsafe range)."""
+        """Blend two scene contributions: brightness/color crossfade by real
+        weighted interpolation; movement and laser channels switch at the
+        midpoint (linear blending a pan value sweeps through center; blending
+        a laser mode value could land in a wrong/unsafe range).
+
+        BUG FIX (2026-09-13, found via the first real --hardware --record
+        session): the brightness/color branch used to take a raw per-channel
+        `max(out, in)` -- the EXACT anti-pattern Bible-integration Phase 4
+        fixed at the cross-ENGINE level (`merge/merge.py`'s `merge_
+        contributions`, now genuine LTP-by-priority) but never touched HERE,
+        the cross-SCENE blend within Phrase's own 2-bar crossfade. Confirmed
+        live: crossfading from `Peak Full Rig` into `Outro Fade Wash`
+        produced a color that was neither scene's real output and stayed
+        frozen at that wrong value through the ENTIRE crossfade and past it
+        (max() of two fixed/near-fixed values is itself fixed, so there was
+        no visible fade at all, just an instant wrong-color jump) -- read
+        live as "the program just cuts to a new color abruptly." Now a real
+        weighted lerp between the two scenes' own values, matching
+        `progress` -- still plain linear RGB, not perceptually-uniform Oklab
+        (LIGHTING_BIBLE.md's own C3 correction already discloses this
+        codebase hasn't adopted Oklab anywhere; not introduced here either,
+        out of scope for a bug fix) -- but a genuine, smooth interpolation
+        instead of a frozen wrong value."""
         result = Contribution()
         for ch in range(len(result.values)):
             ot, it = out_c.touched[ch], in_c.touched[ch]
@@ -186,7 +205,9 @@ class PhraseEngine:
                     value = out_c.values[ch]
                 else:
                     value = in_c.values[ch]
+            elif ot and it:
+                value = round(out_c.values[ch] * (1.0 - progress) + in_c.values[ch] * progress)
             else:
-                value = max(out_c.values[ch] if ot else 0, in_c.values[ch] if it else 0)
+                value = out_c.values[ch] if ot else in_c.values[ch]
             result.set(ch + 1, value)
         return result
