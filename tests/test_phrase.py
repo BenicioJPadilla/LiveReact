@@ -120,11 +120,15 @@ def test_bucket_change_rotation_picks_a_scene_for_the_new_bucket():
 
 
 def test_drop_scene_emits_laser_channels_through_the_engine():
+    """FullSpectrumHit (the original scene this test used) was retired in
+    Phase 6 -- DropLaserPunctuation is a real, still-current DROP-bucket
+    laser look, and a cleaner example besides (laser-only, no wash/spot
+    noise to also account for)."""
     rig = load_rig()
-    from livereact.scenes.library import FullSpectrumHit
+    from livereact.scenes.library import DropLaserPunctuation
 
     eng = PhraseEngine()
-    eng.force_scene(FullSpectrumHit())
+    eng.force_scene(DropLaserPunctuation())
     laser = rig.fixture("laser_l")
     c = eng.tick(_snap(2, energy=1.0), rig)
     assert any(c.touched[laser.offset + i] for i in range(12))

@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 
 from ..color import hsv_to_rgb
-from ..dynamics import beat_pulse, musical_bar_position
+from ..dynamics import musical_bar_position
 from ..core.show_state import ShowSnapshot
 from ..engines.color import laser_color_for_bands, two_axis_color
 from ..fixtures.profiles import Par, WashBar
@@ -127,54 +127,27 @@ class Converge(Scene):
 
 
 # --- drop / peak energy (lasers MAY enable; strobe within cap) ---------------
-
-class FullSpectrumHit(Scene):
-    """Everything full; white punch on each kick, returns to band hue between;
-    big fast MH moves; lasers on."""
-
-    name = "Full Spectrum Hit"
-    bucket = EnergyBucket.DROP
-    uses_lasers = True
-
-    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
-        c = Contribution()
-        pulse = beat_pulse(snap)
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
-        # White punch on the beat: lerp toward white by the pulse.
-        r = r + (1 - r) * pulse
-        g = g + (1 - g) * pulse
-        b = b + (1 - b) * pulse
-        paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, r, g, b, intensity)
-        pos = musical_bar_position(snap)
-        for fx in rig.by_role("spot"):
-            mirror = 1.0 if fx.side == "left" else -1.0
-            fx.set_position(c, 0.5 + 0.45 * math.sin(pos * 4.0) * mirror, 0.4 + 0.2 * math.sin(pos * 2.0))
-        for fx in rig.by_role("laser"):
-            fx.set_dotted_line_sweep(c, color=laser_color_for_bands(snap), sweep_intensity=snap.energy)
-        return c
-
-
-class BeamFanLaserTunnel(Scene):
-    """MHs in a symmetric mirror pan-fan on the beat; lasers static; wash low so
-    the beams read."""
-
-    name = "Beam Fan + Laser Tunnel"
-    bucket = EnergyBucket.DROP
-    uses_lasers = True
-
-    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
-        c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
-        paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, 1.0, 1.0, 1.0, intensity)
-        pos = musical_bar_position(snap)
-        for fx in rig.by_role("spot"):
-            mirror = 1.0 if fx.side == "left" else -1.0
-            fx.set_position(c, 0.5 + 0.3 * math.sin(pos * 2.0) * mirror, 0.5)
-        for fx in rig.by_role("laser"):
-            fx.set_dotted_line_sweep(c, color=laser_color_for_bands(snap), sweep_intensity=snap.energy)
-        return c
+#
+# Phase 6 (Cutover, 2026-09-12): the original pre-Bible-integration DROP
+# scenes -- FullSpectrumHit ("everything full... big fast MH moves; lasers
+# on") and BeamFanLaserTunnel (wash+spot+laser fan) -- were RETIRED here,
+# resolving two real, confirmed conformance FAILs (spec/conformance.md):
+# LOOK-03 (both were audio/beat-reactive despite DROP's "the cut IS the
+# effect, nothing reacts" design intent -- FullSpectrumHit's per-beat white
+# punch, BeamFanLaserTunnel's continuous unfrozen hue) and TIME-21
+# (restraint -- both touched wash+spot+laser simultaneously in one look,
+# "the literal opposite of the restraint principle," per conformance.md's
+# own wording). Both were real, live-verified, well-liked scenes under the
+# OLD kick-follow design (see [[livereact-project]] memory) -- not removed
+# lightly, but Phase 5's full Bible-aligned DROP family (DropBlackoutHit,
+# DropStrobeStab, DropColorSlamBigroom, DropWashSlamClear, DropBlinderClear,
+# DropLaserPunctuation, plus DropBeamFan as the always-degrading atm-gated
+# stub for the actual "fan" shape) now covers the same territory properly:
+# full-rig moments, laser moments, and fan movement all exist as SEPARATE,
+# restrained looks instead of one scene doing everything at once. Recoverable
+# from git history (`68db90d`^ and earlier) if ever wanted back -- nothing
+# destructive happened outside version control, and this branch isn't merged
+# or pushed yet.
 
 
 # LIGHTING_BIBLE.md §5's `color{blood_red or cold_steel, unison}` for
@@ -1083,8 +1056,8 @@ ALL_SCENES: list[type[Scene]] = [
     SlowColorCycleAmbient,
     RisingTide,
     Converge,
-    FullSpectrumHit,
-    BeamFanLaserTunnel,
+    # FullSpectrumHit / BeamFanLaserTunnel retired here, Phase 6 -- see the
+    # comment above the "drop / peak energy" section header for why.
     PulseAndDriftSustain,
     LockedHold,
     # Bible-integration Phase 5, first wave -- BUILD/DROP families:

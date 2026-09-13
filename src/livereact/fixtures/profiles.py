@@ -334,8 +334,8 @@ class MovingHead(Fixture):
 
         Deliberately a finalize-stage transform, not a rewrite of every
         scene's position math: it preserves each scene's relative motion
-        *shape* (Converge's spread-to-center, FullSpectrumHit's big fast
-        moves, etc.) while re-centering and re-scaling the *output* uniformly.
+        *shape* (Converge's spread-to-center, PeakBeamSweep's fast fan,
+        etc.) while re-centering and re-scaling the *output* uniformly.
         """
         if self.home_pan is None or self.home_tilt is None:
             return

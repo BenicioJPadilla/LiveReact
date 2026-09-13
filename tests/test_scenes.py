@@ -6,7 +6,7 @@ from livereact.core.show_state import ShowSnapshot
 from livereact.fixtures.rig import _rig_from_dict, load_rig
 from livereact.scenes.base import SAFE_DEFAULT, EnergyBucket, Scene
 from livereact.scenes.catalog import SceneCatalog, bucket_for_energy
-from livereact.scenes.library import ALL_SCENES, BeamFanLaserTunnel, Converge, DeepWashBreathe
+from livereact.scenes.library import ALL_SCENES, Converge, DeepWashBreathe, DropBlackoutHit
 
 
 def _snap(**kw) -> ShowSnapshot:
@@ -15,26 +15,28 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
-def test_thirtyone_scenes_across_all_buckets():
+def test_twentynine_scenes_across_all_buckets():
     """Bible-integration Phase 2: OUTRO was a genuinely new state (see
     EnergyBucket's own docstring) with no scene at all until Phase 5's
-    fourth wave -- now every bucket has at least one look. 31 = the
-    original 8 + Phase 5's first wave (DropBlackoutHit, DropStrobeStab,
-    BuildRiserWash) + second wave (PeakFullRig, PeakColorPulseClear,
-    PeakAltHitsClear) + third wave (BreakLowWash, BreakSingleSpotSpecial,
-    BreakCeilingDrift, BreakColorHoldClear) + fourth wave (OutroFadeWash,
-    OutroSingleBeam) + fifth wave (ChaseWashLr -- AllDark, like SafeDefault,
-    is deliberately NOT part of ALL_SCENES, see scenes/base.py) + sixth
-    wave (BuildBeamRaise, DropBeamFan, DropLaserPunctuation, PeakBeamSweep,
-    PeakLaserTunnel, MirrorCrossBeam -- all 6 always degrade on this rig,
-    but are real ALL_SCENES members so SceneCatalog actually exercises the
-    degrade-walk machinery when it rotates onto one of them) + seventh,
-    final wave (DropColorSlamBigroom, DropWashSlamClear,
-    DropGoboProjectionClear, DropBlinderClear -- closes out Phase 5's
-    look-building backlog; DropGoboProjectionClear always degrades to
-    nothing, same as the "no gobo hardware" gap it documents)."""
+    fourth wave -- now every bucket has at least one look. 29 = the
+    original 8 MINUS 2 (Phase 6 retired FullSpectrumHit/BeamFanLaserTunnel
+    -- see the comment above the "drop / peak energy" section header in
+    scenes/library.py for why) + Phase 5's first wave (DropBlackoutHit,
+    DropStrobeStab, BuildRiserWash) + second wave (PeakFullRig,
+    PeakColorPulseClear, PeakAltHitsClear) + third wave (BreakLowWash,
+    BreakSingleSpotSpecial, BreakCeilingDrift, BreakColorHoldClear) +
+    fourth wave (OutroFadeWash, OutroSingleBeam) + fifth wave (ChaseWashLr
+    -- AllDark, like SafeDefault, is deliberately NOT part of ALL_SCENES,
+    see scenes/base.py) + sixth wave (BuildBeamRaise, DropBeamFan,
+    DropLaserPunctuation, PeakBeamSweep, PeakLaserTunnel, MirrorCrossBeam
+    -- all 6 always degrade on this rig, but are real ALL_SCENES members so
+    SceneCatalog actually exercises the degrade-walk machinery when it
+    rotates onto one of them) + seventh wave (DropColorSlamBigroom,
+    DropWashSlamClear, DropGoboProjectionClear, DropBlinderClear -- closes
+    out Phase 5's look-building backlog; DropGoboProjectionClear always
+    degrades to nothing, same as the "no gobo hardware" gap it documents)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 31
+    assert len(ALL_SCENES) == 29
     for bucket in EnergyBucket:
         assert cat.bucket(bucket), f"{bucket} has no scenes"
 
@@ -71,7 +73,7 @@ def test_scenes_are_visually_distinct():
     rig = load_rig()
     snap = _snap()
     a = DeepWashBreathe().render(rig, snap, 1.0).values
-    b = BeamFanLaserTunnel().render(rig, snap, 1.0).values
+    b = DropBlackoutHit().render(rig, snap, 1.0).values
     assert a != b
 
 
