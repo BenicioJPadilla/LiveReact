@@ -64,6 +64,25 @@ python3 -m venv .venv
 
 Or use the dev launchers: `run.bat` (Windows) / `./run.command` (macOS).
 
+## Lighting spec & look library
+
+The actual *content* of the show — what look plays for a given energy state,
+what colors/movement it uses, when it degrades — is driven by
+[`spec/LIGHTING_BIBLE.md`](spec/LIGHTING_BIBLE.md), a normative lighting-design
+spec, with [`spec/conformance.md`](spec/conformance.md) tracking implementation
+status rule-by-rule. This is a separate, later integration effort layered on
+top of the phases above (tracked as its own "Bible-integration" phase series in
+[`docs/bible_integration/`](docs/bible_integration/) and the working plan, not
+renumbered into Phases 0–8) — see `docs/bible_integration/RULES_MATRIX.md` for
+the current status and `docs/bible_integration/LOOK_CATALOG.md` for the full
+30-look catalog this project targets. As of this writing, 29 scenes span every
+energy bucket (BREAK/BUILD/DROP/PEAK/OUTRO) in
+[`src/livereact/scenes/library.py`](src/livereact/scenes/library.py); a small
+number of Bible-named looks are deliberately deferred (documented in-code and
+in the rules matrix, not silently skipped) pending either new detection
+infrastructure (`build_snare_accent`) or hardware this rig doesn't have (a
+gobo wheel, a second moving head, haze/fog).
+
 ## Layout
 
 ```

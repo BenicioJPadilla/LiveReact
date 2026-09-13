@@ -44,23 +44,26 @@ Plan: `/Users/joshuaracimora/.claude/plans/adaptive-squishing-pebble.md`.
 
 ## Every FAIL, individually (active defects, not "doesn't exist yet")
 
+**Reconciled 2026-09-12 (Phase 6 audit sync)**: this list itself had drifted —
+`MERGE-02`/`MERGE-03`/`MERGE-06`/`MERGE-19` (resolved Phase 4, `8a68bd5`),
+`TIME-12` (resolved Phase 2, `3953283`), `LOOK-03`/`TIME-21` (resolved Phase 6,
+`8e91245`) were all still listed here despite being genuinely fixed, in some
+cases for a full session already — the per-phase delta logs below were kept
+current as work landed, but this summary table and `spec/conformance.md`'s
+own per-rule rows were not synced to match at the same time. Removed from
+this list below; `spec/conformance.md` rows updated in the same pass as this
+file. **Still genuinely open** (unchanged by anything built this session):
+
 | Rule | Assertion | Resolving phase |
 |---|---|---|
-| `MERGE-02` | RGBW-as-intensity merges HTP within a look, LTP-by-priority across looks | Phase 4 |
-| `MERGE-03` | Hue merges LTP-by-priority, never averaged | Phase 4 |
-| `MERGE-05` | Pan/tilt merges as `base(LTP) + Σ offsets`, slew-clamped | Phase 4 |
-| `MERGE-06` | Color-wheel slot merges LTP+snap | Phase 4 |
-| `MERGE-07` | Gobo index merges LTP+snap (latent) | Phase 4 |
-| `MERGE-08` | Prism-engage merges LTP+snap (latent) | Phase 4 |
-| `MERGE-19` | TransitionEngine masks Phrase writes at priority 100 | Phase 4 |
-| `LOOK-02` | Mirrored-fan requires inverted opposite-side geometry | Phase 5 |
-| `LOOK-03` | DROP look with `kick_follow:false` renders fully static | Phase 5 |
+| `MERGE-05` | Pan/tilt merges as `base(LTP) + Σ offsets`, slew-clamped | Phase 4 — still PARTIAL, honestly (see Phase 4 delta log) |
+| `MERGE-07` | Gobo index merges LTP+snap (latent) | Phase 4 — latent, nothing writes these channels yet |
+| `MERGE-08` | Prism-engage merges LTP+snap (latent) | Phase 4 — latent, nothing writes these channels yet |
+| `LOOK-02` | Mirrored-fan requires inverted opposite-side geometry | Phase 5 — NOT built this session |
 | `LOOK-08` | `safe_default` = static 40% neutral wash, no motion/laser/fog | **Phase 1 — target fixed, fade-timing still open** |
-| `MOVE-03` | Mis-declared mirror geometry disables mirroring, warns | Phase 5 |
-| `MOVE-07` | Continuous motion reserved for DROP/sustained PEAK | Phase 5 |
-| `MOVE-09` | Movers home at half-slew on arm | Phase 5 |
-| `TIME-12` | Asymmetric hysteresis (±15%, fast entry/slow exit) | Phase 2 |
-| `TIME-21` | Restraint — don't use every fixture/role/effect at once | Phase 6 |
+| `MOVE-03` | Mis-declared mirror geometry disables mirroring, warns | Phase 5 — NOT built this session |
+| `MOVE-07` | Continuous motion reserved for DROP/sustained PEAK | Phase 5 — mechanism (`ReactiveLayerEngine`'s own spot loop) unchanged; Scene-layer content now differentiated by bucket, see `spec/conformance.md`'s updated row |
+| `MOVE-09` | Movers home at half-slew on arm | Phase 5 — NOT built this session (Phase 5 was scene/look content, not fixture boot sequencing) |
 | `TRANS-02` | Crossfade interpolates LTP color in Oklab | **Excluded — Josh's hold** |
 | `FAIL-03` | On audio loss, Reactive stops writing | Phase 3 |
 | `FAIL-04` | Total signal loss fades to `safe_default` over 2 bars | **Phase 1 — target fixed (instant switch), fade-timing still open** |
@@ -138,6 +141,110 @@ had ever populated it) to three.
 | `peak_alt_hits_clear` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `PeakAltHitsClear` -- generalized for this rig's single spot fixture the same way `Converge` was (`MOVE-12`): snaps between two positions every bar rather than a smooth sweep, matching `snap_alternate`'s "snap, don't sweep" semantics; tests: `tests/test_scenes.py::test_peak_alt_hits_clear_alternates_by_bar_on_a_single_fixture` |
 
 **Re-verified against the real capture, full pipeline**: `Peak Full Rig` was genuinely selected and rendered during a real PEAK-bucket window (t=228.5s-238.9s); `Drop Strobe Stab`, `Peak Alt Hits Clear`, and `Peak Color Pulse Clear` were also exercised during the same replay (as crossfade participants, not necessarily long-settled). `Build Riser Wash` and `Locked Hold` weren't picked in this particular ~380s replay -- round-robin timing across 14 scenes now sharing the cursor, not a defect; both remain directly unit-tested.
+
+## Phase 5 delta log, third wave (2026-09-12 -- BREAK family, commit `1922b29`)
+
+BREAK went from 2 pre-Bible looks (`DeepWashBreathe`/`SlowColorCycleAmbient`)
+to 6.
+
+| Rule | Before | After | Evidence |
+|---|---|---|---|
+| `break_low_wash` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `BreakLowWash` -- color only (`cold_steel`), wash intensity stays owned by `ReactiveLayerEngine`'s existing BREAK breathing envelope; `conflicts[peak_strobe_blackout]` forward-declared by name even though that PEAK look isn't built yet; tests: `tests/test_scenes.py::test_break_low_wash_does_not_set_wash_intensity`, `::test_break_low_wash_uses_cold_steel`, `::test_break_low_wash_conflicts_with_peak_strobe_blackout` |
+| `break_single_spot_special` (new look) | NOT-IMPLEMENTED | PARTIAL | `scenes/library.py`'s `BreakSingleSpotSpecial` -- static 40-70% spot special, degrades to `BreakLowWash`; "position dj_booth" has no named-position mechanism in this codebase, expressed as a disclosed hardcoded pan/tilt guess; tests: `tests/test_scenes.py::test_break_single_spot_special_degrades_to_break_low_wash`, `::test_break_single_spot_special_spot_level_is_static_not_audio_reactive` |
+| `break_ceiling_drift` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `BreakCeilingDrift` -- slow sine tilt drift, period_bars 8, tilt_amp 15%; tests: `tests/test_scenes.py::test_break_ceiling_drift_tilt_completes_one_cycle_every_eight_bars`, `::test_break_ceiling_drift_stays_within_the_declared_tilt_amplitude` |
+| `break_color_hold_clear` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `BreakColorHoldClear` -- fully static `deep_blue`; test: `tests/test_scenes.py::test_break_color_hold_clear_is_static_color_and_position` |
+
+**Verified against real capture data**: 0 crashes across all 3779 ticks;
+`Break Low Wash` and `Break Single Spot Special` both genuinely
+round-robin-selected during real BREAK windows and rendered correctly.
+`Break Ceiling Drift`/`Break Color Hold Clear` weren't reached by
+round-robin in this capture's dwell time -- disclosed, not claimed.
+
+## Phase 5 delta log, fourth wave (2026-09-12 -- OUTRO family, commit `f666c8d`)
+
+OUTRO went from zero looks (a genuinely new state, `SceneCatalog.pick()`
+fell back to the full flattened catalog whenever the bucket was OUTRO) to two.
+
+| Rule | Before | After | Evidence |
+|---|---|---|---|
+| `outro_fade_wash` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `OutroFadeWash` -- color only (`warm_white`), wash intensity stays owned by `ReactiveLayerEngine`'s existing OUTRO_HIGH->OUTRO_LOW fade; test: `tests/test_scenes.py::test_outro_fade_wash_does_not_set_wash_intensity` |
+| `outro_single_beam` (new look) | NOT-IMPLEMENTED | PARTIAL | `scenes/library.py`'s `OutroSingleBeam` -- a real departure from every other scene: deliberately does NOT paint the wash at all (would fight the look's own "dark 80%" last-beam intent), lights only the FIRST spot fixture (`rig.by_role("spot")[:1]`, "one spot" taken literally); "ceiling_bounce" is another disclosed named-position gap; tests: `tests/test_scenes.py::test_outro_single_beam_does_not_touch_wash_at_all`, `::test_outro_single_beam_lights_only_the_first_spot` |
+
+**Verified against real capture data**: 0 crashes; BOTH `Outro Fade Wash`
+and `Outro Single Beam` genuinely round-robin-selected during real OUTRO
+windows and rendered correctly -- better real-data coverage than BREAK got.
+
+## Phase 5 delta log, fifth wave (2026-09-12 -- bridge/utility, commit `15ad2e4`)
+
+| Rule | Before | After | Evidence |
+|---|---|---|---|
+| `all_dark` (new look) | NOT-IMPLEMENTED (LOOK-07 was N/A for lack of this look) | PASS | `scenes/base.py`'s `AllDark`/`ALL_DARK` -- "reserved darkness/cut, any mode," deliberately NOT part of `ALL_SCENES`/rotation (same treatment as `SafeDefault`); no automatic trigger wired since the Bible gives none; test: `tests/test_scenes.py::test_all_dark_zeroes_every_intensity_channel_no_motion_no_laser` |
+| `chase_wash_lr` (new look) | NOT-IMPLEMENTED | PARTIAL | `scenes/library.py`'s `ChaseWashLr` -- a genuine per-fixture wash INTENSITY chase (this rig's wash fixtures have no pan/tilt), a deliberate disclosed exception to "never set wash intensity" (same justification as `peak_color_pulse_clear`); filed under BUILD only (Bible tags `[BUILD,PEAK]`, `Scene.bucket` is single-valued); added to `DropBlackoutHit.conflicts`; tests: `tests/test_scenes.py::test_chase_wash_lr_alternates_left_and_right_out_of_phase`, `::test_chase_wash_lr_completes_one_cycle_every_two_bars` | `spot_position_change` deliberately NOT built -- the Bible's own catalog entry flags it as under-specified (no `requires{}`/`degrade`/`conflicts`/`color`/`dark%`/`min_hold` at all) and it needs the same named-position mechanism this codebase doesn't have; deferred like `build_snare_accent`, not fabricated.
+
+**Verified against real capture data**: 0 crashes; `ChaseWashLr` wasn't
+reached by round-robin in this capture, so it was additionally
+direct-rendered against every row of the same capture on the real rig
+config (`rigs/josh_rig.json`): 0 crashes, both wash fixtures' output
+genuinely oscillates in opposite phase.
+
+## Phase 5 delta log, sixth wave (2026-09-12 -- atmosphere-gated stubs, commit `e24fb47`)
+
+All 6 looks whose `requires{}` names an `atm` threshold > 0 -- see
+`spec/conformance.md`'s updated `LOOK-01`/`BEAM-01` rows for the full
+mechanism explanation. This is the first wave where `requires{}`/
+`min_atmosphere_density` are load-bearing on any real `Scene`.
+
+| Rule | Before | After | Evidence |
+|---|---|---|---|
+| `build_beam_raise`/`drop_beam_fan`/`drop_laser_punctuation`/`peak_beam_sweep`/`peak_laser_tunnel`/`mirror_cross_beam` (6 new looks) | NOT-IMPLEMENTED | PASS (as always-degrading stubs -- genuinely correct per the Bible's own "always degrades on this rig" note) | `scenes/library.py` -- `BuildBeamRaise`->`BuildRiserWash`, `DropBeamFan`->`DropBlackoutHit`, `PeakBeamSweep`->`PeakFullRig` (single-hop degrade succeeds); `DropLaserPunctuation`->`DropBeamFan` and `PeakLaserTunnel`/`MirrorCrossBeam`->`PeakBeamSweep` (recursive-degrade cases -- the one-hop-only target is ALSO ineligible, so the scene is dropped entirely, not double-hopped); tests: `tests/test_scenes.py::test_all_six_atmosphere_gated_scenes_are_always_ineligible_on_this_rig` + 3 per-bucket "never surfaces directly" tests (30 picks each, exhaustive round-robin coverage) |
+
+**Verified against real capture data**: 0 crashes across all 3779 ticks,
+and NONE of the 6 new stub names ever appear in the actual scene-selection
+trace -- real, end-to-end confirmation the degrade-walk intercepts every
+one before real DMX output.
+
+## Phase 5 delta log, seventh (final) wave (2026-09-12 -- remaining DROP looks, commit `21ab082`)
+
+Closes Phase 5's entire look-building backlog.
+
+| Rule | Before | After | Evidence |
+|---|---|---|---|
+| `drop_color_slam_bigroom` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `DropColorSlamBigroom` -- wash and spot get genuinely different static hues (`SUNSET_WASH`/`SUNSET_SPOT`); bar-downbeat wash pulse reuses `peak_color_pulse_clear`'s mechanic; test: `tests/test_scenes.py::test_drop_color_slam_bigroom_splits_wash_and_spot_hues` |
+| `drop_wash_slam_clear` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `DropWashSlamClear` -- fully static `blood_red`; test: `tests/test_scenes.py::test_drop_wash_slam_clear_is_static_blood_red` |
+| `drop_gobo_projection_clear` (new look) | NOT-IMPLEMENTED | PASS (as an always-ineligible, no-degrade stub -- correctly matches the Bible's own "no gobo capability... always degrades" note) | `scenes/library.py`'s `DropGoboProjectionClear` -- requires a `"gobo"` token that exists nowhere in `Rig.capabilities()`; NO `degrade_to` (unlike the atm-gated stubs) -- dropped from its bucket's eligible set outright; test: `tests/test_scenes.py::test_drop_gobo_projection_clear_is_always_ineligible_and_has_no_degrade_target` |
+| `drop_blinder_clear` (new look) | NOT-IMPLEMENTED | PASS | `scenes/library.py`'s `DropBlinderClear` -- "wash or blinder" resolves to always-eligible (this rig has wash, no blinder fixture); genuinely reachable via round-robin, not a stub; test: `tests/test_scenes.py::test_drop_blinder_clear_is_eligible_and_reachable_via_round_robin` |
+
+**Verified against real capture data**: 0 crashes; `Drop Wash Slam Clear`
+genuinely selected multiple times as a pure round-robin pick during real
+DROP windows. The other 3 weren't reached by round-robin in this capture
+(`DropGoboProjectionClear` correctly never surfacing IS the desired
+outcome) -- `DropColorSlamBigroom`/`DropBlinderClear` were additionally
+direct-rendered against every row of the same capture on the real rig
+config: 0 crashes for both.
+
+## Phase 6 delta log (2026-09-12 -- Cutover: retire old scenes, audit sync)
+
+| Rule | Before | After | Evidence |
+|---|---|---|---|
+| `LOOK-03` | FAIL (`FullSpectrumHit`/`BeamFanLaserTunnel` both audio/beat-reactive despite DROP's static intent) | PASS | Both scenes retired (commit `8e91245`) -- Phase 5's full Bible-aligned DROP family already covers the same territory with real restraint |
+| `TIME-21` | FAIL (both scenes touched wash+spot+laser simultaneously) | PASS | Same retirement -- confirmed no remaining scene touches all three roles; `DropLaserPunctuation`/`PeakLaserTunnel` are laser-only by design |
+| `MERGE-02`/`MERGE-03`/`MERGE-06`/`MERGE-19` | Still shown FAIL in `spec/conformance.md` (stale -- actually resolved Phase 4, `8a68bd5`) | PASS | `spec/conformance.md` rows reconciled to match this file's own Phase 4 delta log, which had been correct all along |
+| `LOOK-01` | PARTIAL ("mechanism built, not yet exercised") | PASS | Genuinely exercised for the first time by the sixth wave's 6 real always-degrading scenes |
+| `LOOK-06` | Still shown NOT-IMPLEMENTED in `spec/conformance.md` (stale -- actually resolved Phase 4, `8a68bd5`) | PASS | Reconciled, same as the MERGE rows above |
+| `LOOK-09` | Still shown NOT-IMPLEMENTED in `spec/conformance.md` (stale -- actually resolved Phase 5 first wave, `b3964dc`, via `build_to_drop_bridge`) | PASS | Reconciled |
+| `BEAM-01` | NOT-IMPLEMENTED | PASS | Genuinely exercised by the sixth wave's 6 atm-gated looks |
+| `BEAM-02`/`BEAM-03`/`BEAM-04` | Blank (never actually evaluated by the original audit) | NOT-IMPLEMENTED / N/A, filled in honestly | No prism or gobo control mechanism exists on any real fixture in this codebase -- nothing to gate |
+| `MOVE-06` | NOT-IMPLEMENTED ("every scene is continuous," now factually false) | PARTIAL | Several Phase 5 scenes are now static or snap-quantized; no distinct "position-change cue" TYPE exists yet, so not a full PASS |
+| `MOVE-07` | FAIL | FAIL (mechanism unchanged), evidence refreshed | `ReactiveLayerEngine`'s own spot loop is untouched by Phase 5 -- still not bucket-gated -- but Scene-layer movement now genuinely differs by bucket; not upgraded since the rule's own named mechanism is still failing |
+
+Also: `spec/conformance.md`'s and this file's own "Every FAIL, individually"
+summary tables had drifted from the phase delta logs below them (some rows
+resolved a full session or more ago were still listed as active) --
+reconciled in the same pass. **Not attempted this session**: a full
+line-by-line re-verification of all 170 `spec/conformance.md` rows --
+out of scope for one Phase 6 pass; only rows directly tied to Phase 4/5/6
+work were touched. README/architecture docs and the hardware smoke-test
+checklist are tracked separately (see `[[livereact-project]]` memory).
 
 ## Phase 1 delta log (updated as Phase 1 code lands)
 
