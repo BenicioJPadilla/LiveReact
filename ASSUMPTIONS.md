@@ -14,7 +14,7 @@ Confirm by: 🔧 hardware test · 🎚️ DJ/usage feedback · 🔬 researched (
 
 | ID | Assumption | Confirm | Status |
 |----|------------|:------:|--------|
-| A1 | DMX channel maps: SHEHDS 180W MH solid (PDF); laser/par/wash-bar are hypotheses — verify each via fixture-test panel | 🔧 | open |
+| A1 | DMX channel maps: SHEHDS 180W MH solid (PDF); laser/par/wash-bar are hypotheses — verify each via fixture-test panel | 🔧 | confirmed (hw), 2026-08-31 — all 4 fixture types verified by isolated channel probing, see `rigs/josh_rig.json`'s own description |
 | A2 | XDJ-XZ MIDI CC map approximately right but **verify all** (may use HID for some controls) — ship MIDI-learn, persist map | 🔧 | open |
 | A3 | PDL gives BPM/beat(1–4)/on-air/master/loop/play; **bar=inferred, phrase=unavailable, beat-phase=interpolated, position=unavailable** | 🔬 | settled |
 | A4 | One Enttec, one universe, 74 channels (no multi-universe) | 🔬/🧩 | settled |
@@ -23,7 +23,7 @@ Confirm by: 🔧 hardware test · 🎚️ DJ/usage feedback · 🔬 researched (
 | B1 | Frequency→color rule kept for **consistency** (not neuroscience): energy→bright/sat mandatory, band→hue tunable data | 🔬/🎚️ | settled |
 | B2 | Strobe conservative: sustained near ~3 Hz known-safe line; high-rate only as short auto-expiring drop bursts; prefer white over red | 🔬/🎚️ | settled |
 | B3 | Lasers on **only in explicit drop scenes**, static/above-head, never sound-active modes, off by default, fail-safe to off | 🔬 | settled |
-| B5 | ~8 scenes for v1 from the 12-scene starter catalog; expand during tuning | 🧩/🎚️ | open |
+| B5 | ~8 scenes for v1 from the 12-scene starter catalog; expand during tuning | 🧩/🎚️ | superseded, 2026-09 — the separate Bible-integration effort (see `docs/bible_integration/`) replaced the 12-scene starter catalog with a 30-look catalog spanning every energy bucket, per `spec/LIGHTING_BIBLE.md` |
 | B6 | Rotation cadence default **16 bars** (allow 32 for sustained high energy; never below 8) | 🎚️ | open |
 | B7 | Scene selection: **round-robin within an energy bucket** for v1 (no Markov chain) | 🧩 | open |
 | B8 | "Energy" estimated from MIDI EQ/fader state + engaged bands + phrase position, smoothed (no audio, no PDL phrase) | 🔬/🎚️ | open |

@@ -1,5 +1,17 @@
 # LiveReact — Build Plan & Status
 
+> **Scope note (added 2026-09-13, repo cleanup pass): this file tracks only the
+> original clean-room rebuild (Phases 0-8 below) and has been frozen since the
+> very first commit.** A separate, later "Full Lighting Bible Integration"
+> effort — driven by `spec/LIGHTING_BIBLE.md`, tracked in
+> `docs/bible_integration/` (see `RULES_MATRIX.md` for status) and the working
+> plan at `~/.claude/plans/adaptive-squishing-pebble.md` — has since added a
+> full 30-look scene catalog spanning every energy bucket, priority-tiered
+> merge, capability-gated look selection, and more, on top of what's described
+> here. If you're checking "what's actually done," read `README.md`'s
+> "Lighting spec & look library" section and `docs/bible_integration/
+> RULES_MATRIX.md` too, not just this file.
+
 The working checklist for the rebuild, derived from
 [`docs/12_REBUILD_ROADMAP.md`](docs/12_REBUILD_ROADMAP.md). **Demo-first**: Phases
 0–6 need no hardware; Phase 7 is the only hardware-gated phase. No calendar dates —
