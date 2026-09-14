@@ -1,12 +1,15 @@
-"""Tests for SnareOnsetDetector (build_snare_accent Step 1) — driven
-deterministically with a FakeClock, same pattern as LaserOnsetDetector's
-own tests."""
+"""Tests for SnareOnsetDetector (build_snare_accent Step 1) and
+SnareRollDetector (Step 2) — driven deterministically with a FakeClock,
+same pattern as LaserOnsetDetector's own tests."""
 
 from __future__ import annotations
 
 from livereact.clock import FakeClock
 from livereact.core.show_state import ShowSnapshot
-from livereact.core.snare_trigger import SnareOnsetDetector
+from livereact.core.snare_trigger import SnareOnsetDetector, SnareRollDetector
+
+BPM = 128.0
+BEAT = 60.0 / BPM
 
 WARMUP_TICKS = 60  # 60 * 0.02s = 1.2s, safely past the detector's 1.0s warmup gate
 
@@ -101,3 +104,58 @@ def test_hihat_level_energy_does_not_fire_but_snare_level_energy_does():
     clock.advance(0.2)
     # a snare: body tone (mid) + broadband hiss (high), a much bigger jump
     assert d.update(_snap(audio_band_mid_abs=6.0, audio_band_high_abs=8.0)) is True
+
+
+# --- SnareRollDetector (Step 2) -----------------------------------------
+
+def test_steady_backbeat_never_reads_as_a_roll():
+    """The actual adversary for this detector: a real, ordinary house/
+    techno backbeat (constant 2-beat spacing) is multiple onsets in a row,
+    same as a roll superficially looks -- must never be flagged."""
+    clock = FakeClock()
+    d = SnareRollDetector(clock)
+    active_at_any_point = False
+    for _ in range(10):  # 10 backbeat hits, constant 2*BEAT apart
+        if d.update(True, "build"):
+            active_at_any_point = True
+        clock.advance(2 * BEAT)
+    assert not active_at_any_point
+
+
+def test_a_real_accelerating_roll_is_detected_and_expires():
+    """The real shape a roll takes: quarter -> eighth -> sixteenth notes,
+    tightening into a drop. FOUND BY SIMULATION (tools/simulations/
+    snare_roll_sim.py, 2026-09-14): requiring EVERY consecutive interval to
+    individually tighten rejected this exact, textbook pattern outright,
+    since a real roll plateaus at each subdivision for a couple of hits
+    before dropping to the next -- fixed to compare the window's overall
+    first-vs-last interval instead."""
+    clock = FakeClock()
+    d = SnareRollDetector(clock)
+    intervals = [BEAT, BEAT, BEAT / 2, BEAT / 2, BEAT / 4, BEAT / 4, BEAT / 4, BEAT / 4]
+    fired_at_any_point = False
+    for interval in intervals:
+        clock.advance(interval)
+        if d.update(True, "build"):
+            fired_at_any_point = True
+    assert fired_at_any_point  # correctly caught partway through, not never
+
+    # and it correctly expires once the hits stop (ROLL_MAX_AGE_S=0.5s)
+    clock.advance(1.0)
+    assert d.update(False, "build") is False
+
+
+def test_roll_detection_is_gated_to_build_bucket_only():
+    """LIGHTING_BIBLE.md's own [BUILD] tag for build_snare_accent, enforced
+    at this layer (not the onset detector, which stays bucket-agnostic).
+    The exact same accelerating pattern must never read as a roll in any
+    other bucket."""
+    clock = FakeClock()
+    d = SnareRollDetector(clock)
+    intervals = [BEAT, BEAT, BEAT / 2, BEAT / 2, BEAT / 4, BEAT / 4, BEAT / 4, BEAT / 4]
+    fired_at_any_point = False
+    for interval in intervals:
+        clock.advance(interval)
+        if d.update(True, "drop"):  # NOT build
+            fired_at_any_point = True
+    assert not fired_at_any_point
