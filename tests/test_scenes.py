@@ -36,9 +36,11 @@ def test_thirty_scenes_across_all_buckets():
     out Phase 5's look-building backlog; DropGoboProjectionClear always
     degrades to nothing, same as the "no gobo hardware" gap it documents)
     + one gap-fix (PeakStrobeBlackout, found during a 2026-09-13 Phase 1-6
-    re-audit -- a real Bible look that all 7 waves had missed)."""
+    re-audit -- a real Bible look that all 7 waves had missed) + one more
+    build-out (BuildSnareAccent, 2026-09-14 -- depended on new snare-roll
+    subdivision detection, core/snare_trigger.py, built this session)."""
     cat = SceneCatalog()
-    assert len(ALL_SCENES) == 30
+    assert len(ALL_SCENES) == 31
     for bucket in EnergyBucket:
         assert cat.bucket(bucket), f"{bucket} has no scenes"
 
@@ -772,3 +774,39 @@ def test_converge_single_spot_narrows_to_center_as_energy_rises():
     pan_high = Converge().render(rig, high, 1.0).values[mh.offset]
     assert pan_high == 128            # full energy -> amplitude 0 -> dead center
     assert abs(pan_low - 128) > 20    # low energy -> meaningfully off-center, still sweeping
+
+
+# --- build_snare_accent, 2026-09-14 (depended on new snare-roll subdivision detection)
+
+def test_build_snare_accent_renders_wash_and_spot():
+    """Same shape as BuildRiserWash's own color/context-only role -- this
+    look paints wash + spot color, the actual accent flashes are owned by
+    ReactiveLayerEngine's own strobe channel (see class docstring)."""
+    from livereact.scenes.library import BuildSnareAccent
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    mh = rig.fixture("mh_l")
+    c = BuildSnareAccent().render(rig, _snap(), 1.0)
+    assert any(c.touched[bar.offset:bar.offset + bar.channel_count])
+    assert any(c.touched[mh.offset:mh.offset + mh.channel_count])
+
+
+def test_build_snare_accent_does_not_touch_the_strobe_channel_itself():
+    """Same restraint as DropStrobeStab/PeakStrobeBlackout -- the actual
+    strobe stays owned by ReactiveLayerEngine's own channel, this scene
+    supplies color only."""
+    from livereact.scenes.library import BuildSnareAccent
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    c = BuildSnareAccent().render(rig, _snap(), 1.0)
+    assert not c.touched[bar.offset + 1]  # ch2 = strobe, untouched
+
+
+def test_build_snare_accent_conflicts_with_drop_blackout_hit():
+    """DropBlackoutHit.conflicts names every BUILD-bucket look by hand
+    ("conflicts[all build looks]") -- BuildSnareAccent must be in that set,
+    not just added to ALL_SCENES (see test_drop_blackout_hit_conflicts_
+    with_every_build_scene for the generic version of this check)."""
+    from livereact.scenes.catalog import SceneCatalog
+    from livereact.scenes.library import BuildSnareAccent
+    assert SceneCatalog._conflicts(DropBlackoutHit(), BuildSnareAccent())

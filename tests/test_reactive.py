@@ -196,6 +196,93 @@ def test_strobe_ending_naturally_also_earns_the_minimum_spacing():
     assert c.values[bar.offset + 1] > 0  # allowed to strobe again
 
 
+# --- build_snare_accent delivery (2026-09-14): _snare_accent_strobe_rate
+# combines this same energy-threshold strobe path with a second, roll-
+# triggered one (core/snare_trigger.py's SnareOnsetDetector/SnareRollDetector,
+# Steps 0-2, each verified independently by simulation) via max(), BEFORE the
+# single _strobe_burst_gate call above -- see reactive.py's own method
+# docstring for why that ordering matters. Energy is kept low (well under
+# STROBE_THRESHOLD) throughout these tests specifically so any strobe output
+# observed can only be coming from the roll path, not this same energy-
+# threshold one.
+
+def _warm_up_snare(eng: ReactiveLayerEngine, clock: FakeClock, rig) -> None:
+    """Run the engine past SnareOnsetDetector's own WARMUP_S on a steady,
+    non-spiking signal -- same rationale as test_snare_trigger.py's own
+    _warm_up (a cold rolling average reads as a false spike otherwise)."""
+    for _ in range(60):  # 60 * 0.02s = 1.2s, safely past WARMUP_S=1.0
+        eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="build",
+                        audio_fresh=True, audio_band_mid_abs=1.0, audio_band_high_abs=1.0), rig)
+        clock.advance(0.02)
+
+
+def test_a_real_accelerating_roll_engages_the_strobe_channel_via_the_roll_path():
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    bar = rig.fixture("bar_l")
+    _warm_up_snare(eng, clock, rig)
+
+    fired_strobe = False
+    # ROLL_HISTORY=4 -- needs 4 onset times (3 gaps) before _is_accelerating
+    # even evaluates. The first spike here just seeds history; the three
+    # gaps that follow are the actual roll shape being tested (overall
+    # tightening: 0.27 <= 0.4*0.7).
+    clock.advance(0.5)
+    eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="build",
+                    audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
+    for interval in (0.4, 0.35, 0.27):
+        clock.advance(interval)
+        c = eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="build",
+                            audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
+        if c.values[bar.offset + 1] > 0:
+            fired_strobe = True
+    assert eng.snare_roll_active  # the roll is confirmed active by the last hit
+    assert fired_strobe  # and it actually reached the real strobe channel, not just the flag
+
+
+def test_a_steady_non_accelerating_onset_pattern_never_engages_the_strobe_channel():
+    """The actual adversary this whole feature exists to reject (same one
+    SnareRollDetector's own unit test targets): repeated onsets at a
+    constant, non-tightening spacing -- an ordinary backbeat, not a roll --
+    must never reach the strobe channel via this path."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    bar = rig.fixture("bar_l")
+    _warm_up_snare(eng, clock, rig)
+
+    fired_strobe = False
+    for _ in range(6):  # constant spacing, well over onset refractory -- never tightens
+        clock.advance(0.4)
+        c = eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="build",
+                            audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
+        if c.values[bar.offset + 1] > 0:
+            fired_strobe = True
+    assert not eng.snare_roll_active
+    assert not fired_strobe
+
+
+def test_the_same_accelerating_roll_is_ignored_outside_the_build_bucket():
+    """LIGHTING_BIBLE.md's own [BUILD] tag, enforced end-to-end here, not
+    just at SnareRollDetector's own unit-test layer."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    bar = rig.fixture("bar_l")
+    _warm_up_snare(eng, clock, rig)
+
+    fired_strobe = False
+    for interval in (0.4, 0.35, 0.27):
+        clock.advance(interval)
+        c = eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="drop",  # NOT build
+                            audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
+        if c.values[bar.offset + 1] > 0:
+            fired_strobe = True
+    assert not eng.snare_roll_active
+    assert not fired_strobe
+
+
 # --- kick-envelope-follower (docs/14 §5, REDESIGNED 2026-09-03) -------------
 # Replaces the old beat-locked-ramp + relative-onset-gate design (which flapped
 # on/off and could keep re-triggering through real silence — both confirmed

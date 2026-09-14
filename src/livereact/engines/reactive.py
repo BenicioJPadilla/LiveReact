@@ -24,6 +24,7 @@ from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
 from ..scenes.base import EnergyBucket
 from ..scenes.catalog import BREAK_MAX, BUILD_MAX
+from ..core.snare_trigger import SnareOnsetDetector, SnareRollDetector
 from .color import band_levels, two_axis_color
 
 PULSE_MIN = 0.03        # fallback-only now (see KICK_* below) — used solely when real
@@ -383,6 +384,17 @@ class ReactiveLayerEngine:
                                             # active blend," which also correctly makes the
                                             # very first tick ever a direct assignment (any
                                             # real monotonic clock reads > 0.0)
+        # build_snare_accent delivery (2026-09-14) -- Steps 0-2's detectors,
+        # owned and driven HERE (not a separate top-level engine like
+        # LaserOnsetDetector) specifically so the roll-triggered rate can be
+        # combined with _strobe_rate's own energy-threshold rate via max()
+        # BEFORE the single _strobe_burst_gate call, per the safety-
+        # integration requirement in the plan doc: two independently-gated
+        # strobe triggers could otherwise legally chain bursts closer
+        # together than STROBE_MIN_SPACING_S intends.
+        self._snare_onset = SnareOnsetDetector(clock)
+        self._snare_roll = SnareRollDetector(clock)
+        self.snare_roll_active = False  # exposed for the console/tests
 
     # LIGHTING_BIBLE.md §2.3's Titan tiers (Bible-integration Phase 4):
     # Safety=255 (not a contribution -- merge/merge.py's finalize() clamp,
@@ -401,7 +413,7 @@ class ReactiveLayerEngine:
                                  # above) -- kept "live" for `self.kick_level` and any
                                  # future accent feature, just not used for wash_level
         wash_level = self._bucket_wash_level(snap)
-        strobe = self._strobe_burst_gate(self._strobe_rate(snap))
+        strobe = self._strobe_burst_gate(self._snare_accent_strobe_rate(snap))
 
         # --- washes: bucket-driven brightness (LIGHTING_BIBLE.md §5/§9.1), hue from the bands ---
         for fx in rig.by_role("wash"):
@@ -434,6 +446,26 @@ class ReactiveLayerEngine:
         if snap.bpm <= 0:
             return 0.0
         return 1.0 - (1.0 - PULSE_MIN) * snap.beat_phase
+
+    def _snare_accent_strobe_rate(self, snap: ShowSnapshot) -> float:
+        """build_snare_accent delivery (2026-09-14): combines the existing
+        energy-threshold strobe rate (`_strobe_rate`, unchanged) with a
+        second, independently-triggered rate driven by a confirmed
+        accelerating snare roll (Steps 0-2, verified by simulation --
+        see snare_trigger.py's module docstring). The two are combined via
+        max() BEFORE the single `_strobe_burst_gate` call below (not two
+        separate gated calls) specifically so they can't legally chain
+        bursts closer together than STROBE_MIN_SPACING_S intends -- that
+        was the whole point of the safety-integration note in the plan doc.
+
+        The roll-triggered rate is capped at STROBE_MAX, same ceiling as
+        the energy-threshold path -- this is an ACCENT on top of the
+        existing strobe channel, not a second, higher-authority strobe
+        path with its own safety ceiling."""
+        onset = self._snare_onset.update(snap)
+        self.snare_roll_active = self._snare_roll.update(onset, snap.bucket)
+        roll_rate = STROBE_MAX if self.snare_roll_active else 0.0
+        return max(self._strobe_rate(snap), roll_rate)
 
     def _strobe_rate(self, snap: ShowSnapshot) -> float:
         if snap.energy_norm <= STROBE_THRESHOLD:

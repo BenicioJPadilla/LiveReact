@@ -176,6 +176,7 @@ class DropBlackoutHit(Scene):
         "Rising Tide", "Converge", "Pulse & Drift Sustain", "Locked Hold", "Build Riser Wash",
         "Chase Wash L/R",  # added Phase 5 fifth wave -- also a BUILD-bucket look
         "Build Beam Raise",  # added Phase 5 sixth wave -- also a BUILD-bucket look
+        "Build Snare Accent",  # added build_snare_accent build-out, 2026-09-14 -- also a BUILD-bucket look
     })  # "conflicts[all build looks]"
     min_hold_bars = 8
     dark_pct = 0.10
@@ -239,6 +240,49 @@ class BuildRiserWash(Scene):
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
         r, g, b = two_axis_color(snap.replace(energy=1.0))
+        paint_wash(c, rig, r, g, b)
+        paint_spots(c, rig, r, g, b, 0.5 * intensity)
+        return c
+
+
+class BuildSnareAccent(Scene):
+    """LIGHTING_BIBLE.md §5: `build_snare_accent` -- "[BUILD], bigroom...
+    accent flashes locked to detected snare subdivision, quantized to 1/8,
+    kick_follow:false, justification: the snare roll is the one place
+    transient-following reads as intentional. Flashes obey §13."
+
+    Depended on new audio-transient work (build_snare_accent, this session,
+    2026-09-14): `core/snare_trigger.py`'s `SnareOnsetDetector` (Step 1,
+    verified by `tools/simulations/snare_onset_sim.py`) and
+    `SnareRollDetector` (Step 2, verified by `tools/simulations/
+    snare_roll_sim.py`), BUILD-gated and simulation-confirmed to catch a
+    real accelerating roll while never false-firing on an ordinary steady
+    backbeat. The actual accent flashes themselves are produced by
+    `ReactiveLayerEngine._snare_accent_strobe_rate` (Step 3, combined via
+    max() with the existing energy-threshold strobe rate, BEFORE the single
+    `_strobe_burst_gate` call -- so a confirmed roll can't legally chain
+    bursts closer together than STROBE_MIN_SPACING_S/STROBE_MAX_BURST_S
+    intend, keeping "obey §13" true regardless of which trigger fired) --
+    a separate DMX channel from color/dimmer, written every tick. Same
+    restraint as `DropStrobeStab`/`PeakStrobeBlackout`: this class supplies
+    color/context only, never touches the strobe channel itself.
+
+    `requires{wash or blinder, native strobe or dimmer}` left unset here,
+    matching `DropStrobeStab`'s/`PeakStrobeBlackout`'s own precedent for
+    the identical "the actual trigger lives in Reactive, not this Scene"
+    shape -- both are engine-owned, not something a Scene-level `requires`
+    token models today."""
+
+    name = "Build Snare Accent"
+    bucket = EnergyBucket.BUILD
+    min_hold_bars = 8
+    dark_pct = 0.20
+    reactivity_note = "audio:[accent flashes locked to detected snare subdivision, quantized to 1/8] (via ReactiveLayerEngine's own strobe channel, not this scene), kick_follow:false"
+    color_note = "not specified by the Bible for this look -- reuses bright white, same as DropStrobeStab's own accent choice"
+
+    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
+        c = Contribution()
+        r, g, b = 1.0, 1.0, 1.0  # bright white accent -- lets the strobe channel itself read as the "hit"
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.5 * intensity)
         return c
@@ -1148,4 +1192,7 @@ ALL_SCENES: list[type[Scene]] = [
     DropBlinderClear,
     # Gap fix, 2026-09-13 -- peak_strobe_blackout, missed by all 7 waves:
     PeakStrobeBlackout,
+    # build_snare_accent, 2026-09-14 -- depended on new snare-roll subdivision
+    # detection (core/snare_trigger.py), built out this session (Steps 0-3):
+    BuildSnareAccent,
 ]
