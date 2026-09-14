@@ -25,6 +25,18 @@ wired in here (tools/simulations/audio_pipeline_sim_v2.py):
     continuous bassline stays present even between kicks) and loses almost
     all its discriminative contrast — verified 1.06x vs 2.35x
     kick-to-quiet-gap. Don't derive one signal from the other.
+  - band_mid_abs / band_high_abs (2026-09-14, build_snare_accent Step 0):
+    the same un-normalized-magnitude idea, extended to the other two bands
+    — a snare/hi-hat onset detector needs this for the identical reason
+    the laser's kick detector needed band_low_abs: the normalized
+    band_mid/band_high fractions saturate near-constant during a groove
+    for the same structural reason band_low does, so they're unsuitable
+    for onset detection even though they're exactly right for hue
+    (two_axis_color's whole job). Not yet consumed by anything — this is
+    plumbing only, verified by the existing band-split simulation
+    (audio_pipeline_sim_v2.py already covers mean-per-bin correctness for
+    all three bands, not just low) — the detector itself is a separate,
+    not-yet-built step.
 """
 
 from __future__ import annotations
@@ -213,4 +225,6 @@ class AudioAnalyzer(InputSource):
             band_mid=m_mid / total,
             band_high=m_high / total,
             band_low_abs=m_low,
+            band_mid_abs=m_mid,
+            band_high_abs=m_high,
         ))

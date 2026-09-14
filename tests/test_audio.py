@@ -103,3 +103,30 @@ def test_band_low_abs_is_not_normalized_like_band_low():
     assert quiet_msg.band_low > 0.9 and loud_msg.band_low > 0.9
     # ...but the absolute signal still shows the real loudness difference.
     assert loud_msg.band_low_abs > quiet_msg.band_low_abs * 5
+
+
+def test_band_mid_abs_and_high_abs_are_not_normalized_either():
+    """build_snare_accent Step 0 (2026-09-14): a snare/hi-hat onset detector
+    needs the same un-normalized signal for the mid/high bands that the
+    laser's kick detector already gets for the low band -- same structural
+    reason, verified the same way (a pure tone's normalized fraction
+    saturates near-constant regardless of volume; the absolute magnitude
+    still tracks real loudness)."""
+    t = np.arange(BLOCK) / 44100
+    quiet_mid = (np.sin(2 * np.pi * 800 * t) * 0.1).astype(np.float32)
+    loud_mid = (np.sin(2 * np.pi * 800 * t) * 0.9).astype(np.float32)
+    quiet_high = (np.sin(2 * np.pi * 6000 * t) * 0.1).astype(np.float32)
+    loud_high = (np.sin(2 * np.pi * 6000 * t) * 0.9).astype(np.float32)
+
+    a = _analyzer()
+    a._analyze_block(quiet_mid, attack=1.0, release=1.0, np=np)
+    quiet_mid_msg = a.queue.get_nowait()
+    a._analyze_block(loud_mid, attack=1.0, release=1.0, np=np)
+    loud_mid_msg = a.queue.get_nowait()
+    assert loud_mid_msg.band_mid_abs > quiet_mid_msg.band_mid_abs * 5
+
+    a._analyze_block(quiet_high, attack=1.0, release=1.0, np=np)
+    quiet_high_msg = a.queue.get_nowait()
+    a._analyze_block(loud_high, attack=1.0, release=1.0, np=np)
+    loud_high_msg = a.queue.get_nowait()
+    assert loud_high_msg.band_high_abs > quiet_high_msg.band_high_abs * 5

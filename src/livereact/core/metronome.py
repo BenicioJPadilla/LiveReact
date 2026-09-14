@@ -322,6 +322,8 @@ class Metronome(threading.Thread):
         self._audio_band_mid = 0.333
         self._audio_band_high = 0.334
         self._audio_band_low_abs = 0.0
+        self._audio_band_mid_abs = 0.0    # build_snare_accent Step 0 (2026-09-14) -- plumbing only, unconsumed so far
+        self._audio_band_high_abs = 0.0   # same
         self._audio_rms = 0.0
 
         # freshness tracking
@@ -424,6 +426,8 @@ class Metronome(threading.Thread):
         self._audio_band_mid = msg.band_mid
         self._audio_band_high = msg.band_high
         self._audio_band_low_abs = msg.band_low_abs
+        self._audio_band_mid_abs = msg.band_mid_abs
+        self._audio_band_high_abs = msg.band_high_abs
         self._audio_rms = msg.rms
 
     def _note_crossfader(self, t: float, value: float) -> None:
@@ -781,6 +785,8 @@ class Metronome(threading.Thread):
             audio_band_mid=self._audio_band_mid,
             audio_band_high=self._audio_band_high,
             audio_band_low_abs=self._audio_band_low_abs,
+            audio_band_mid_abs=self._audio_band_mid_abs,
+            audio_band_high_abs=self._audio_band_high_abs,
             energy=self._energy,
             energy_norm=self._energy_norm,
             bucket=self._bucket_committed.value,

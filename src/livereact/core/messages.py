@@ -66,6 +66,10 @@ class AudioLevelMessage:
     normalized fraction saturates near-constant whenever any continuous bass
     is present, losing the contrast an onset trigger needs, while the
     absolute version keeps it. Don't derive one from the other downstream.
+    ``band_mid_abs``/``band_high_abs`` are the same absolute-energy idea for
+    the other two bands (2026-09-14, build_snare_accent Step 0) -- a snare/
+    hi-hat onset detector needs these for the identical structural reason;
+    not yet consumed by anything, plumbing only.
     """
 
     timestamp: float
@@ -74,6 +78,8 @@ class AudioLevelMessage:
     band_mid: float
     band_high: float
     band_low_abs: float
+    band_mid_abs: float
+    band_high_abs: float
 
 
 @dataclass(frozen=True)

@@ -106,7 +106,8 @@ def test_energy_prefers_fresh_audio_over_midi_proxy():
     for ctrl in ("eq_low_a", "eq_mid_a", "eq_high_a"):
         m.queue.put(MidiControlMessage(0.0, ctrl, 0.5))
     # ...but real audio says the room is much quieter -> that should win.
-    m.queue.put(AudioLevelMessage(0.0, rms=0.2, band_low=0.5, band_mid=0.3, band_high=0.2, band_low_abs=10.0))
+    m.queue.put(AudioLevelMessage(0.0, rms=0.2, band_low=0.5, band_mid=0.3, band_high=0.2,
+                                   band_low_abs=10.0, band_mid_abs=6.0, band_high_abs=4.0))
     snap = None
     for _ in range(300):
         snap = m.tick()
@@ -114,12 +115,16 @@ def test_energy_prefers_fresh_audio_over_midi_proxy():
     assert snap.energy == pytest.approx(0.2, abs=0.01)  # audio's 0.2, not MIDI's 0.8
     assert snap.audio_band_low == 0.5
     assert snap.audio_band_low_abs == 10.0
+    # build_snare_accent Step 0 (2026-09-14): the same plumbing for mid/high
+    assert snap.audio_band_mid_abs == 6.0
+    assert snap.audio_band_high_abs == 4.0
 
 
 def test_energy_falls_back_to_midi_when_audio_goes_stale():
     clock = FakeClock()
     m = _metronome(clock)
-    m.queue.put(AudioLevelMessage(0.0, rms=0.2, band_low=0.5, band_mid=0.3, band_high=0.2, band_low_abs=10.0))
+    m.queue.put(AudioLevelMessage(0.0, rms=0.2, band_low=0.5, band_mid=0.3, band_high=0.2,
+                                   band_low_abs=10.0, band_mid_abs=6.0, band_high_abs=4.0))
     m.queue.put(MidiControlMessage(0.0, "fader_a", 1.0))
     for ctrl in ("eq_low_a", "eq_mid_a", "eq_high_a"):
         m.queue.put(MidiControlMessage(0.0, ctrl, 0.5))
@@ -148,7 +153,8 @@ def _pump_audio(m: Metronome, clock: FakeClock, rms: float, seconds: float, step
     elapsed = 0.0
     while elapsed < seconds:
         m.queue.put(AudioLevelMessage(clock.monotonic(), rms=rms, band_low=0.5,
-                                       band_mid=0.3, band_high=0.2, band_low_abs=rms * 20))
+                                       band_mid=0.3, band_high=0.2,
+                                       band_low_abs=rms * 20, band_mid_abs=rms * 12, band_high_abs=rms * 8))
         m.tick()
         clock.advance(step)
         elapsed += step
@@ -194,14 +200,16 @@ def test_energy_norm_smooths_out_beat_to_beat_oscillation():
     for i in range(120):
         rms = baseline[i % len(baseline)]
         m.queue.put(AudioLevelMessage(clock.monotonic(), rms=rms, band_low=0.5,
-                                       band_mid=0.3, band_high=0.2, band_low_abs=rms * 20))
+                                       band_mid=0.3, band_high=0.2,
+                                       band_low_abs=rms * 20, band_mid_abs=rms * 12, band_high_abs=rms * 8))
         m.tick()
         clock.advance(0.5)
     samples = []
     for i in range(40):  # ~8s of alternating high/low, faster than a real kick
         rms = 0.6 if i % 2 == 0 else 0.15
         m.queue.put(AudioLevelMessage(clock.monotonic(), rms=rms, band_low=0.5,
-                                       band_mid=0.3, band_high=0.2, band_low_abs=rms * 20))
+                                       band_mid=0.3, band_high=0.2,
+                                       band_low_abs=rms * 20, band_mid_abs=rms * 12, band_high_abs=rms * 8))
         samples.append(m.tick().energy_norm)
         clock.advance(0.2)
     assert max(samples) - min(samples) < 0.35  # smoothed -- doesn't chase every toggle
@@ -215,7 +223,8 @@ def test_energy_norm_ignores_a_tiny_blip_after_extended_silence():
     m = _metronome(clock)
     _pump_audio(m, clock, rms=0.0, seconds=60.0)
     m.queue.put(AudioLevelMessage(clock.monotonic(), rms=0.08, band_low=0.5,
-                                   band_mid=0.3, band_high=0.2, band_low_abs=1.6))
+                                   band_mid=0.3, band_high=0.2,
+                                   band_low_abs=1.6, band_mid_abs=1.0, band_high_abs=0.6))
     assert m.tick().energy_norm == 0.0
 
 

@@ -55,12 +55,17 @@ class ShowSnapshot:
     # fractions for color; band_low_abs is the low band's un-normalized energy,
     # for the laser onset trigger specifically — VERIFIED these must stay two
     # separate signals (tools/simulations/audio_pipeline_sim_v2.py), not one
-    # derived from the other.
+    # derived from the other. band_mid_abs/band_high_abs (2026-09-14,
+    # build_snare_accent Step 0) extend the same idea to the other two bands
+    # for a future snare/hi-hat onset detector -- plumbing only, unconsumed
+    # by anything yet.
     audio_energy: float = 0.0
     audio_band_low: float = 0.333
     audio_band_mid: float = 0.333
     audio_band_high: float = 0.334
     audio_band_low_abs: float = 0.0
+    audio_band_mid_abs: float = 0.0
+    audio_band_high_abs: float = 0.0
 
     # --- derived ---
     energy: float = 0.0                  # inferred 0.0-1.0
