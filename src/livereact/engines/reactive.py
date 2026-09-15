@@ -112,14 +112,18 @@ STROBE_MAX = 0.75       # CEILING, Josh's explicit call (2026-09-14, live on rea
 # phase += hz * dt instead, so a ramping rate still flashes evenly.
 STROBE_TOGGLE_MAX_HZ = SAFETY_STROBE_SUSTAINED_MAX_HZ  # 4.0 -- rate01 == STROBE_MAX maps here
 
-# On-phase brightness of every strobe flash: Josh's cap byte (2026-09-14:
-# "around 130-150", WashBar.STROBE_BRIGHTNESS_CAP_DMX) -- ALWAYS, not the
-# ambient wash level. The third capture showed the build's flashes riding
-# the 20%-start wash ramp: 12-25% brightness for the first three bars,
+# On-phase brightness of every strobe flash -- a BYTE, never the ambient
+# wash level. The third capture showed the build's flashes riding the
+# 20%-start wash ramp: 12-25% brightness for the first three bars,
 # invisible. Josh's call (2026-09-15): flash at the cap, dark between, and
-# let the build be a RATE ramp. Same number for the par -- not independently
-# confirmed on that fixture; watch it live.
-STROBE_FLASH_DMX = WashBar.STROBE_BRIGHTNESS_CAP_DMX  # 140
+# let the build be a RATE ramp. After the fourth test ("it can reach a
+# higher peak"): the cap went 140 -> 180, and the BUILD's flash now climbs
+# from STROBE_FLASH_START_DMX (the old 140) to the cap alongside the rate
+# ramp, so the top of a build is both faster AND brighter than its start
+# without touching the 4 Hz line. DROP/PEAK tail bursts flash at the cap.
+# Same bytes on the par -- not independently confirmed on that fixture.
+STROBE_FLASH_DMX = WashBar.STROBE_BRIGHTNESS_CAP_DMX  # 180
+STROBE_FLASH_START_DMX = 140
 
 # Burst-duration limit (LIGHTING_BIBLE.md §13, 2026-09-08 audit): "assert
 # strobe_burst_duration <= 1.5s then a mandatory gap." Previously the reactive
@@ -625,6 +629,7 @@ class ReactiveLayerEngine:
         self.strobe_level = 0.0     # exposed for the recorder: last post-gate 0..STROBE_MAX rate
         self._strobe_clock = _StrobeClock(clock)  # ONE clock for par + wash bar, see STROBE_TOGGLE_MAX_HZ
         self.strobe_on = False      # exposed for the recorder/visualizer: this tick's flash phase
+        self.strobe_flash_dmx = STROBE_FLASH_DMX  # this tick's ON-phase byte (BUILD ramps it, see _build_strobe_rate)
         self._drop_entry_bar: int | None = None  # bar the current DROP landed on; phrase origin for _strobe_rate
         self._prev_bucket: EnergyBucket | None = None    # to detect a bucket change
         self._build_entry_pos: float | None = None       # musical position (bars) BUILD was entered at
@@ -663,6 +668,7 @@ class ReactiveLayerEngine:
                                  # above) -- kept "live" for `self.kick_level` and any
                                  # future accent feature, just not used for wash_level
         wash_level = self._bucket_wash_level(snap)  # also records DROP entry (phrase origin for strobe)
+        self.strobe_flash_dmx = STROBE_FLASH_DMX  # _build_strobe_rate lowers it early in a build
         strobe = self._snare_accent_strobe_rate(snap)
         self.strobe_level = strobe
 
@@ -687,7 +693,7 @@ class ReactiveLayerEngine:
                         # _intensity_to8): the cap is a byte Josh chose by eye
                         # on the real fixture, and the same byte on both
                         # fixtures is the point.
-                        c.set(fx.offset + 1, STROBE_FLASH_DMX)  # ch1 dimmer, 1-based
+                        c.set(fx.offset + 1, self.strobe_flash_dmx)  # ch1 dimmer, 1-based
                 else:
                     fx.set_intensity(c, wash_level)
 
@@ -803,6 +809,7 @@ class ReactiveLayerEngine:
         pos = musical_bar_position(snap)
         entry = self._build_entry_pos if self._build_entry_pos is not None else pos
         progress = max(0.0, min(1.0, (pos - entry) / BUILD_STROBE_RAMP_BARS))
+        self.strobe_flash_dmx = round(STROBE_FLASH_START_DMX + (STROBE_FLASH_DMX - STROBE_FLASH_START_DMX) * progress)
         return STROBE_MAX * (BUILD_STROBE_START + (1.0 - BUILD_STROBE_START) * progress)
 
     def _musical_position(self, snap: ShowSnapshot) -> float:

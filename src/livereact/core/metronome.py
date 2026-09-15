@@ -240,7 +240,15 @@ PER_STATE_DWELL_S = {b: bars * SECONDS_PER_BAR for b, bars in PER_STATE_DWELL_BA
 # ON TOP OF the per-state floor above (a state's own PER_STATE_DWELL_S must
 # already have elapsed before an exit is even considered at all; these two
 # numbers gate the CANDIDATE's own persistence once that floor is cleared).
-FAST_ENTRY_DWELL_S = 2.0 * 60.0 / NOMINAL_BPM   # ~0.94s at 128 BPM
+FAST_ENTRY_DWELL_S = 2.0 * 60.0 / NOMINAL_BPM   # ~0.94s at 128 BPM -- a 1-beat
+                                                 # version was tried 2026-09-15
+                                                 # (builds/drops ~0.5s sooner) and
+                                                 # rejected: one isolated cue-tap
+                                                 # in silence (session-20260915-
+                                                 # 121503 @844s, raw 0.51 for 0.5s)
+                                                 # became a 9s BUILD, exactly the
+                                                 # false start the instantaneous
+                                                 # re-check exists to block.
 EXIT_CONFIRM_DWELL_S = 4.0 * 60.0 / NOMINAL_BPM  # ~1.88s at 128 BPM
 CUT_EXIT_CONFIRM_S = 2.0 * SECONDS_PER_BAR       # ~3.75s: a BREAK-range reading that
                                                  # persists this long mid-DROP is a
@@ -704,6 +712,23 @@ class Metronome(threading.Thread):
             return
 
         raw = bucket_for_energy_with_hysteresis(self._energy_norm, self._base_committed)
+        # A DROP/PEAK breakdown exits on the sound RIGHT NOW (2026-09-15,
+        # recordings/session-20260915-140630): the music dropped out at
+        # 158.6s but the smoothed value (3s release tau, which exists to
+        # ride out beat-to-beat dips) took until 164s to fall under the
+        # BREAK boundary, so the break look arrived ~10s after the
+        # breakdown. The unsmoothed twin was already there. Only the
+        # DROP -> BREAK direction reads it: a mid-drop dip between kicks
+        # can't fake this, because the candidate below must then persist
+        # for a full confirmation (EXIT_CONFIRM_DWELL_S / CUT_EXIT_CONFIRM_S)
+        # with the instantaneous level staying under the boundary the whole
+        # time -- i.e. real quiet. Upward moves stay on the smoothed value
+        # (leading them with the instantaneous level was tried the same day
+        # and made builds start LATER: kick-by-kick spikes kept resetting
+        # the candidate).
+        if (self._base_committed == EnergyBucket.DROP and self._energy_norm_inst is not None
+                and bucket_for_energy_with_hysteresis(self._energy_norm_inst, self._base_committed) == EnergyBucket.BREAK):
+            raw = EnergyBucket.BREAK
 
         # Beat-quantized DROP release (Bible-integration Phase 3, D1 in
         # docs/bible_integration/SPEC_DEVIATIONS.md) -- RETIRED for the

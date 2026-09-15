@@ -8,7 +8,8 @@ from livereact.clock import FakeClock
 from livereact.core.show_state import ShowSnapshot
 from livereact.engines.palette import rgb as palette_rgb
 from livereact.engines.reactive import (
-    BUILD_STROBE_START, DROP_HELD_HIGH, DROP_HELD_LOW, PEAK_BOOST, STROBE_FLASH_DMX, STROBE_MAX,
+    BUILD_STROBE_START, DROP_HELD_HIGH, DROP_HELD_LOW, PEAK_BOOST, STROBE_FLASH_DMX, STROBE_FLASH_START_DMX,
+    STROBE_MAX,
     STROBE_TOGGLE_MAX_HZ, ReactiveLayerEngine, _StrobeClock, _drop_held_level,
 )
 from livereact.fixtures.profiles import WashBar
@@ -193,11 +194,33 @@ def test_par_and_wash_bar_flash_on_the_same_frames_at_the_cap_byte():
         c = eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
         par_d, bar_d = _dimmers(c, rig)
         assert par_d == bar_d, "par and wash bar must toggle on the same DMX frame"
-        assert par_d in (0, STROBE_FLASH_DMX)
+        assert par_d in (0, STROBE_FLASH_START_DMX)  # a build's first bars flash at the start byte
         assert c.values[bar.offset + 1] == 0, "wash bar native ch2 strobe must never be written"
-        seen_on |= par_d == STROBE_FLASH_DMX
+        seen_on |= par_d == STROBE_FLASH_START_DMX
         seen_off |= par_d == 0
     assert seen_on and seen_off
+
+
+def test_build_flash_brightness_climbs_to_the_cap_and_drop_tail_uses_the_cap():
+    """Josh, after the fourth live test: "it can reach a higher peak ... raise
+    it to 180." The build's flash byte ramps STROBE_FLASH_START_DMX -> the
+    cap alongside the rate ramp; DROP/PEAK tail bursts flash at the cap."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    assert eng.strobe_flash_dmx == STROBE_FLASH_START_DMX
+    clock.advance(3.75)
+    eng.tick(_snap(bar=3, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    assert STROBE_FLASH_START_DMX < eng.strobe_flash_dmx < STROBE_FLASH_DMX
+    clock.advance(3.75)
+    eng.tick(_snap(bar=6, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    assert eng.strobe_flash_dmx == STROBE_FLASH_DMX
+    eng2 = ReactiveLayerEngine(FakeClock())
+    _enter_drop(eng2, rig)
+    c = eng2.tick(_snap(energy=1.0, bar=7, beat_in_bar=3, beat_phase=0.0, bucket="drop"), rig)
+    assert eng2.strobe_flash_dmx == STROBE_FLASH_DMX == 180
+    assert _dimmers(c, rig)[0] in (0, STROBE_FLASH_DMX)
 
 
 def test_strobe_toggle_stays_regular_while_the_rate_ramps():

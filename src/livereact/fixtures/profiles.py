@@ -571,8 +571,10 @@ class WashBar(Fixture):
     type_name = "ok103_wash_bar"
     channel_count = 6
 
-    STROBE_BRIGHTNESS_CAP_DMX = 140  # Josh's explicit call (2026-09-14, live on
-        # real hardware): "around 130-150." A full-white, full-brightness
+    STROBE_BRIGHTNESS_CAP_DMX = 180  # Josh's explicit call (2026-09-14, live on
+        # real hardware): "around 130-150" -> 140; raised to 180 2026-09-15
+        # after the fourth live test ("it can reach a higher peak ... I
+        # think we can raise it to 180"). A full-white, full-brightness
         # strobe burst can blind people, so while ch2 (strobe) is actively
         # nonzero, ch1 (dimmer) is clamped to this max regardless of what the
         # engine/scene layer wanted. Purely a brightness clamp -- unrelated to
