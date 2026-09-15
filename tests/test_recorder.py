@@ -7,10 +7,10 @@ import os
 
 from livereact.clock import FakeClock
 from livereact.core.frame_buffer import UNIVERSE_SIZE, DmxFrameBuffer
-from livereact.core.laser_trigger import LaserOnsetDetector
 from livereact.core.show_state import ShowSnapshot, ShowState
 from livereact.core.silence import SilenceDetector
 from livereact.diagnostics import collect_environment, format_report
+from livereact.engines.laser import LaserEngine
 from livereact.engines.phrase import PhraseEngine
 from livereact.engines.reactive import ReactiveLayerEngine
 from livereact.fixtures.rig import load_rig
@@ -73,7 +73,7 @@ def test_recorder_without_engine_refs_still_works_unchanged():
     rec.tick()
     row = json.loads(rec._fh.getvalue())
     assert row["bpm"] == 128.0
-    assert "wash_level" not in row and "scene" not in row and "laser_flash_active" not in row
+    assert "wash_level" not in row and "scene" not in row and "laser_on" not in row
 
 
 def test_recorder_captures_engine_and_rig_internals_when_given(tmp_path):
@@ -90,13 +90,13 @@ def test_recorder_captures_engine_and_rig_internals_when_given(tmp_path):
     clock = FakeClock()
     reactive = ReactiveLayerEngine(clock)
     phrase = PhraseEngine()
-    laser = LaserOnsetDetector(clock)
+    laser = LaserEngine(clock)
     silence = SilenceDetector(clock)
     fb.publish(rig.boot_universe())
 
     rec = SessionRecorder(
         state, fb, clock, __import__("threading").Event(), str(tmp_path),
-        reactive_engine=reactive, phrase_engine=phrase, laser_trigger=laser,
+        reactive_engine=reactive, phrase_engine=phrase, laser_engine=laser,
         silence_detector=silence, rig=rig,
     )
     rec.open()
@@ -109,7 +109,8 @@ def test_recorder_captures_engine_and_rig_internals_when_given(tmp_path):
     assert row["wash_level"] == reactive.wash_level
     assert row["scene"] == phrase._current.name
     assert row["scene_uses_lasers"] == phrase._current.uses_lasers
-    assert row["laser_flash_active"] == laser.active
+    assert row["laser_on"] == laser.active
+    assert row["laser_sweep"] == round(laser.sweep, 3)
     assert row["silence_active"] == silence.active
     # per-fixture DMX-derived fields exist for every real fixture in the rig
     for fx in rig.fixtures:

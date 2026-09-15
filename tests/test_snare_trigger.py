@@ -1,6 +1,6 @@
 """Tests for SnareOnsetDetector (build_snare_accent Step 1) and
 SnareRollDetector (Step 2) — driven deterministically with a FakeClock,
-same pattern as LaserOnsetDetector's own tests."""
+same pattern as the metronome tests."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def test_fails_closed_when_audio_is_not_connected():
 
 
 def test_warmup_gate_suppresses_false_triggers_on_a_steady_signal_at_startup():
-    """Same shape as LaserOnsetDetector's own warmup bug (docs/14, 2026-09-01,
+    """Same shape as the old laser kick-onset detector's warmup bug (docs/14, 2026-09-01,
     found by testing): the rolling average starts at 0.0, so without a
     warmup guard, any steady non-spiking signal looks like a huge spike for
     the first several ticks after startup."""
@@ -76,7 +76,7 @@ def test_refractory_period_blocks_an_immediate_re_fire():
 
 
 def test_reconnecting_after_stale_audio_resets_the_rolling_average():
-    """Same rationale as LaserOnsetDetector: don't let a stale reading (or
+    """Same rationale as engines/laser.py's envelope: don't let a stale reading (or
     the state built up before a dropout) pollute detection on reconnect --
     the rolling average and warmup both restart clean."""
     clock = FakeClock()

@@ -184,7 +184,7 @@ class PhraseEngine:
         # snap.bucket -- an ALREADY-DEBOUNCED, already-adaptively-rescaled
         # bucket_for_energy(energy_norm), computed once in metronome.py (see
         # BUCKET_MIN_DWELL_S there), not a fresh call here. Same reasoning as
-        # reactive.py and laser_trigger.py: one shared notion of "what bucket
+        # reactive.py and engines/laser.py: one shared notion of "what bucket
         # is this," not independently (and previously drift-prone) recomputed
         # per engine (found live 2026-09-07, see show_state.py's bucket
         # docstring).

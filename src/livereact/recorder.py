@@ -74,7 +74,7 @@ class SessionRecorder(threading.Thread):
         hz: float = 10.0,
         reactive_engine=None,
         phrase_engine=None,
-        laser_trigger=None,
+        laser_engine=None,
         silence_detector=None,
         rig=None,
     ) -> None:
@@ -100,7 +100,7 @@ class SessionRecorder(threading.Thread):
         self.hz = hz
         self.reactive_engine = reactive_engine
         self.phrase_engine = phrase_engine
-        self.laser_trigger = laser_trigger
+        self.laser_engine = laser_engine
         self.silence_detector = silence_detector
         self.rig = rig
         self.samples = 0
@@ -169,8 +169,9 @@ class SessionRecorder(threading.Thread):
         if self.phrase_engine is not None:
             record["scene"] = self.phrase_engine._current.name
             record["scene_uses_lasers"] = self.phrase_engine._current.uses_lasers
-        if self.laser_trigger is not None:
-            record["laser_flash_active"] = self.laser_trigger.active
+        if self.laser_engine is not None:
+            record["laser_on"] = self.laser_engine.active        # engines/laser.py: DROP/PEAK gate open
+            record["laser_sweep"] = round(self.laser_engine.sweep, 3)  # the wub envelope driving CH7
         if self.silence_detector is not None:
             record["silence_active"] = self.silence_detector.active
         if self.rig is not None:

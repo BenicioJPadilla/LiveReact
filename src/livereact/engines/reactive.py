@@ -499,7 +499,7 @@ class ReactiveLayerEngine:
                                             # real monotonic clock reads > 0.0)
         # build_snare_accent delivery (2026-09-14) -- Steps 0-2's detectors,
         # owned and driven HERE (not a separate top-level engine like
-        # LaserOnsetDetector) so the roll-triggered rate shares one strobe
+        # the laser layer) so the roll-triggered rate shares one strobe
         # output with the ambient path (_snare_accent_strobe_rate). Since
         # 2026-09-15 each source has its own _BurstGate -- see
         # ROLL_STROBE_MIN_SPACING_S for why the shared gate was retired.

@@ -118,7 +118,7 @@ def analyze(audio):
     return times, band_mid_abs, band_high_abs
 
 
-# ------------------------------------------------------------------ detector: same shape as LaserOnsetDetector
+# ------------------------------------------------------------------ detector: same shape as the old laser kick-onset detector (retired 2026-09-15)
 def snare_onset_detector(times, energy, ratio, floor, refractory_s, alpha):
     avg = np.zeros(len(energy))
     prev = energy[0]

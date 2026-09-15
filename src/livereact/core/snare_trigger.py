@@ -11,8 +11,8 @@ anything about audio at all, only a boolean and a bucket string.
 VERIFIED BY SIMULATION before being wired in here (tools/simulations/
 snare_onset_sim.py, a synthetic groove with 42 known backbeat snare hits
 AND 86 hi-hats sharing the SAME high band the snare's own "hiss" lives
-in): the laser's kick detector own tuned ratio (`laser_trigger.py`'s
-`TRIGGER_RATIO=1.8`) is NOT safe to reuse blindly here just because the
+in): the laser's old kick-onset detector's tuned ratio (`TRIGGER_RATIO=1.8`,
+retired 2026-09-15 with engines/laser.py) is NOT safe to reuse blindly here just because the
 algorithm shape is the same -- at 1.8 this produced only 47.7% precision
 on the synthetic track, with roughly half the false positives landing
 exactly on a hi-hat, not noise (a hi-hat is real high-band energy, not a
@@ -76,7 +76,7 @@ class SnareOnsetDetector:
         self._rolling_avg = 0.0
         self._last_fire_t = -999.0
         self._fresh_since: float | None = None  # when audio most recently became fresh
-        self.active = False  # exposed for the console/telemetry, same pattern as LaserOnsetDetector
+        self.active = False  # exposed for the console/telemetry
 
     def update(self, snap: ShowSnapshot) -> bool:
         now = self.clock.monotonic()

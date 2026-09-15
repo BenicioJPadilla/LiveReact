@@ -21,10 +21,11 @@ from .core.frame_buffer import DmxFrameBuffer
 from .core.metronome import Metronome
 from .core.show_engine import ShowEngine
 from .core.show_state import ShowState
+from .engines.laser import LaserEngine
 from .engines.phrase import PhraseEngine
-from .scenes.catalog import SceneCatalog
 from .engines.reactive import ReactiveLayerEngine
 from .engines.transition import TransitionEngine
+from .scenes.catalog import SceneCatalog
 from .fixtures.rig import Rig, load_rig
 from .inputs.demo import DemoDataSource
 from .merge.merge import ManualParams
@@ -53,14 +54,13 @@ class AppConfig:
         # docs/bible_integration/ and /Users/joshuaracimora/.claude/plans/adaptive-squishing-pebble.md.
     full_catalog: bool = False  # rotate ALL_SCENES instead of the one-look-per-bucket
         # CORE_SCENES default (scenes/library.py, 2026-09-15) -- see --full-catalog.
-    laser_height_override_m: float | None = None  # SESSION-SCOPED test override for
-        # LASER-09/10/11's geometry safety gate (fixtures/profiles.py Laser.apply_safety).
-        # Deliberately NOT persisted to the rig manifest -- operator must type this
-        # explicitly every run (see __main__.py's --laser-height-override-m) so a real,
-        # below-minimum mount height never silently gets treated as compliant. Set
-        # ONLY when the operator has independently confirmed the beam path is safe for
-        # this specific session (e.g. protective eyewear, controlled aim) -- this does
-        # not change the fixture's actual physical safety, just what the software checks.
+    testing: bool = False  # SESSION-SCOPED bench/testing mode (`--testing`, Josh 2026-09-15:
+        # "in the testing phase the laser is always in a safe spot and there's no
+        # crowd"). Bypasses ONLY the LASER-09 mount-height check in
+        # fixtures/profiles.py's Laser.apply_safety (the arm switch still applies).
+        # Never persisted -- typed every run -- so a real show can't inherit it. It
+        # does not change the fixture's physical safety, only what the software checks;
+        # the operator owns the beam path for that session.
 
 
 class App:
@@ -95,18 +95,16 @@ class App:
 
         # --- show pipeline (Phases 3-4): snapshot -> engines -> merge -> frame buffer ---
         self.rig: Rig = load_rig(self.config.rig_path)
-        if self.config.laser_height_override_m is not None:
+        if self.config.testing:
             for fx in self.rig.by_role("laser"):
+                fx.safety_test_mode = True
                 real = fx.mount_height_m
-                fx.mount_height_m = self.config.laser_height_override_m
                 log.warning(
-                    "LASER SAFETY OVERRIDE ACTIVE (%s): treating mount_height_m as "
-                    "%.2fm this session only -- real declared height is %s. This "
-                    "does not change the fixture's actual physical safety, only "
-                    "what the geometry check (LASER-09/10/11) allows. Not saved "
-                    "to the rig file.",
-                    fx.slot_id, self.config.laser_height_override_m,
-                    f"{real:.2f}m" if real is not None else "undeclared",
+                    "TESTING MODE: laser %s may fire this session regardless of its "
+                    "declared mount height (%s; LASER-09 needs >= %.1f m). No crowd, "
+                    "beam path confirmed safe -- that's on the operator. Not saved anywhere.",
+                    fx.slot_id, f"{real:.2f} m" if real is not None else "undeclared",
+                    fx.min_beam_height_m,
                 )
         self.manual = ManualParams()
         if self.config.config_path:
@@ -118,14 +116,17 @@ class App:
             self.manual.laser_enable = True
         self.phrase_engine = PhraseEngine(SceneCatalog(full=self.config.full_catalog))
         self.reactive_engine = ReactiveLayerEngine(self.clock)
-        # Order matters: Reactive base, then Phrase (scene movement/laser win via
-        # last-write), then Transition (its lift max-merges over the held look).
-        self.engines = [self.reactive_engine, self.phrase_engine, TransitionEngine()]
+        self.laser_engine = LaserEngine(self.clock)
+        # Merge is LTP-by-priority per channel kind (merge/merge.py), so list
+        # order is cosmetic: Reactive (25) base, Phrase (50) look, Laser (60)
+        # owns the laser channels, Transition (100) lift.
+        self.engines = [self.reactive_engine, self.phrase_engine, self.laser_engine, TransitionEngine()]
         self.show_engine = ShowEngine(
             self.show_state, self.rig, self.frame_buffer, self.engines,
             self.manual, self.clock, self.stop_event,
             phrase_engine=self.phrase_engine,
             bible_failsafe_enabled=self.config.bible_failsafe_enabled,
+            laser_engine=self.laser_engine,
         )
 
         # Core engine threads (always present). Input sources are managed separately
@@ -147,11 +148,14 @@ class App:
             "mode": "demo" if self.config.demo else "hardware",
             "dmx_rate_hz": self.config.dmx_rate_hz,
             "pdl_interface": self.config.pdl_interface,
+            "rig_path": self.config.rig_path,
+            "testing": self.config.testing,
+            "full_catalog": self.config.full_catalog,
         })
         self.recorder = SessionRecorder(
             self.show_state, self.frame_buffer, self.clock, self.stop_event, session_dir,
             reactive_engine=self.reactive_engine, phrase_engine=self.phrase_engine,
-            laser_trigger=self.show_engine.laser_trigger, silence_detector=self.show_engine.silence,
+            laser_engine=self.laser_engine, silence_detector=self.show_engine.silence,
             rig=self.rig,
         )
         self._core_threads.append(self.recorder)

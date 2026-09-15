@@ -23,7 +23,6 @@ from ..merge.merge import (
 )
 from ..scenes.base import SAFE_DEFAULT
 from .frame_buffer import DmxFrameBuffer
-from .laser_trigger import LaserOnsetDetector
 from .show_state import ShowState
 from .silence import SilenceDetector
 
@@ -43,6 +42,7 @@ class ShowEngine(threading.Thread):
         hz: float = 60.0,
         phrase_engine=None,
         bible_failsafe_enabled: bool = False,
+        laser_engine=None,
     ) -> None:
         super().__init__(name="show-engine", daemon=False)
         self.show_state = show_state
@@ -53,14 +53,16 @@ class ShowEngine(threading.Thread):
         self.clock = clock
         self.stop_event = stop_event
         self.hz = hz
-        # Named reference (2026-09-07, see [[livereact-project]] memory) so the
-        # laser trigger can be gated on the ACTIVE scene's own `uses_lasers` --
-        # confirmed live that without this, the laser fires happily during
-        # scenes that can't even show it. Optional/defaults None (rather than
-        # required) so anything constructing a bare ShowEngine without a
-        # PhraseEngine (e.g. a minimal test harness) still works -- the gate
-        # just falls back to LaserOnsetDetector's own default (True) then.
+        # Named reference for the console/recorder (the active look's name).
+        # Optional/defaults None so a bare ShowEngine without a PhraseEngine
+        # (e.g. a minimal test harness) still works.
         self.phrase_engine = phrase_engine
+        # engines/laser.py's LaserEngine -- the one authority over the laser
+        # channels (2026-09-15). It must ALSO be in `engines` (that's where it
+        # renders); this reference is for the finalize gate below, which
+        # reads its `.active` after the engines have ticked. None (e.g. a
+        # minimal test harness) means the gate stays closed: no laser.
+        self.laser_engine = laser_engine
         # Bible-integration Phase 1, LOOK-08/FAIL-04, gig-safe migration flag
         # (docs/bible_integration/, /Users/joshuaracimora/.claude/plans/
         # adaptive-squishing-pebble.md): off by default so the old
@@ -71,7 +73,6 @@ class ShowEngine(threading.Thread):
         self._last: dict[str, Contribution] = {}
         self._last_tick_t: float | None = None  # for dt -> movement slew-limiting (LIGHTING_BIBLE.md §6.6)
         self.silence = SilenceDetector(clock)  # docs/14 §2; .active exposed for the console
-        self.laser_trigger = LaserOnsetDetector(clock)  # docs/14 §3; .active exposed for the console
 
     def run(self) -> None:  # pragma: no cover - thin wrapper around tick()
         timer = LoopTimer(self.clock, self.hz)
@@ -111,12 +112,11 @@ class ShowEngine(threading.Thread):
         self._last_tick_t = now
 
         auto_blackout = self.silence.update(snap)
-        scene_uses_lasers = self.phrase_engine._current.uses_lasers if self.phrase_engine else True
-        laser_flash = self.laser_trigger.update(snap, scene_uses_lasers)
+        laser_on = bool(self.laser_engine.active) if self.laser_engine is not None else False
         safe_default_frame = None
         if self.bible_failsafe_enabled and auto_blackout:
             safe_default_frame = merge_contributions([SAFE_DEFAULT.render(self.rig, snap, 1.0)], self.rig)
         frame = finalize(merge_contributions(contributions, self.rig), self.rig, self.manual,
-                          auto_blackout, laser_flash, dt, safe_default_frame, snap.drop_pending)
+                          auto_blackout, laser_on, dt, safe_default_frame, snap.drop_pending)
         self.frame_buffer.publish(frame)
         return frame

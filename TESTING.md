@@ -295,6 +295,11 @@ python -m livereact --net-check          # check the link-local IP + firewall fi
 python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json
 ```
 
+> **Laser on the bench:** add `--testing` when the laser is in a confirmed-safe spot with no
+> crowd. Josh's rig declares the laser at 0.91 m (below the 3 m rule), so without `--testing`
+> the software forces it off every run. The laser only lights in DROP/PEAK anyway
+> (`engines/laser.py`), and never at a show with this flag.
+
 Play a track on the XDJ-XZ.
 
 **Expected:** in the console, BPM shows the track tempo, the beat/bar counters

@@ -163,6 +163,7 @@ class DropStrobeStab(Scene):
 
     name = "Drop Strobe Stab"
     bucket = EnergyBucket.DROP
+    uses_lasers = True  # the laser layer (engines/laser.py) may run over this look -- Josh, 2026-09-15
     min_hold_bars = 8
     dark_pct = 0.20
     reactivity_note = "audio:[strobe gated to drop-accent bars only] -- via the Reactive layer's own strobe toggle, not this scene"
@@ -257,6 +258,7 @@ class PeakFullRig(Scene):
 
     name = "Peak Full Rig"
     bucket = EnergyBucket.PEAK
+    uses_lasers = True  # the laser layer (engines/laser.py) may run over this look -- Josh, 2026-09-15
     dark_pct = 0.10
     min_hold_bars = 8
     reactivity_note = "static hue+pan, kick_follow:false -- hue phrase-frozen via engines/palette.py since 2026-09-15"
@@ -753,7 +755,7 @@ class DropLaserPunctuation(Scene):
 
     Deliberately touches ONLY the laser channels -- "punctuation," not a
     full-rig look (LIGHTING_BIBLE.md §8.5's restraint principle, already
-    the design behind `LaserOnsetDetector` elsewhere) -- wash/spot are left
+    the design behind engines/laser.py's own gating) -- wash/spot are left
     to whatever else is already rendering, same restraint as
     OutroSingleBeam's own wash omission."""
 

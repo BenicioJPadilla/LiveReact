@@ -108,7 +108,7 @@ def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearra
 
 
 def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: bool = False,
-             laser_flash_active: bool = False, dt: float = 1.0 / 60.0,
+             laser_on: bool = False, dt: float = 1.0 / 60.0,
              safe_default_frame: bytes | None = None, drop_pending: bool = False) -> bytes:
     """Apply manual biases/caps + safety clamps and return the wire-ready universe.
 
@@ -119,10 +119,10 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
     triggers rather than one shared flag so the operator's manual switch and the
     system's automatic one never fight over the same piece of state.
 
-    ``laser_flash_active`` (docs/14 §3: core/laser_trigger.py) additionally
-    gates the laser specifically — armed + an eligible scene is still required
-    (apply_safety, unchanged), this only controls whether that's currently
-    showing through as a brief flash on a real detected onset, vs. held on.
+    ``laser_on`` (engines/laser.py's LaserEngine.active) additionally gates
+    the laser specifically — armed (apply_safety, unchanged) is still
+    required; this only controls whether the laser layer's DROP/PEAK moment
+    is currently open, so nothing else can light the laser outside one.
 
     ``dt`` (LIGHTING_BIBLE.md §6.6, 2026-09-08) is the real elapsed time since
     the last finalized frame, used by movement slew-limiting (a no-op on
@@ -175,14 +175,14 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
         fx.apply_safety(out, manual.laser_enable)          # laser fail-safe
         fx.apply_home_position(out)                        # docs/14 §4: bound around a calibrated home
         fx.apply_slew_limit(out, dt)                        # LIGHTING_BIBLE.md §6.6: protect motors from instant jumps
-        fx.apply_onset_gate(out, laser_flash_active)        # docs/14 §3: flash on real hits, not held on
+        fx.apply_laser_gate(out, laser_on)                  # engines/laser.py: only during a laser moment
     return bytes(out)
 
 
 def render_universe(
     contributions: list[Contribution], rig: Rig, manual: ManualParams | None = None,
-    auto_blackout: bool = False, laser_flash_active: bool = False,
+    auto_blackout: bool = False, laser_on: bool = False,
 ) -> bytes:
     """Convenience: merge + finalize in one call."""
     return finalize(merge_contributions(contributions, rig), rig, manual or ManualParams(),
-                     auto_blackout, laser_flash_active)
+                     auto_blackout, laser_on)

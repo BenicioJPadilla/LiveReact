@@ -293,21 +293,21 @@ def test_laser_safety_zeros_channels_below_the_minimum_beam_height():
     assert uni[laser.offset] == 0
 
 
-def test_laser_onset_gate_zeros_when_not_flashing():
+def test_laser_gate_zeros_when_the_laser_layer_is_off():
     """docs/14 §3: additive to apply_safety — armed+enabled alone (which the
     two tests above already cover) isn't enough to show the laser now."""
     laser = Laser(31, "Laser", "laser", "left")
     uni = _uni()
     uni[laser.offset] = Laser.MANUAL_PATTERN_MODE
-    laser.apply_onset_gate(uni, flash_active=False)
+    laser.apply_laser_gate(uni, laser_on=False)
     assert all(uni[laser.offset + i] == 0 for i in range(12))
 
 
-def test_laser_onset_gate_leaves_channels_when_flashing():
+def test_laser_gate_leaves_channels_when_the_laser_layer_is_on():
     laser = Laser(31, "Laser", "laser", "left")
     uni = _uni()
     uni[laser.offset] = Laser.MANUAL_PATTERN_MODE
-    laser.apply_onset_gate(uni, flash_active=True)
+    laser.apply_laser_gate(uni, laser_on=True)
     assert uni[laser.offset] == Laser.MANUAL_PATTERN_MODE
 
 

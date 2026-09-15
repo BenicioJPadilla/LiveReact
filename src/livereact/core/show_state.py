@@ -81,7 +81,7 @@ class ShowSnapshot:
     # a real stretch of time before this changes, so it doesn't flip every time
     # energy_norm brushes a boundary. Read this, not a fresh bucket_for_energy
     # call, wherever "what bucket are we in" matters (reactive.py, phrase.py,
-    # laser_trigger.py all do) -- one shared, already-debounced answer, not
+    # engines/laser.py all do) -- one shared, already-debounced answer, not
     # three independent (and previously drift-prone) ones. Plain str, not the
     # EnergyBucket enum itself: this module can't import scenes/base.py (it
     # imports scenes/base.py's own Scene.render(snap: ShowSnapshot) type hint,

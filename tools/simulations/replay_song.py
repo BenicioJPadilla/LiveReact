@@ -53,6 +53,7 @@ from livereact.core.metronome import Metronome
 from livereact.core.show_engine import ShowEngine
 from livereact.core.show_state import ShowState
 from livereact.core.frame_buffer import DmxFrameBuffer
+from livereact.engines.laser import LaserEngine
 from livereact.engines.phrase import PhraseEngine
 from livereact.engines.reactive import ReactiveLayerEngine
 from livereact.engines.transition import TransitionEngine
@@ -153,11 +154,14 @@ def run(mp3_path: str, bpm: float, duration: float | None, rig_path: str, out_pr
     rig = load_rig(rig_path)
     reactive = ReactiveLayerEngine(clock)
     phrase = PhraseEngine()
+    laser_engine = LaserEngine(clock)
     transition = TransitionEngine()
     frame_buffer = DmxFrameBuffer()
     manual = ManualParams(laser_enable=True)  # so the laser isn't suppressed for this analysis
-    show_engine = ShowEngine(show_state, rig, frame_buffer, [reactive, phrase, transition],
-                              manual, clock, stop_event)
+    for fx in rig.by_role("laser"):
+        fx.safety_test_mode = True  # offline analysis: same bypass as `--testing`
+    show_engine = ShowEngine(show_state, rig, frame_buffer, [reactive, phrase, laser_engine, transition],
+                              manual, clock, stop_event, laser_engine=laser_engine)
 
     fixtures = {slot: rig.fixture(slot) for slot in FIXTURE_SLOTS}
 
@@ -210,8 +214,8 @@ def run(mp3_path: str, bpm: float, duration: float | None, rig_path: str, out_pr
             bucket_flips += 1
         prev_bucket = bucket
 
-        laser_flash_active = show_engine.laser_trigger.active
-        if laser_flash_active:
+        laser_on = laser_engine.active
+        if laser_on:
             laser_ticks += 1
         if snap.energy > 0.85:
             over_strobe_threshold += 1
@@ -229,7 +233,7 @@ def run(mp3_path: str, bpm: float, duration: float | None, rig_path: str, out_pr
             "scene": phrase._current.name,
             "scene_uses_lasers": phrase._current.uses_lasers,
             "bar_strobe": frame[fixtures["bar"].offset + 1],  # raw CH2 (strobe) byte, 0-255
-            # NOTE: named laser_flash_active, not laser_active -- a fixture slot is
+            # NOTE: named laser_on, not laser_active -- a fixture slot is
             # also named "laser", and the per-fixture loop below writes
             # f"{slot}_active" for each slot, which for slot="laser" produces the
             # key "laser_active" -- that used to silently clobber THIS field with
@@ -239,7 +243,7 @@ def run(mp3_path: str, bpm: float, duration: float | None, rig_path: str, out_pr
             # summary silently wrong -- confirmed the onset detector really was
             # firing (direct instrumentation) while every CSV row still read
             # False, because the fixture loop ran after and overwrote it.
-            "laser_flash_active": laser_flash_active,
+            "laser_on": laser_on,
             "silence_active": show_engine.silence.active,
         }
         for slot, fx in fixtures.items():
@@ -321,7 +325,7 @@ def write_plot(rows: list[dict], path: str, bpm: float) -> None:
     ax.legend(loc="upper right", fontsize=8)
 
     ax = axes[3]
-    ax.fill_between(t, 0, [1 if r["laser_flash_active"] else 0 for r in rows], color="#c0392b", step="post")
+    ax.fill_between(t, 0, [1 if r["laser_on"] else 0 for r in rows], color="#c0392b", step="post")
     ax.set_ylim(0, 1.2)
     ax.set_ylabel("laser")
     ax.set_yticks([])

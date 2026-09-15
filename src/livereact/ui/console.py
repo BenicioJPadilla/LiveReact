@@ -196,9 +196,9 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.s_warm = _slider(-100, 100, int(m.warm_cool_bias * 100))
         self.cb_laser = QtWidgets.QCheckBox("Arm lasers")
         self.cb_laser.setChecked(m.laser_enable)
-        # docs/14 §3: shows when a real detected onset has the flash gate open —
-        # armed+eligible alone isn't enough to see the laser anymore, it only
-        # shows through during a flash (and needs real audio connected at all).
+        # engines/laser.py: lit while the laser layer's DROP/PEAK gate is open --
+        # armed alone isn't enough to see the laser, and it needs real audio +
+        # PDL connected at all.
         self.l_laser_flash = QtWidgets.QLabel("")
         cl.addRow("Master brightness", self.s_bright)
         cl.addRow("Strobe cap", self.s_strobe)
@@ -301,8 +301,8 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         else:
             self.l_auto_blackout.setText("")
 
-        if self.app.show_engine.laser_trigger.active:
-            self.l_laser_flash.setText("● LASER FLASH")
+        if self.app.laser_engine.active:
+            self.l_laser_flash.setText("● LASER ON")
             self.l_laser_flash.setStyleSheet(_DOT_OK)
         else:
             self.l_laser_flash.setText("")

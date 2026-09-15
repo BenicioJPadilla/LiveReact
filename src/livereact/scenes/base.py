@@ -57,7 +57,10 @@ class Scene:
 
     name: str = "scene"
     bucket: EnergyBucket = EnergyBucket.BUILD
-    uses_lasers: bool = False
+    uses_lasers: bool = False  # documents that a laser moment belongs over this look; the laser
+                               # channels themselves are owned by engines/laser.py (bucket-gated),
+                               # not by scene render() -- except the atm-gated laser looks that
+                               # write them directly and always degrade on this rig
 
     # --- Schema v2 (Phase 1) ---
     requires: frozenset[str] = frozenset()          # capability tokens, checked against Rig.capabilities()

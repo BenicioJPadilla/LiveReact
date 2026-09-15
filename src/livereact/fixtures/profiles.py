@@ -183,6 +183,12 @@ class Fixture:
         # variance status.
         self.mount_height_m: float | None = None
         self.min_beam_height_m: float = 3.0
+        # Bench/testing session (Josh, 2026-09-15): "in the testing phase the
+        # laser is always in a safe spot and there's no crowd." Set ONLY by
+        # the `--testing` flag (app.py), never from a rig file or config, so
+        # a real show can't inherit it; while True, `Laser.apply_safety`
+        # skips the LASER-09 geometry check. The arm switch still applies.
+        self.safety_test_mode: bool = False
 
     # --- geometry ---
     @property
@@ -242,7 +248,7 @@ class Fixture:
     def apply_strobe_burst(self, uni: bytearray, cap01: float) -> None: ...
     def apply_home_position(self, uni: bytearray, bound: float = 0.20) -> None: ...
     def apply_slew_limit(self, uni: bytearray, dt: float) -> None: ...
-    def apply_onset_gate(self, uni: bytearray, flash_active: bool) -> None: ...
+    def apply_laser_gate(self, uni: bytearray, laser_on: bool) -> None: ...
 
     # --- visualization ---
     def visual_state(self, uni: bytes) -> VisualState:  # pragma: no cover - overridden
@@ -487,19 +493,26 @@ class Laser(Fixture):
         # is None` (never configured in the rig manifest) forces off, same as
         # a declared height below `min_beam_height_m`. Deliberately does NOT
         # check `fda_variance_on_file` -- see `__init__`'s comment on why.
-        geometry_unsafe = self.mount_height_m is None or self.mount_height_m < self.min_beam_height_m
+        # `safety_test_mode` (the `--testing` flag, see Fixture.__init__)
+        # bypasses ONLY the geometry half: bench sessions with no crowd and
+        # a confirmed-safe beam path, Josh's explicit call 2026-09-15.
+        geometry_unsafe = not self.safety_test_mode and (
+            self.mount_height_m is None or self.mount_height_m < self.min_beam_height_m
+        )
         if not laser_enabled or geometry_unsafe:
             for i in range(self.offset, self.offset + self.channel_count):
                 uni[i] = 0
 
-    def apply_onset_gate(self, uni: bytearray, flash_active: bool) -> None:
-        """docs/14 §3: additive to (not a replacement for) apply_safety above —
-        a scene can be armed and eligible (uses_lasers + laser_enable) and the
-        laser still only shows through during a real detected onset flash
-        window, instead of held on for the whole scene. Deliberately a
-        SEPARATE method rather than folded into apply_safety, so the already-
-        verified-on-hardware safety-critical arm/disarm path stays untouched."""
-        if not flash_active:
+    def apply_laser_gate(self, uni: bytearray, laser_on: bool) -> None:
+        """Additive to (not a replacement for) apply_safety above: the laser
+        only shows through while engines/laser.py's LaserEngine says it is
+        on (DROP/PEAK gate + fresh audio and PDL) -- so a stray laser write
+        from any other layer can never light it outside a laser moment.
+        Deliberately a SEPARATE method rather than folded into apply_safety,
+        so the already-verified-on-hardware safety-critical arm/disarm path
+        stays untouched. (Was `apply_laser_gate`, fed by the retired one-beat
+        kick-onset flash, until 2026-09-15.)"""
+        if not laser_on:
             for i in range(self.offset, self.offset + self.channel_count):
                 uni[i] = 0
 

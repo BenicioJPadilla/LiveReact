@@ -115,7 +115,7 @@ def test_master_brightness_scales_dimmers():
 
 
 def test_lasers_cannot_be_nonzero_unless_enabled():
-    """Isolates the arm gate specifically — laser_flash_active=True so the
+    """Isolates the arm gate specifically — laser_on=True so the
     docs/14 §3 onset gate (tested separately above) doesn't also zero it.
     `mount_height_m` set to a safe value (Stage 6 audit fix, LASER-08/09/10/
     11) so this test isolates the arm switch, not the new geometry check —
@@ -126,10 +126,10 @@ def test_lasers_cannot_be_nonzero_unless_enabled():
     c = Contribution()
     laser.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=0.5)
 
-    off = render_universe([c], rig, ManualParams(laser_enable=False), laser_flash_active=True)
+    off = render_universe([c], rig, ManualParams(laser_enable=False), laser_on=True)
     assert all(off[laser.offset + i] == 0 for i in range(12))  # fail-safe
 
-    on = render_universe([c], rig, ManualParams(laser_enable=True), laser_flash_active=True)
+    on = render_universe([c], rig, ManualParams(laser_enable=True), laser_on=True)
     assert on[laser.offset] == Laser.MANUAL_PATTERN_MODE  # CH1 enabled
 
 
@@ -143,11 +143,11 @@ def test_laser_geometry_gate_zeros_the_laser_independently_of_arm():
     laser.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=0.5)
 
     armed = ManualParams(laser_enable=True)
-    undeclared = render_universe([c], rig, armed, laser_flash_active=True)
+    undeclared = render_universe([c], rig, armed, laser_on=True)
     assert all(undeclared[laser.offset + i] == 0 for i in range(12))
 
     laser.mount_height_m = 3.0
-    now_safe = render_universe([c], rig, armed, laser_flash_active=True)
+    now_safe = render_universe([c], rig, armed, laser_on=True)
     assert now_safe[laser.offset] == Laser.MANUAL_PATTERN_MODE
 
 
@@ -262,10 +262,10 @@ def test_laser_flash_gate_zeros_the_laser_independently_of_scene_and_arm():
     laser.set_dotted_line_sweep(c, color=Laser.COLOR_WHITE, sweep_intensity=0.5)
     armed = ManualParams(laser_enable=True)
 
-    not_flashing = render_universe([c], rig, armed, laser_flash_active=False)
+    not_flashing = render_universe([c], rig, armed, laser_on=False)
     assert all(not_flashing[laser.offset + i] == 0 for i in range(12))
 
-    flashing = render_universe([c], rig, armed, laser_flash_active=True)
+    flashing = render_universe([c], rig, armed, laser_on=True)
     assert flashing[laser.offset] != 0
 
 

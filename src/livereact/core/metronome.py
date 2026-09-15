@@ -203,7 +203,7 @@ ENERGY_NORM_SILENCE_FLOOR = 0.03      # smoothed energy below this is SILENCE, n
 # spacing/duty gate, applied to bucket classification itself: a candidate
 # bucket must PERSIST for BUCKET_MIN_DWELL_S before it's actually committed to,
 # not flip the instant a boundary is crossed. Computed HERE (not independently
-# by each of reactive.py/laser_trigger.py/phrase.py) for the same reason
+# by each of reactive.py/engines/laser.py/phrase.py) for the same reason
 # energy_norm itself is centralized -- one shared notion of "what bucket are we
 # in," not three copies that could drift apart.
 #
