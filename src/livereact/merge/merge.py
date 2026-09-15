@@ -171,6 +171,7 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
         if manual.strobe_burst:
             fx.apply_strobe_burst(out, manual.strobe_cap)  # within the cap
         fx.cap_strobe(out, manual.strobe_cap)              # safety: always cap
+        fx.cap_brightness_while_strobing(out)               # safety: never full-bright while strobing (Josh, 2026-09-14)
         fx.apply_safety(out, manual.laser_enable)          # laser fail-safe
         fx.apply_home_position(out)                        # docs/14 §4: bound around a calibrated home
         fx.apply_slew_limit(out, dt)                        # LIGHTING_BIBLE.md §6.6: protect motors from instant jumps

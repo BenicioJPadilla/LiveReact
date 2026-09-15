@@ -233,6 +233,7 @@ class Fixture:
     # --- finalize-stage clamps (operate on the assembled universe bytearray) ---
     def apply_master_brightness(self, uni: bytearray, factor01: float) -> None: ...
     def cap_strobe(self, uni: bytearray, cap01: float) -> None: ...
+    def cap_brightness_while_strobing(self, uni: bytearray) -> None: ...
     def apply_safety(self, uni: bytearray, laser_enabled: bool) -> None: ...
     def apply_color_bias(self, uni: bytearray, bias: float) -> None: ...
     def apply_strobe_burst(self, uni: bytearray, cap01: float) -> None: ...
@@ -567,6 +568,14 @@ class WashBar(Fixture):
     type_name = "ok103_wash_bar"
     channel_count = 6
 
+    STROBE_BRIGHTNESS_CAP_DMX = 140  # Josh's explicit call (2026-09-14, live on
+        # real hardware): "around 130-150." A full-white, full-brightness
+        # strobe burst can blind people, so while ch2 (strobe) is actively
+        # nonzero, ch1 (dimmer) is clamped to this max regardless of what the
+        # engine/scene layer wanted. Purely a brightness clamp -- unrelated to
+        # the strobe-RATE/Hz safety question (STROBE_MAX in engines/
+        # reactive.py); this only ever lowers ch1, never touches ch2.
+
     def channel_kinds(self) -> list[ChannelKind]:
         K = ChannelKind
         return [K.DIMMER, K.STROBE, K.COLOR, K.COLOR, K.COLOR, K.COLOR]
@@ -594,6 +603,11 @@ class WashBar(Fixture):
     def cap_strobe(self, uni: bytearray, cap01: float) -> None:
         i = self.offset + 1  # ch2 strobe
         uni[i] = min(uni[i], _to8(cap01))
+
+    def cap_brightness_while_strobing(self, uni: bytearray) -> None:
+        if uni[self.offset + 1] > 0:  # ch2 strobe currently nonzero
+            i = self.offset  # ch1 dimmer
+            uni[i] = min(uni[i], self.STROBE_BRIGHTNESS_CAP_DMX)
 
     def apply_strobe_burst(self, uni: bytearray, cap01: float) -> None:
         uni[self.offset + 1] = _to8(cap01)  # ch2 strobe at the capped rate

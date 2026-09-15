@@ -12,7 +12,16 @@ from livereact.scenes.catalog import bucket_for_energy
 
 
 def _snap(**kw) -> ShowSnapshot:
-    base = dict(bpm=120.0, energy=0.8, fader_a=1.0, eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2)
+    # drop_hit_intensity defaults to CEIL (1.0), not ShowSnapshot's own
+    # production default (0.85, the FLOOR) -- 2026-09-14, when _strobe_rate
+    # moved from chasing raw energy_norm to reusing this held-once value
+    # (Josh's correction: strobe was reading as random flicker, not a real
+    # strobe). Most existing tests only set `energy=` and implicitly want
+    # "fully engaged" strobe behavior; CEIL matches that intent without
+    # having to add drop_hit_intensity= to every one of them. Tests
+    # exercising the FLOOR->CEIL gradient itself override it explicitly.
+    base = dict(bpm=120.0, energy=0.8, fader_a=1.0, eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2,
+                drop_hit_intensity=1.0)
     base.update(kw)
     # bucket_for_energy reads energy_norm, not raw energy (2026-09-07, found
     # live) -- default it to match energy so existing tests that only set
@@ -109,20 +118,42 @@ def test_moving_heads_mirror_left_and_right():
     assert c.values[mh_l.offset] != c.values[mh_r.offset]
 
 
-def test_low_energy_keeps_strobe_off():
+def test_strobe_off_outside_build_drop_and_peak_buckets():
+    """Bucket gate replaced the old fixed energy_norm>0.85 threshold
+    (2026-09-14, see reactive.py's STROBE_THRESHOLD retirement note) --
+    strobe now only ever engages in BUILD/DROP/PEAK (PEAK included since
+    it's an escalation of an already-committed DROP, not a fresh section --
+    same reasoning _bucket_wash_level's own PEAK branch already uses), no
+    matter how high raw energy reads in e.g. a BREAK section."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     bar = rig.fixture("bar_l")
-    c = eng.tick(_snap(energy=0.5, beat_phase=0.0), rig)
-    assert c.values[bar.offset + 1] == 0  # strobe ch2 off below threshold
+    c = eng.tick(_snap(energy=1.0, beat_phase=0.0, bucket="break"), rig)
+    assert c.values[bar.offset + 1] == 0  # strobe ch2 off -- wrong bucket, regardless of energy
+
+
+def test_strobe_ramps_linearly_across_a_build_by_bar_position():
+    """SUPERSEDES the old per-tick-energy version of this test (2026-09-14):
+    strobe during BUILD now reuses the exact same bar-position ramp
+    _bucket_wash_level's own BUILD branch computes (0 at entry -> 1 over
+    BUILD_RAMP_BARS), not raw energy_norm -- confirmed live that chasing
+    energy_norm read as random flicker, not a strobe, during a real build.
+    Early in the build should show a little strobe; further in, more."""
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+    bar = rig.fixture("bar_l")
+    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)  # enters BUILD, sets ramp origin
+    low = eng.tick(_snap(bar=1, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    hot = eng.tick(_snap(bar=7, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    assert 0 < low.values[bar.offset + 1] < hot.values[bar.offset + 1]
 
 
 def test_high_energy_engages_capped_strobe():
-    """Cap value itself is a Stage 6 audit fix (spec/FINDINGS.md SAFE-01/02/
-    03/05/06): lowered from 0.30 to 0.15 as an interim conservative
-    placeholder pending real Hz calibration -- import STROBE_MAX rather than
-    hardcode it here, so this test can't silently drift from the real
-    constant again."""
+    """Cap value itself is Josh's explicit call (spec/FINDINGS.md SAFE-01/02/
+    03/05/06 -- still an interim placeholder, still no real Hz calibration):
+    raised 2026-09-14 from 0.15 to 0.75 after he watched a full 0-255 sweep
+    live on the real wash bar -- import STROBE_MAX rather than hardcode it
+    here, so this test can't silently drift from the real constant again."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     bar = rig.fixture("bar_l")
@@ -187,7 +218,12 @@ def test_strobe_ending_naturally_also_earns_the_minimum_spacing():
     bar = rig.fixture("bar_l")
     eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
     clock.advance(0.5)  # well under the 1.5s cap
-    eng.tick(_snap(energy=0.5, beat_phase=0.0), rig)  # energy drops, strobe naturally off
+    # Bucket gate replaced the old fixed energy_norm threshold (2026-09-14) --
+    # leaving BUILD/DROP/PEAK is now what ends a moment "naturally" here, not
+    # a raw energy drop (see reactive.py's STROBE_THRESHOLD retirement note;
+    # PEAK is also an allowed strobe bucket now, so "break" is used here to
+    # genuinely exit all three).
+    eng.tick(_snap(energy=1.0, beat_phase=0.0, bucket="break"), rig)  # bucket exits, strobe naturally off
     clock.advance(0.1)  # nowhere near STROBE_MIN_SPACING_S (8.0s)
     c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
     assert c.values[bar.offset + 1] == 0  # gated -- a natural end earns spacing too now
@@ -197,21 +233,24 @@ def test_strobe_ending_naturally_also_earns_the_minimum_spacing():
 
 
 # --- build_snare_accent delivery (2026-09-14): _snare_accent_strobe_rate
-# combines this same energy-threshold strobe path with a second, roll-
+# combines this same energy-correlated strobe path with a second, roll-
 # triggered one (core/snare_trigger.py's SnareOnsetDetector/SnareRollDetector,
 # Steps 0-2, each verified independently by simulation) via max(), BEFORE the
 # single _strobe_burst_gate call above -- see reactive.py's own method
-# docstring for why that ordering matters. Energy is kept low (well under
-# STROBE_THRESHOLD) throughout these tests specifically so any strobe output
-# observed can only be coming from the roll path, not this same energy-
-# threshold one.
+# docstring for why that ordering matters. Energy is kept at 0.001 (was 0.3
+# under the old fixed energy_norm>0.85 threshold, which 0.3 safely sat below
+# regardless of bucket) throughout these tests specifically so any strobe
+# output observed can only be coming from the roll path, not the ambient
+# energy-correlated one -- 2026-09-14's bucket-gated redesign makes even
+# BUILD/DROP's own ambient strobe nonzero at any energy above ~0.002, so 0.3
+# would now bleed into these "roll path only" assertions.
 
 def _warm_up_snare(eng: ReactiveLayerEngine, clock: FakeClock, rig) -> None:
     """Run the engine past SnareOnsetDetector's own WARMUP_S on a steady,
     non-spiking signal -- same rationale as test_snare_trigger.py's own
     _warm_up (a cold rolling average reads as a false spike otherwise)."""
     for _ in range(60):  # 60 * 0.02s = 1.2s, safely past WARMUP_S=1.0
-        eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="build",
+        eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
                         audio_fresh=True, audio_band_mid_abs=1.0, audio_band_high_abs=1.0), rig)
         clock.advance(0.02)
 
@@ -229,11 +268,11 @@ def test_a_real_accelerating_roll_engages_the_strobe_channel_via_the_roll_path()
     # gaps that follow are the actual roll shape being tested (overall
     # tightening: 0.27 <= 0.4*0.7).
     clock.advance(0.5)
-    eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="build",
+    eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
                     audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
     for interval in (0.4, 0.35, 0.27):
         clock.advance(interval)
-        c = eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="build",
+        c = eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
                             audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
         if c.values[bar.offset + 1] > 0:
             fired_strobe = True
@@ -255,7 +294,7 @@ def test_a_steady_non_accelerating_onset_pattern_never_engages_the_strobe_channe
     fired_strobe = False
     for _ in range(6):  # constant spacing, well over onset refractory -- never tightens
         clock.advance(0.4)
-        c = eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="build",
+        c = eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
                             audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
         if c.values[bar.offset + 1] > 0:
             fired_strobe = True
@@ -275,7 +314,12 @@ def test_the_same_accelerating_roll_is_ignored_outside_the_build_bucket():
     fired_strobe = False
     for interval in (0.4, 0.35, 0.27):
         clock.advance(interval)
-        c = eng.tick(_snap(energy=0.3, beat_phase=0.0, bucket="drop",  # NOT build
+        # drop_hit_intensity pinned to DROP_INTENSITY_FLOOR (0.85) -- DROP's
+        # own ambient _strobe_rate path is legitimately nonzero at _snap()'s
+        # default of 1.0 (2026-09-14's held-value redesign), which would
+        # bleed into this "roll path only" assertion otherwise.
+        c = eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="drop",  # NOT build
+                            drop_hit_intensity=0.85,
                             audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
         if c.values[bar.offset + 1] > 0:
             fired_strobe = True

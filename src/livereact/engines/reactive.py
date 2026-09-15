@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 
 from ..clock import Clock
+from ..core.metronome import DROP_INTENSITY_CEIL, DROP_INTENSITY_FLOOR
 from ..core.show_state import ShowSnapshot
 from ..dynamics import musical_bar_position
 from ..fixtures.profiles import Par, WashBar
@@ -32,15 +33,17 @@ PULSE_MIN = 0.03        # fallback-only now (see KICK_* below) — used solely w
                         # classic beat-locked ramp as a sensible default with no audio
                         # signal to actually trace. near-zero brightness right before
                         # the next beat re-triggers the pulse.
-STROBE_THRESHOLD = 0.85  # energy_norm above which a gentle reactive strobe engages -- was
-                         # raw snap.energy until 2026-09-07: same fixed-absolute-threshold
-                         # flaw as the old bucket_for_energy call (see show_state.py's
-                         # energy_norm docstring). Confirmed causing a real complaint via
-                         # the offline replay tool: a bass-heavy track's raw energy sat
-                         # above 0.85 96% of the whole song, so the strobe gate was open
-                         # almost continuously (mechanical 1.5s-on/1.5s-off bursting,
-                         # unrelated to the beat grid) -- read live as "turning on and off
-                         # randomly, fluttering," not the intended rare accent.
+# STROBE_THRESHOLD (a fixed energy_norm > 0.85 gate, RETIRED 2026-09-14) used
+# to be the sole gate on the reactive strobe, in ANY bucket. Two real problems
+# with it, confirmed live: (1) it was raw-energy-only, no bucket awareness --
+# a bass-heavy track sat above 0.85 96% of the whole song at one point (was
+# raw snap.energy until 2026-09-07, same fixed-absolute-threshold flaw as the
+# old bucket_for_energy call -- see show_state.py's energy_norm docstring),
+# read live as "turning on and off randomly, fluttering," not a rare accent;
+# (2) even switched to energy_norm, it still fired in PEAK/anywhere energy
+# spiked, not specifically BUILD/DROP -- never a real "buildup" effect, just
+# a "loud moment" effect (spec/conformance.md LOOK-05/TIME-05). Replaced by
+# a bucket gate (BUILD/DROP only) inside `_strobe_rate` itself -- see there.
 # Named Hz targets from LIGHTING_BIBLE.md §13 (SAFE-01..06, corrected
 # 2026-09-08 evidence-verification pass) -- kept here as the DOCUMENTED
 # TARGETS, not yet a working Hz clamp: nobody has measured this specific
@@ -56,19 +59,55 @@ SAFETY_STROBE_FORBIDDEN_BAND_HZ = (10.0, 25.0)
 SAFETY_STROBE_STRICT_MODE_MAX_HZ = 2.0
 SAFETY_STROBE_RED_MAX_HZ = 3.0
 
-STROBE_MAX = 0.15       # INTERIM CONSERVATIVE CAP (2026-09-09, Stage 6 audit
-                        # fix, Josh's explicit call — see spec/FINDINGS.md
-                        # SAFE-01/02/03/05/06): lowered from 0.30 (byte ~76)
-                        # to 0.15 (byte ~38) specifically to sit well inside
-                        # the wash bar's real manual's own documented "slow"
-                        # sub-range (CH2: 0-9 off, 10-255 slow->fast) rather
-                        # than assume 76 was safe. This is NOT a measured-safe
-                        # value -- it's a deliberately conservative placeholder
-                        # chosen because *some* margin below the old cap is
-                        # strictly better than none while real Hz calibration
-                        # is still outstanding. Raise it only after measuring
-                        # this fixture's actual DMX-to-Hz curve, never by
-                        # guessing a bigger number feels fine by eye.
+STROBE_MAX = 0.75       # CEILING, Josh's explicit call (2026-09-14, live on real
+                        # hardware): raised from the old 0.15 placeholder after he
+                        # personally watched a full 0-255 sweep of the wash bar's
+                        # real strobe channel (white, full range) and confirmed it
+                        # reads correctly the whole way through -- see
+                        # tools/simulations or the session recording this came
+                        # from (recordings/session-20260914-*). Still NOT a
+                        # measured-safe Hz value -- nobody has run the actual
+                        # byte-to-Hz calibration (photodiode/camera per §11's
+                        # method), so SAFE-01/02/03/05/06 in spec/FINDINGS.md
+                        # remain open. This is a deliberate, disclosed interim
+                        # value like the 0.15 it replaces, just a different
+                        # number Josh chose after seeing the real hardware run.
+                        # Paired with WashBar.STROBE_BRIGHTNESS_CAP_DMX (a
+                        # SEPARATE brightness clamp, not a strobe-rate one) so a
+                        # strobe burst can't also run at full dimmer brightness.
+
+# STROBE_DROP_REFERENCE_ENERGY_NORM (RETIRED same day, 2026-09-14) scaled
+# strobe against raw per-tick snap.energy_norm -- confirmed live to be the
+# wrong signal: Josh watched a real drop and reported the strobe "isn't a
+# consistent value... it just keeps randomly changing" every beat/transient,
+# reading as unpatterned flicker rather than a strobe. Raw energy_norm is
+# exactly the "continuously audio-tracked" behavior this project already
+# rejected for DROP's own wash_level (see the DROP section above: "chosen
+# once, not chased," `snap.drop_hit_intensity` captured once at commit and
+# held static) -- strobe was the one thing in this bucket still chasing
+# per-tick energy. Replaced below: DROP/PEAK reuse that same held
+# drop_hit_intensity, BUILD reuses the same bar-position ramp
+# _bucket_wash_level's own BUILD branch computes -- both smooth, structural,
+# and exactly as "linear throughout" as Josh asked for, not audio-reactive.
+
+# Par has no native strobe channel (4CH: dimmer/R/G/B -- see Par's class
+# docstring in fixtures/profiles.py), so its strobe is synthesized via a real
+# software-timed dimmer on/off toggle (2026-09-14, extending the wash bar's
+# strobe to Par, Josh's explicit ask). `rate01` (the same 0..STROBE_MAX value
+# computed for WashBar) scales a real flash Hz up to this ceiling -- capped at
+# the Bible's own SAFETY_STROBE_SUSTAINED_MAX_HZ, and UNLIKE the wash bar this
+# is exactly enforceable, not a placeholder: we own the on/off timing directly,
+# there's no unmeasured fixture byte-to-Hz curve in the loop at all.
+PAR_STROBE_MAX_HZ = SAFETY_STROBE_SUSTAINED_MAX_HZ  # 4.0
+
+PAR_STROBE_BRIGHTNESS_CAP = 140 / 255  # starting default, NOT independently
+                        # confirmed on this fixture: reuses the same numeric
+                        # ceiling Josh gave for the wash bar's brightness cap
+                        # (~140/255) as a reasonable first guess for Par's own
+                        # "on"-phase brightness during a strobe. Par is a
+                        # different fixture with different real output -- watch
+                        # it live and adjust if it reads too bright/dim.
+
 # Burst-duration limit (LIGHTING_BIBLE.md §13, 2026-09-08 audit): "assert
 # strobe_burst_duration <= 1.5s then a mandatory gap." Previously the reactive
 # strobe could stay continuously nonzero for as long as energy stayed above
@@ -421,10 +460,35 @@ class ReactiveLayerEngine:
                 # VERIFIED ON HARDWARE: Par has a real dimmer channel, same as
                 # WashBar (not "baked into color" as previously assumed — that
                 # left the dimmer at 0 and the real fixture never lit).
-                fx.set_intensity(c, wash_level)
-                fx.set_color(c, r, g, b)
-                if strobe > 0 and isinstance(fx, WashBar):  # Par has no strobe channel
-                    fx.set_strobe(c, strobe)
+                if strobe > 0 and isinstance(fx, Par):
+                    # Par is 4CH (dimmer/R/G/B, see its class docstring) -- no
+                    # native strobe channel to hand a rate byte to like WashBar's
+                    # ch2. Synthesized instead via a real, software-timed
+                    # dimmer on/off toggle (2026-09-14, extending the wash bar's
+                    # strobe behavior here too, Josh's explicit ask). This is a
+                    # DIFFERENT technique with a DIFFERENT, arguably better,
+                    # safety story: since we own the on/off timing ourselves,
+                    # the flash rate is an exact, known Hz value we chose
+                    # (PAR_STROBE_MAX_HZ, capped at the Bible's own documented
+                    # SAFETY_STROBE_SUSTAINED_MAX_HZ) rather than an unmeasured
+                    # fixture byte-to-Hz curve -- no open calibration gap here.
+                    on_phase = self._par_strobe_on_phase(strobe)
+                    fx.set_intensity(c, wash_level if on_phase else 0.0)
+                    fx.set_color(c, r, g, b)
+                    if on_phase:
+                        # Byte-level cap AFTER set_intensity's gamma+floor
+                        # curve (fixtures/profiles.py's _intensity_to8) --
+                        # capping the pre-curve level01 instead would land on
+                        # a much dimmer actual byte than intended (gamma
+                        # compresses the low end), same mistake WashBar's own
+                        # cap avoids by clamping ch1's final byte directly.
+                        cap_byte = round(PAR_STROBE_BRIGHTNESS_CAP * 255)
+                        c.values[fx.offset] = min(c.values[fx.offset], cap_byte)
+                else:
+                    fx.set_intensity(c, wash_level)
+                    fx.set_color(c, r, g, b)
+                    if strobe > 0 and isinstance(fx, WashBar):
+                        fx.set_strobe(c, strobe)
 
         # --- moving heads: steady-ish dimmer, mirrored BPM-locked sweep ---
         position = self._musical_position(snap)
@@ -448,30 +512,64 @@ class ReactiveLayerEngine:
         return 1.0 - (1.0 - PULSE_MIN) * snap.beat_phase
 
     def _snare_accent_strobe_rate(self, snap: ShowSnapshot) -> float:
-        """build_snare_accent delivery (2026-09-14): combines the existing
-        energy-threshold strobe rate (`_strobe_rate`, unchanged) with a
-        second, independently-triggered rate driven by a confirmed
-        accelerating snare roll (Steps 0-2, verified by simulation --
-        see snare_trigger.py's module docstring). The two are combined via
+        """build_snare_accent delivery (2026-09-14): combines the ambient,
+        held/ramped strobe rate (`_strobe_rate` -- since 2026-09-14 driven by
+        drop_hit_intensity/bar-position, not raw energy_norm, see its own
+        docstring) with a second, independently-triggered rate driven by a
+        confirmed accelerating snare roll (Steps 0-2, verified by simulation
+        -- see snare_trigger.py's module docstring). The two are combined via
         max() BEFORE the single `_strobe_burst_gate` call below (not two
         separate gated calls) specifically so they can't legally chain
         bursts closer together than STROBE_MIN_SPACING_S intends -- that
         was the whole point of the safety-integration note in the plan doc.
 
         The roll-triggered rate is capped at STROBE_MAX, same ceiling as
-        the energy-threshold path -- this is an ACCENT on top of the
-        existing strobe channel, not a second, higher-authority strobe
-        path with its own safety ceiling."""
+        the ambient path -- this is an ACCENT on top of the existing strobe
+        channel, not a second, higher-authority strobe path with its own
+        safety ceiling."""
         onset = self._snare_onset.update(snap)
         self.snare_roll_active = self._snare_roll.update(onset, snap.bucket)
         roll_rate = STROBE_MAX if self.snare_roll_active else 0.0
         return max(self._strobe_rate(snap), roll_rate)
 
     def _strobe_rate(self, snap: ShowSnapshot) -> float:
-        if snap.energy_norm <= STROBE_THRESHOLD:
+        """Strobe intensity as a smooth, structural progression -- NOT raw
+        per-tick energy_norm (see the retirement note above this method for
+        why: confirmed live, 2026-09-14, to read as random flicker rather
+        than a strobe). Still gated to BUILD/DROP/PEAK only (never fires
+        outside a buildup or drop), but each bucket now drives it from the
+        SAME held/ramped value _bucket_wash_level itself uses, just rescaled
+        onto [0, STROBE_MAX]:
+          - DROP/PEAK: snap.drop_hit_intensity (+ PEAK_BOOST for PEAK, same
+            as wash_level's own PEAK branch) -- captured ONCE at the real
+            drop commit, held static. Rescaled off its own known
+            [DROP_INTENSITY_FLOOR, DROP_INTENSITY_CEIL] range, so the
+            quietest confirmed drop still starts near 0 and the loudest
+            reaches the full ceiling -- not an arbitrary reference number.
+          - BUILD: the same bar-position ramp (0 at entry -> 1 over
+            BUILD_RAMP_BARS) wash_level's own BUILD branch computes --
+            genuinely linear across the whole build, immune to per-tick
+            audio noise.
+        Bucket transitions/PEAK-escalation logic itself lives in
+        core/metronome.py -- see the separate open item (2026-09-14, Josh)
+        about a sustained drop with no quiet section getting stuck past
+        where it musically ended; not addressed here."""
+        bucket = EnergyBucket(snap.bucket)
+        if bucket == EnergyBucket.DROP:
+            span = DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR
+            intensity = (snap.drop_hit_intensity - DROP_INTENSITY_FLOOR) / span if span > 0 else 1.0
+        elif bucket == EnergyBucket.PEAK:
+            span = DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR
+            boosted = min(1.0, snap.drop_hit_intensity + PEAK_BOOST)
+            intensity = (boosted - DROP_INTENSITY_FLOOR) / span if span > 0 else 1.0
+        elif bucket == EnergyBucket.BUILD:
+            pos = musical_bar_position(snap)
+            entry = self._build_entry_pos if self._build_entry_pos is not None else pos
+            intensity = (pos - entry) / BUILD_RAMP_BARS
+        else:
             return 0.0
-        scaled = (snap.energy_norm - STROBE_THRESHOLD) / (1.0 - STROBE_THRESHOLD)
-        return min(STROBE_MAX, scaled * STROBE_MAX)
+        intensity = max(0.0, min(1.0, intensity))
+        return intensity * STROBE_MAX
 
     def _strobe_burst_gate(self, rate: float) -> float:
         """Cap a single continuous strobe MOMENT at STROBE_MAX_BURST_S, then
@@ -481,7 +579,20 @@ class ReactiveLayerEngine:
         ending EITHER way (hit the duration cap, or energy simply dropped
         below threshold first) now earns the same minimum spacing before a new
         one is allowed to start, so a sustained loud section can't chain
-        moments back-to-back with only a token gap between them."""
+        moments back-to-back with only a token gap between them.
+
+        Byte-quantized FIRST (2026-09-14, found while re-testing after
+        _strobe_rate's bucket-gated redesign): the old fixed threshold made
+        `rate` an exact 0.0 below it, so this never mattered before, but the
+        new continuous energy-correlated rate can be a genuinely nonzero-but-
+        sub-half-byte float (e.g. a very quiet moment inside a long BUILD)
+        that would round to DMX byte 0 -- invisible on the real fixture, but
+        without this rounding it still reads as `rate > 0.0` below and
+        silently starts consuming the burst-duration budget, eventually
+        forcing the mandatory 8s gap during a stretch that never visibly
+        strobed at all. Comparing the byte-quantized value instead means only
+        an actually-visible rate ever starts or extends a moment."""
+        rate = round(rate * 255) / 255.0
         now = self.clock.monotonic()
         if now < self._strobe_gap_until:
             return 0.0  # serving the minimum spacing before a new moment can start
@@ -500,6 +611,22 @@ class ReactiveLayerEngine:
             self._strobe_burst_start = None
             return 0.0
         return rate
+
+    def _par_strobe_on_phase(self, rate01: float) -> bool:
+        """True during the "on" half of Par's synthesized dimmer-toggle
+        strobe (see the PAR_STROBE_* constants' comment above for why this
+        technique exists and its different safety story). `rate01` is the
+        SAME post-burst-gate value passed to WashBar.set_strobe -- already
+        byte-quantized and already burst/spacing-gated, so Par's strobe
+        automatically inherits the same STROBE_MAX_BURST_S/STROBE_MIN_
+        SPACING_S moment shape as the wash bar, just realized as a real
+        on/off toggle instead of a rate byte. 50% duty cycle at whatever Hz
+        `rate01` (0..STROBE_MAX) scales to within PAR_STROBE_MAX_HZ."""
+        if rate01 <= 0.0:
+            return True  # not strobing right now -- fully "on"
+        hz = (rate01 / STROBE_MAX) * PAR_STROBE_MAX_HZ
+        phase = (self.clock.monotonic() * hz) % 1.0
+        return phase < 0.5
 
     def _musical_position(self, snap: ShowSnapshot) -> float:
         """Continuous position in beats, for smooth tempo-locked movement."""
