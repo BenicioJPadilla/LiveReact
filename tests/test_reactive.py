@@ -129,14 +129,47 @@ def test_build_strobe_is_continuous_and_gets_faster_across_the_build():
     eng = ReactiveLayerEngine(clock)
     eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
     seen = []
-    for b in (0, 2, 4, 6, 8):
+    for b in (0, 2, 4, 6):
         clock.advance(3.75)  # two bars of real time -- far past STROBE_MAX_BURST_S
         eng.tick(_snap(bar=b, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
         seen.append(eng.strobe_level)
     assert seen[0] == pytest.approx(BUILD_STROBE_START * STROBE_MAX)  # starts at the floor, not 0
     assert all(a < b for a, b in zip(seen, seen[1:]))               # monotonically faster
-    assert seen[-1] == pytest.approx(STROBE_MAX)                     # reaches the ceiling
+    assert seen[-1] == pytest.approx(STROBE_MAX)                     # reaches the ceiling by BUILD_STROBE_RAMP_BARS
     assert all(v > 0 for v in seen)                                  # never gated dark
+    clock.advance(3.75)
+    eng.tick(_snap(bar=8, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    assert eng.strobe_level == pytest.approx(STROBE_MAX)             # and holds there
+
+
+def test_build_strobe_ends_on_the_hit_not_the_commit():
+    """session-20260915-140630, Josh: "the strobing continued after the
+    beat drop." The classifier's DROP candidate flag is up from the tick
+    the hit crosses the threshold; the build strobe stops right there and
+    resumes only if the candidate is withdrawn."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    clock.advance(0.5)
+    eng.tick(_snap(bar=0, beat_in_bar=2, beat_phase=0.0, bucket="build"), rig)
+    assert eng.strobe_level > 0
+    clock.advance(0.5)
+    c = eng.tick(_snap(bar=0, beat_in_bar=3, beat_phase=0.0, bucket="build", drop_candidate=True), rig)
+    assert eng.strobe_level == 0 and not eng.strobe_on
+    par = rig.fixture("par_l")
+    assert c.values[par.offset] > 0  # wash holds lit (its ramp level), not dark
+    clock.advance(0.5)
+    eng.tick(_snap(bar=0, beat_in_bar=4, beat_phase=0.0, bucket="build"), rig)  # candidate withdrawn
+    assert eng.strobe_level > 0
+
+
+def test_drop_tail_strobe_is_the_ceiling_regardless_of_hit_intensity():
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+    _enter_drop(eng, rig, drop_hit_intensity=0.86)
+    eng.tick(_snap(energy=1.0, bar=7, beat_in_bar=3, beat_phase=0.0, bucket="drop", drop_hit_intensity=0.86), rig)
+    assert eng.strobe_level == pytest.approx(round(STROBE_MAX * 255) / 255)
 
 
 # --- the one software strobe toggle, par + wash bar (2026-09-15, third live

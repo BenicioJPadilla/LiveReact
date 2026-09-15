@@ -114,6 +114,15 @@ class ShowSnapshot:
     # song-structure signal here, see LIGHTING_BIBLE.md §9.9) -- just the
     # earliest bar the sound itself supports. None until the first drop.
     drop_start_bar: int | None = None
+    # True while the classifier has a DROP candidate under confirmation
+    # (core/metronome.py's _derive_bucket: the smoothed level has crossed
+    # the DROP threshold and the FAST_ENTRY_DWELL_S clock is running). The
+    # hit itself has already sounded by now -- engines/reactive.py uses this
+    # to end the build strobe on the hit rather than ~2 beats later at the
+    # commit (2026-09-15, recordings/session-20260915-140630, Josh: "the
+    # strobing continued after the beat drop"). Cleared on commit or if the
+    # level backs off before confirming.
+    drop_candidate: bool = False
     # Phrase-frozen palette entries (engines/palette.py, LIGHTING_BIBLE.md
     # §3.2/§3.8), picked by core/metronome.py's `_derive_palette` on 16-bar
     # phrase boundaries and bucket-family changes only -- 2026-09-15, third

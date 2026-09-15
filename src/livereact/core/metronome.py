@@ -73,7 +73,7 @@ ENERGY_NORM_SMOOTH_TAU_S = 3.0        # EMA smoothing BEFORE normalizing -- roug
                                        # short window's own range. Smoothing first
                                        # makes the classification reflect a song
                                        # SECTION's character, not one kick.
-ENERGY_NORM_ATTACK_TAU_S = 1.0        # smoothing tau for a RISE only (2026-09-15,
+ENERGY_NORM_ATTACK_TAU_S = 0.4        # smoothing tau for a RISE only (2026-09-15,
                                        # recordings/session-20260915-121503): the
                                        # flapping the 3s tau exists to stop is the
                                        # DOWNWARD kind -- beat-to-beat dips between
@@ -86,6 +86,19 @@ ENERGY_NORM_ATTACK_TAU_S = 1.0        # smoothing tau for a RISE only (2026-09-1
                                        # Falls still use ENERGY_NORM_SMOOTH_TAU_S.
                                        # Validated by replaying both 2026-09-15
                                        # captures: no extra bucket transitions.
+                                       # 1.0 -> 0.4 later the same day (session-
+                                       # 20260915-140630): a track's SECOND drop
+                                       # is judged against a window ceiling its
+                                       # first drop already raised, so the smoothed
+                                       # value only approaches ~0.92 -- with a 1s
+                                       # tau it took 2 full bars to cross 0.85 and
+                                       # the build strobe ran through the drop's
+                                       # first two bars. At 0.4s: 1 bar. Replayed
+                                       # all four of the day's captures: no new
+                                       # transitions, builds start 0.1-0.5s
+                                       # earlier. (A 1.5s RELEASE tau was tried
+                                       # too -- exits 3s sooner, but the intro's
+                                       # dips then delayed the first build ~2s.)
 ENERGY_NORM_WINDOW_S = 90.0           # how far back to look for "this set's recent
                                        # range" -- roughly 2-3 phrases: long enough
                                        # that one kick/riser can't move it, short
@@ -953,6 +966,7 @@ class Metronome(threading.Thread):
             drop_cycle=self.drop_cycle,
             drop_hit_intensity=self.drop_hit_intensity,
             drop_start_bar=self.drop_start_bar,
+            drop_candidate=self._bucket_candidate == EnergyBucket.DROP,
             palette=self.palette,
             palette_spot=self.palette_spot,
             transition_likely=self.transition_likely,

@@ -180,14 +180,36 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
 # one ~1s burst then went dark for 8s -- one of the "random strobe" moments).
 # This is the un-gated version of that ramp: a SUSTAINED rate that starts at
 # BUILD_STROBE_START of STROBE_MAX at build entry and climbs linearly to
-# STROBE_MAX over BUILD_RAMP_BARS, riding the same bar-position ramp as the
-# wash level. Safety: §13's burst/gap rule is for strobe BURSTS; a sustained
-# rate is governed by SAFETY_STROBE_SUSTAINED_MAX_HZ (4 Hz), which the
-# software toggle meets EXACTLY on both fixtures (its Hz is computed from
-# this rate, capped at STROBE_TOGGLE_MAX_HZ = 4.0 -- see that constant). The
-# floor exists because a toggle at a very low rate reads as the light going
-# OUT for seconds, not as a strobe: 0.25 x STROBE_MAX -> 1 Hz.
-BUILD_STROBE_START = 0.25
+# STROBE_MAX over BUILD_STROBE_RAMP_BARS. Safety: §13's burst/gap rule is
+# for strobe BURSTS; a sustained rate is governed by
+# SAFETY_STROBE_SUSTAINED_MAX_HZ (4 Hz), which the software toggle meets
+# EXACTLY on both fixtures (its Hz is computed from this rate, capped at
+# STROBE_TOGGLE_MAX_HZ = 4.0 -- see that constant). The floor exists because
+# a toggle at a very low rate reads as the light going OUT for seconds, not
+# as a strobe.
+#
+# Retuned 2026-09-15 after the fourth live test (session-20260915-140630,
+# Josh: the strobe "started at too low of a value ... maybe like 30 higher
+# ... a little slow, and it also can reach a higher peak"): start 0.25 ->
+# 0.5 (1 Hz -> 2 Hz), and the ramp reaches the ceiling over 6 bars instead
+# of 8 so the last bars of a typical build sit AT 4 Hz rather than arriving
+# there on the drop. The ceiling itself stays 4 Hz: that is the Bible's
+# sustained-strobe safety line (SAFE-01), not a taste number -- a faster
+# peak needs the burst rules (<= 1.5s, then a gap) and there is no way to
+# know which 1.5s of a build is the last. If the top still reads weak, the
+# lever is flash brightness (STROBE_FLASH_DMX), Josh's own cap.
+BUILD_STROBE_START = 0.5
+BUILD_STROBE_RAMP_BARS = 6.0
+
+# The build strobe ends on the HIT, not on the commit (same test, Josh: "the
+# strobing continued after the beat drop"): the classifier's confirmation
+# dwell (~2 beats) plus smoothing put the DROP commit 2 beats to 1 bar after
+# the audible hit, so the strobe ran into the drop. `snap.drop_candidate`
+# is true from the tick the level crosses the DROP threshold -- the hit has
+# already sounded -- so BUILD's strobe stops there and the wash holds at the
+# top of its ramp until the cut. Across all four 2026-09-15 captures every
+# candidate episode was a real hit (two 0.2-0.3s false starts, both within
+# a bar of the real one).
 
 # build_snare_accent's roll-triggered strobe gets its OWN burst gate (2026-09-15,
 # same capture): sharing one gate with the ambient path meant any burst -- the
@@ -715,7 +737,7 @@ class ReactiveLayerEngine:
         onset = self._snare_onset.update(snap)
         self.snare_onset_active = onset
         self.snare_roll_active = self._snare_roll.update(onset, snap.bucket)
-        roll_rate = STROBE_MAX if self.snare_roll_active else 0.0
+        roll_rate = STROBE_MAX if (self.snare_roll_active and not snap.drop_candidate) else 0.0
         ambient_rate = self._strobe_rate(snap)
         if EnergyBucket(snap.bucket) == EnergyBucket.BUILD:
             # The build strobe is a SUSTAINED slow-to-medium rate, not a
@@ -736,11 +758,10 @@ class ReactiveLayerEngine:
         comment above for the capture that motivated this -- the previous
         held-constant rate turned the burst gate into a 9.5s clock).
 
-        The rate itself is still the held drop_hit_intensity (+ PEAK_BOOST
-        for PEAK), captured ONCE at the drop commit and rescaled off its
-        known [DROP_INTENSITY_FLOOR, DROP_INTENSITY_CEIL] range onto
-        [0, STROBE_MAX] -- NOT raw per-tick energy_norm (confirmed live
-        2026-09-14 to read as random flicker). BUILD is a separate,
+        The rate itself is a constant STROBE_MAX (since 2026-09-15 evening
+        -- see the return below; before that it was rescaled off the held
+        drop_hit_intensity) -- never raw per-tick energy_norm (confirmed
+        live 2026-09-14 to read as random flicker). BUILD is a separate,
         sustained, accelerating strobe -- see _build_strobe_rate.
         Bucket transitions/PEAK-escalation logic lives in core/metronome.py
         -- see the separate open item (2026-09-14, Josh) about a sustained
@@ -763,13 +784,11 @@ class ReactiveLayerEngine:
         in_tail = snap.beat_in_bar > 4 - STROBE_PHRASE_TAIL_BEATS
         if not (last_bar_of_phrase and in_tail):
             return 0.0
-        span = DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR
-        hit = snap.drop_hit_intensity
-        if bucket == EnergyBucket.PEAK:
-            hit = min(1.0, hit + PEAK_BOOST)
-        intensity = (hit - DROP_INTENSITY_FLOOR) / span if span > 0 else 1.0
-        intensity = max(0.0, min(1.0, intensity))
-        return intensity * STROBE_MAX
+        # Always the ceiling (2026-09-15, session-20260915-140630): scaling
+        # the tail burst by drop_hit_intensity gave the track's second drop
+        # a 2.4 Hz tail against the first's 4 Hz -- for a 0.8s accent that
+        # only read as "weaker," not as "quieter drop." One burst shape.
+        return STROBE_MAX
 
     def _build_strobe_rate(self, snap: ShowSnapshot) -> float:
         """Continuous BUILD strobe that gets faster across the build (Josh,
@@ -779,9 +798,11 @@ class ReactiveLayerEngine:
         BUILD_RAMP_BARS), from BUILD_STROBE_START of STROBE_MAX up to
         STROBE_MAX. Not burst-gated -- see BUILD_STROBE_START's comment for
         the sustained-rate safety argument and the floor's reason."""
+        if snap.drop_candidate:
+            return 0.0  # the hit has landed; see the comment above BUILD_STROBE_START
         pos = musical_bar_position(snap)
         entry = self._build_entry_pos if self._build_entry_pos is not None else pos
-        progress = max(0.0, min(1.0, (pos - entry) / BUILD_RAMP_BARS))
+        progress = max(0.0, min(1.0, (pos - entry) / BUILD_STROBE_RAMP_BARS))
         return STROBE_MAX * (BUILD_STROBE_START + (1.0 - BUILD_STROBE_START) * progress)
 
     def _musical_position(self, snap: ShowSnapshot) -> float:
