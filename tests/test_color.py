@@ -1,17 +1,10 @@
-"""Tests for the two-axis color model."""
+"""Tests for the audio-band helpers (engines/color.py)."""
 
 from __future__ import annotations
 
-from livereact.color import hsv_to_rgb
 from livereact.core.show_state import ShowSnapshot
-from livereact.engines.color import band_levels, laser_color_for_bands, two_axis_color
+from livereact.engines.color import band_levels, laser_color_for_bands
 from livereact.fixtures.profiles import Laser
-
-
-def test_hsv_primaries():
-    assert hsv_to_rgb(0.0, 1.0, 1.0) == (1.0, 0.0, 0.0)        # red
-    r, g, b = hsv_to_rgb(1 / 3, 1.0, 1.0)                       # green
-    assert g == 1.0 and r == 0.0 and b == 0.0
 
 
 def _snap(**eq) -> ShowSnapshot:
@@ -19,31 +12,6 @@ def _snap(**eq) -> ShowSnapshot:
                 eq_low_a=0.5, eq_mid_a=0.5, eq_high_a=0.5)
     base.update(eq)
     return ShowSnapshot(**base)
-
-
-def test_bass_dominant_reads_red():
-    r, g, b = two_axis_color(_snap(eq_low_a=1.0, eq_mid_a=0.2, eq_high_a=0.2))
-    assert r > g and r > b
-
-
-def test_high_dominant_reads_cyan():
-    r, g, b = two_axis_color(_snap(eq_high_a=1.0, eq_low_a=0.2, eq_mid_a=0.2))
-    assert b > r and g > r  # cyan = green+blue, low red
-
-
-def test_balanced_bands_desaturate_toward_white():
-    r, g, b = two_axis_color(_snap(eq_low_a=1.0, eq_mid_a=1.0, eq_high_a=1.0))
-    assert min(r, g, b) > 0.8  # near white
-
-
-def test_zero_energy_is_black():
-    assert two_axis_color(_snap(energy=0.0, eq_low_a=1.0)) == (0.0, 0.0, 0.0)
-
-
-def test_brightness_tracks_energy():
-    bright = max(two_axis_color(_snap(energy=1.0, eq_low_a=1.0)))
-    dim = max(two_axis_color(_snap(energy=0.3, eq_low_a=1.0)))
-    assert bright > dim
 
 
 def test_band_levels_prefers_fresh_real_audio_over_midi_eq():
@@ -66,8 +34,8 @@ def test_band_levels_falls_back_to_midi_eq_when_audio_stale():
 
 
 # --- laser_color_for_bands (docs/14 §3, 2026-09-06) --------------------------
-# Same "frequency maps to color" principle as two_axis_color, snapped to the
-# laser's small set of discrete CH12 macros instead of a continuous RGB blend.
+# "Frequency maps to color," snapped to the laser's small set of discrete
+# CH12 macros instead of a continuous RGB blend.
 
 
 def test_laser_reads_red_when_bass_dominant():

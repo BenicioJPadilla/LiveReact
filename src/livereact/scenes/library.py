@@ -1,19 +1,21 @@
-"""The starter scene catalog — 8 scenes across breakdown/build/drop/hold.
+"""The scene catalog: LIGHTING_BIBLE.md §5's looks, one class per look.
 
-Adapted from docs/08 §3. Colors follow the two-axis rule (energy->brightness,
-band->hue) except where a scene deliberately sets a mood color (e.g. the deep-blue
-breakdown). Lasers appear only in DROP scenes (docs/08 §5), using the one
-hardware-verified pattern (`Laser.set_dotted_line_sweep`, docs/14 §3,
-2026-09-06) with its color and sweep speed driven by real audio (frequency ->
-color, intensity -> sweep speed) — same "translate the audio directly"
-principle as wash/par, not a scene-picked static look.
+`CORE_SCENES` (bottom of this file) is what the show actually rotates -- one
+look per bucket, with per-song variety coming from the phrase-frozen palette
+(engines/palette.py) rather than from swapping looks. `ALL_SCENES` is the
+full Bible catalog behind `--full-catalog`. Wash color comes from the
+snapshot's palette entry (`scene_color`/`spot_color`, scenes/base.py) except
+where a Bible look names a fixed color; wash INTENSITY is owned by the
+Reactive layer and deliberately not set by scenes (see `paint_wash`). Lasers
+appear only in DROP/PEAK looks (`uses_lasers=True`), using the one
+hardware-verified pattern (`Laser.set_dotted_line_sweep`, 2026-09-06) with
+color and sweep speed driven by real audio.
 """
 
 from __future__ import annotations
 
 import math
 
-from ..color import hsv_to_rgb
 from ..dynamics import musical_bar_position
 from ..core.show_state import ShowSnapshot
 from ..engines.color import laser_color_for_bands
@@ -53,21 +55,6 @@ class DeepWashBreathe(Scene):
         return c
 
 
-class SlowColorCycleAmbient(Scene):
-    """Soft full-rig wash whose hue drifts one step per bar; never hits white."""
-
-    name = "Slow Color Cycle"
-    bucket = EnergyBucket.BREAK
-
-    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
-        c = Contribution()
-        hue = (snap.bar * 0.1) % 1.0
-        r, g, b = hsv_to_rgb(hue, 0.8, 1.0)
-        paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, r, g, b, 0.15 * intensity)
-        return c
-
-
 # --- build / rising energy (lasers OFF; strobe ramps, capped elsewhere) -----
 
 class RisingTide(Scene):
@@ -90,45 +77,6 @@ class RisingTide(Scene):
         for fx in rig.by_role("spot"):
             mirror = 1.0 if fx.side == "left" else -1.0
             fx.set_position(c, 0.5 + 0.3 * math.sin(pos * 1.5) * mirror, 0.5)
-        return c
-
-
-class Converge(Scene):
-    """Spot fixtures pan from spread positions toward center as the build rises.
-
-    GENERALIZED for any spot-fixture count (was hardcoded to exactly 2,
-    side=="left"/else — broken on a 1-fixture rig, since it always took the
-    same branch and the "converge from the other side" half never happened).
-    With 2+ moving heads, they spread evenly outward and close in toward one
-    point — same math as before for exactly 2 (verified: reduces to the
-    original 0.15/0.85 spread). With exactly 1 (nothing to converge WITH),
-    the same "spread/searching -> locked/still" arc is expressed instead as
-    a sweep whose amplitude narrows to stillness at center — same emotional
-    shape, no special hardware needed to make it read as intentional.
-    """
-
-    name = "Converge"
-    bucket = EnergyBucket.BUILD
-
-    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
-        c = Contribution()
-        r, g, b = scene_color(snap)
-        paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, 1.0, 1.0, 1.0, (0.5 + 0.5 * snap.energy) * intensity)
-        prog = max(0.0, min(1.0, snap.energy))
-        spots = rig.by_role("spot")
-        n = len(spots)
-        if n == 1:
-            pos = musical_bar_position(snap)
-            amplitude = 0.35 * (1.0 - prog)  # wide search -> still, as prog rises
-            pan = 0.5 + amplitude * math.sin(pos)
-            spots[0].set_position(c, pan, 0.45)
-        else:
-            for i, fx in enumerate(spots):
-                spread = (i / (n - 1)) - 0.5   # -0.5 .. +0.5, evenly across all spots
-                outward = 0.5 + spread * 0.7
-                pan = outward + (0.5 - outward) * prog
-                fx.set_position(c, pan, 0.45)
         return c
 
 
@@ -179,7 +127,7 @@ class DropBlackoutHit(Scene):
     name = "Drop Blackout Hit"
     bucket = EnergyBucket.DROP
     conflicts = frozenset({
-        "Rising Tide", "Converge", "Pulse & Drift Sustain", "Locked Hold", "Build Riser Wash",
+        "Rising Tide", "Build Riser Wash",
         "Chase Wash L/R",  # added Phase 5 fifth wave -- also a BUILD-bucket look
         "Build Beam Raise",  # added Phase 5 sixth wave -- also a BUILD-bucket look
         "Build Snare Accent",  # added build_snare_accent build-out, 2026-09-14 -- also a BUILD-bucket look
@@ -355,7 +303,7 @@ class PeakColorPulseClear(Scene):
         c = Contribution()
         r, g, b = scene_color(snap)
         # "on bar downbeat only" -- a short pulse right at beat 1, decaying
-        # across the rest of the bar, same shape as beat_pulse but gated to
+        # across the rest of the bar, a per-beat decay shape gated to
         # only the bar's first beat instead of every beat.
         on_downbeat = snap.beat_in_bar == 1
         pulse = (1.0 - snap.beat_phase) if on_downbeat else 0.0
@@ -370,10 +318,10 @@ class PeakColorPulseClear(Scene):
 class PeakAltHitsClear(Scene):
     """LIGHTING_BIBLE.md §5: "two spots alternate snap-hits to position, no
     beams." `scaling{2:alternate L/R snap each bar}` -- generalized for this
-    rig's single spot fixture the same way Converge was (MOVE-12): with
+    rig's single spot fixture (MOVE-12's single-mover substitution): with
     nothing to alternate WITH, the one fixture itself snaps between two
     positions every bar, matching the "alternate, don't sweep" shape
-    (`snap_alternate`, no interpolation) rather than Converge's continuous
+    (`snap_alternate`, no interpolation) rather than a continuous
     search."""
 
     name = "Peak Alt Hits Clear"
@@ -402,11 +350,10 @@ class PeakAltHitsClear(Scene):
 # --- break family, Bible-integration Phase 5, third wave (docs/bible_
 # integration/LOOK_CATALOG.md's unnumbered break_* looks, §5 lines 743-761 +
 # 859-861) -- built after DROP/BUILD/PEAK per the plan's stated wave order.
-# Reuses BLOOD_RED/COLD_STEEL's named-palette pattern (DEEP_BLUE, defined
-# alongside them above) and the same disclosed-gap habit as BuildRiserWash/
+# Reuses BLOOD_RED/COLD_STEEL's named-palette pattern (DEEP_BLUE below) and the same disclosed-gap habit as BuildRiserWash/
 # PeakFullRig for anything the Bible doesn't fully specify for a given look.
 
-DEEP_BLUE = (0.1, 0.1, 0.9)  # matches DeepWashBreathe's existing inline "deep blue" literal -- named here for reuse, not a new color choice
+DEEP_BLUE = (0.1, 0.1, 0.9)  # BreakColorHoldClear's fixed "deep_blue" (DeepWashBreathe used to share it; it's on the palette since 2026-09-15)
 
 
 class BreakLowWash(Scene):
@@ -589,7 +536,7 @@ class OutroSingleBeam(Scene):
     future rig ever has 2+ spots, only the first is lit; this codebase's
     only spot fixture today (`mh_l`) makes that indistinguishable from
     "the spot," but the distinction is real and worth keeping explicit
-    (same discipline as Converge/PeakAltHitsClear's N-fixture handling).
+    (same discipline as PeakAltHitsClear's N-fixture handling).
 
     GAP, disclosed not faked: "ceiling_bounce" is another named-position
     case with no mechanism in this codebase (same absence as
@@ -667,7 +614,7 @@ class ChaseWashLr(Scene):
     dark_pct = 0.30
     min_hold_bars = 8
     reactivity_note = "movement only (chase, period_bars 2); no reactivity{} block given by the Bible for this look"
-    color_note = "not specified by the Bible for this look -- reuses the phrase-frozen palette (scene_color) for BUILD-family consistency with Rising Tide/Converge"
+    color_note = "not specified by the Bible for this look -- reuses the phrase-frozen palette (scene_color) for BUILD-family consistency with Rising Tide"
 
     PERIOD_BARS = 2.0
 
@@ -821,7 +768,7 @@ class DropLaserPunctuation(Scene):
     # conflicts[all build looks]; keep in sync if a future BREAK scene is
     # added (see test_drop_laser_punctuation_conflicts_with_every_break_scene).
     conflicts = frozenset({
-        "Deep Wash Breathe", "Slow Color Cycle", "Break Low Wash",
+        "Deep Wash Breathe", "Break Low Wash",
         "Break Single Spot Special", "Break Ceiling Drift", "Break Color Hold Clear",
     })
     min_hold_bars = 8
@@ -1125,52 +1072,16 @@ class PeakStrobeBlackout(Scene):
         return c
 
 
-# --- hold / sustain (loops, post-transition, plateaus) ----------------------
-
-class PulseAndDriftSustain(Scene):
-    """Steady mid-energy groove: wash ~65%, slow MH drift, hue holds; no strobe/laser."""
-
-    name = "Pulse & Drift Sustain"
-    bucket = EnergyBucket.BUILD  # HOLD removed, Phase 2 -- folded into BUILD's upper tail
-
-    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
-        c = Contribution()
-        r, g, b = scene_color(snap)
-        paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, r, g, b, 0.6 * intensity)
-        pos = musical_bar_position(snap)
-        for fx in rig.by_role("spot"):
-            mirror = 1.0 if fx.side == "left" else -1.0
-            fx.set_position(c, 0.5 + 0.2 * math.sin(pos * 0.5) * mirror, 0.5)
-        return c
-
-
-class LockedHold(Scene):
-    """A calm steady look: single hue, minimal movement. Used during loops and the
-    mandatory post-transition hold."""
-
-    name = "Locked Hold"
-    bucket = EnergyBucket.BUILD  # HOLD removed, Phase 2 -- folded into BUILD's upper tail
-
-    def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
-        c = Contribution()
-        r, g, b = scene_color(snap)
-        paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, r, g, b, 0.4 * intensity)
-        for fx in rig.by_role("spot"):
-            fx.set_position(c, 0.5, 0.5)
-        return c
-
-
 ALL_SCENES: list[type[Scene]] = [
+    # The two pre-Bible looks that survived: Deep Wash Breathe (now on the
+    # palette) and Rising Tide (the core BUILD look). FullSpectrumHit /
+    # BeamFanLaserTunnel were retired in Phase 6 (see the comment above the
+    # "drop / peak energy" section header); Slow Color Cycle, Converge,
+    # Pulse & Drift Sustain and Locked Hold were deleted in the 2026-09-15
+    # polish pass (non-Bible looks, --full-catalog only) -- all recoverable
+    # from git (`feeb543` and earlier).
     DeepWashBreathe,
-    SlowColorCycleAmbient,
     RisingTide,
-    Converge,
-    # FullSpectrumHit / BeamFanLaserTunnel retired here, Phase 6 -- see the
-    # comment above the "drop / peak energy" section header for why.
-    PulseAndDriftSustain,
-    LockedHold,
     # Bible-integration Phase 5, first wave -- BUILD/DROP families:
     DropBlackoutHit,
     DropStrobeStab,

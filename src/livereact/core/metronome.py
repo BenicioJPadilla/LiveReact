@@ -29,7 +29,7 @@ from collections import deque
 from ..clock import Clock, LoopTimer
 from ..engines import palette as palette_mod
 from ..scenes.base import EnergyBucket
-from ..scenes.catalog import _BUCKET_ORDER, BUILD_MAX, bucket_for_energy_with_hysteresis
+from ..scenes.catalog import _BUCKET_ORDER, BUILD_MAX, LEGAL_TRANSITIONS, bucket_for_energy_with_hysteresis
 from .messages import AudioLevelMessage, BeatMessage, MidiControlMessage, StatusMessage, TransitionMessage
 from .show_state import ShowSnapshot, ShowState
 
@@ -446,13 +446,12 @@ class Metronome(threading.Thread):
         self._audio_band_mid = 0.333
         self._audio_band_high = 0.334
         self._audio_band_low_abs = 0.0
-        self._audio_band_mid_abs = 0.0    # build_snare_accent Step 0 (2026-09-14) -- plumbing only, unconsumed so far
+        self._audio_band_mid_abs = 0.0    # feed core/snare_trigger.py's SnareOnsetDetector (2026-09-14)
         self._audio_band_high_abs = 0.0   # same
         self._audio_rms = 0.0
 
         # freshness tracking
-        self._last_beat_time: float | None = None
-        self._last_pdl_time: float | None = None
+        self._last_beat_time: float | None = None  # PDL freshness keys off master BEATS, not status packets
         self._last_midi_time: float | None = None
         self._last_audio_time: float | None = None
         self._last_log = clock.monotonic()
@@ -512,7 +511,6 @@ class Metronome(threading.Thread):
             log.debug("Metronome ignoring unknown message: %r", msg)
 
     def _on_beat(self, msg: BeatMessage) -> None:
-        self._last_pdl_time = msg.timestamp
         if not msg.is_master:
             return  # only the master deck drives the clock
         if msg.bpm > 0:
@@ -527,7 +525,6 @@ class Metronome(threading.Thread):
         self._last_beat_time = msg.timestamp
 
     def _on_status(self, msg: StatusMessage) -> None:
-        self._last_pdl_time = msg.timestamp
         self._on_air = msg.on_air
         # A master-deck handoff is a transition.
         if self._prev_master is not None and msg.master_deck != self._prev_master:
@@ -603,7 +600,7 @@ class Metronome(threading.Thread):
         # envelope (already tuned to feel responsive to real transients), then
         # again here by ENERGY_SMOOTHING's ~0.2s time constant. That stacked
         # smoothing showed up as a measured ~120ms of extra lag on the moving
-        # head's dimmer (which reads snap.energy directly, no beat_pulse of its
+        # head's dimmer (which reads snap.energy directly, no envelope of its
         # own) beyond the audio path's already-unavoidable capture latency.
         # Fix: real audio is already appropriately smoothed by the time it gets
         # here — pass it through as-is. Only the MIDI proxy (raw fader/EQ
@@ -706,6 +703,40 @@ class Metronome(threading.Thread):
         self._base_committed = EnergyBucket.DROP
         self._base_committed_since = now
 
+    def _apply_manual_override(self, bucket: EnergyBucket, now: float) -> None:
+        """Commit a manual cue (see request_manual_bucket) so that the NEXT
+        tick's automated classifier + overlay agree with it, instead of
+        crashing or immediately undoing it -- found in the 2026-09-15 polish
+        pass: the old inline version stored PEAK/OUTRO straight into
+        `_base_committed`, and `_BUCKET_ORDER.index(...)` on the following
+        tick raised ValueError (the base walk is BREAK/BUILD/DROP only).
+
+        PEAK/OUTRO are overlays on a DROP/BREAK base (see _apply_bucket_
+        overlay), so the base is set to that anchor and back-dated past its
+        own dwell floor so the overlay condition holds right away; a DROP or
+        PEAK cue goes through _commit_drop's usual bookkeeping (drop_start_
+        bar, commit energy) with the hit intensity pinned to the ceiling --
+        a manual "drop now" is by definition the real thing."""
+        base = {EnergyBucket.PEAK: EnergyBucket.DROP, EnergyBucket.OUTRO: EnergyBucket.BREAK}.get(bucket, bucket)
+        self._bucket_candidate = None
+        self._bucket_candidate_since = None
+        if base == EnergyBucket.DROP:
+            self._commit_drop(now)
+            self.drop_hit_intensity = DROP_INTENSITY_CEIL
+        else:
+            self._base_committed = base
+            self._base_committed_since = now
+        if bucket == EnergyBucket.PEAK:
+            self._base_committed_since = now - PER_STATE_DWELL_S[EnergyBucket.DROP]
+        elif bucket == EnergyBucket.OUTRO:
+            self._base_committed_since = now - PER_STATE_DWELL_S[EnergyBucket.BREAK]
+            self._last_drop_or_peak_t = now  # "after a recent drop" -- the operator says so
+        self._apply_bucket_overlay(now)
+        if bucket == EnergyBucket.PEAK and self._bucket_committed != EnergyBucket.PEAK:
+            # The overlay also wants energy_norm near the top; the cue overrides
+            # that reading for this tick so the look actually lands.
+            self._bucket_committed = EnergyBucket.PEAK
+
     def _derive_bucket(self, now: float) -> None:
         """Debounce bucket_for_energy's output against the base 3-state
         classifier (BREAK/BUILD/DROP -- see EnergyBucket's own docstring for
@@ -718,13 +749,7 @@ class Metronome(threading.Thread):
         but the classifier defers to it unconditionally once something calls it.
         """
         if self._manual_bucket_override is not None:
-            if self._manual_bucket_override == EnergyBucket.DROP:
-                self.drop_hit_intensity = DROP_INTENSITY_CEIL  # a manual "drop now" cue is by definition the real thing
-            self._base_committed = self._manual_bucket_override
-            self._base_committed_since = now
-            self._bucket_committed = self._manual_bucket_override
-            self._bucket_candidate = None
-            self._bucket_candidate_since = None
+            self._apply_manual_override(self._manual_bucket_override, now)
             self._manual_bucket_override = None
             return
 
@@ -793,7 +818,10 @@ class Metronome(threading.Thread):
             self._bucket_candidate = None
             self._bucket_candidate_since = None
         else:
-            # LIGHTING_BIBLE.md §9.8's legal-transition matrix, restricted to
+            # LIGHTING_BIBLE.md §9.8's legal-transition matrix
+            # (scenes/catalog.py's LEGAL_TRANSITIONS -- the single declared
+            # source since the 2026-09-15 polish pass; it used to be a
+            # hardcoded copy of its one forbidden edge here), restricted to
             # this module's 3-value base (PEAK/OUTRO are overlays that never
             # block the base -- see the OUTRO_LOOKBACK_S comment above for
             # why NOT doing that matters). Every BREAK/BUILD/DROP pair is
@@ -801,7 +829,7 @@ class Metronome(threading.Thread):
             # BUILD ("still building") is explicitly forbidden -- a real
             # drop either keeps going, escalates to PEAK, or fully resolves
             # through BREAK first, never downgrades to "not quite there yet."
-            illegal = self._base_committed == EnergyBucket.DROP and raw == EnergyBucket.BUILD
+            illegal = raw not in LEGAL_TRANSITIONS[self._base_committed]
             if illegal:
                 self._bucket_candidate = None
                 self._bucket_candidate_since = None

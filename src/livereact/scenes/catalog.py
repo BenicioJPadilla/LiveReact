@@ -54,19 +54,20 @@ BUILD_MAX = 0.80
 # captures, same as everything else here.
 HYSTERESIS_MARGIN_UP = 0.05
 HYSTERESIS_MARGIN_DOWN = 0.15
-HYSTERESIS_MARGIN = HYSTERESIS_MARGIN_UP  # kept for any caller still using the old flat name
 
 _BUCKET_ORDER = (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP)
 _BUCKET_BOUNDARIES = (BREAK_MAX, BUILD_MAX)  # boundary i sits between order[i]/order[i+1]
 
 # LIGHTING_BIBLE.md §9.8's legal transition matrix (TIME-13): a bucket may
 # only move to one of the states listed here; anything else is "ignored,
-# state holds" until a legal path opens up. Applied in core/metronome.py
-# against the FULL committed bucket (which may be PEAK/OUTRO, an escalation
-# on top of this module's BREAK/BUILD/DROP), not just the raw 3-way walk
-# above -- e.g. DROP -> BUILD is explicitly illegal in the Bible (a real drop
-# doesn't downgrade back to "still building"; it either keeps going, escalates
-# to PEAK, or fully resolves through BREAK first).
+# state holds" until a legal path opens up. Read by core/metronome.py's
+# `_derive_bucket` against its BREAK/BUILD/DROP base (PEAK/OUTRO are
+# overlays there and never block the base) -- in practice the one edge that
+# bites is DROP -> BUILD, explicitly illegal in the Bible (a real drop
+# doesn't downgrade back to "still building"; it either keeps going,
+# escalates to PEAK, or fully resolves through BREAK first). The PEAK/OUTRO
+# rows document the Bible's full matrix for a future consumer of the
+# overlay states.
 LEGAL_TRANSITIONS: dict[EnergyBucket, set[EnergyBucket]] = {
     EnergyBucket.BREAK: {EnergyBucket.BUILD, EnergyBucket.DROP, EnergyBucket.OUTRO},
     EnergyBucket.BUILD: {EnergyBucket.BREAK, EnergyBucket.DROP},

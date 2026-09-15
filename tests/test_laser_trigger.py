@@ -131,6 +131,17 @@ def test_a_spike_during_an_intense_section_does_trigger():
     assert d.update(_snap(audio_band_low_abs=10.0, energy=0.9)) is True
 
 
+def test_a_spike_during_peak_also_triggers():
+    """PEAK is the metronome's escalation of a sustained DROP -- the most
+    intense stretch of it, not a state the laser should go dark for. Bible
+    §8.5: "drops and peaks only." Was `== DROP` until the 2026-09-15 polish
+    pass (a real gap: the laser died the moment a drop escalated)."""
+    clock = FakeClock()
+    d = LaserOnsetDetector(clock)
+    _warm_up(d, clock, audio_band_low_abs=1.0, energy=0.9, bucket="peak")
+    assert d.update(_snap(audio_band_low_abs=10.0, energy=0.9, bucket="peak")) is True
+
+
 def test_intensity_dropping_mid_song_stops_new_triggers():
     """A spike that would otherwise fire must not trigger once the song's
     overall energy has genuinely dropped out of the DROP bucket, even if the

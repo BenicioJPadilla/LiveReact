@@ -42,7 +42,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--demo", action="store_true", help="Run with synthetic data, no hardware (default).")
-    mode.add_argument("--hardware", action="store_true", help="Use real devices (Enttec + Pro DJ Link + MIDI). UNTESTED.")
+    mode.add_argument("--hardware", action="store_true",
+                      help="Use real devices (Enttec DMX + Pro DJ Link + XDJ MIDI/audio). Pair with --rig rigs/josh_rig.json.")
     p.add_argument("--rate", type=float, default=40.0, dest="rate", help="DMX refresh rate in Hz (default: 40).")
     p.add_argument("--duration", type=float, default=None, help="Run for N seconds then exit (default: until Ctrl-C).")
     p.add_argument("--visualize", action="store_true", help="Open the operator console + virtual rig (PySide6).")
@@ -134,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         from .recorder import create_session_dir
 
         session_dir = args.session_dir or create_session_dir()
+        os.makedirs(session_dir, exist_ok=True)  # an explicit --session-dir may not exist yet
     log_file = (os.path.join(session_dir, "session.log") if session_dir else args.log_file)
     error_file = os.path.join(session_dir, "errors.log") if session_dir else None
     _configure_logging(args.log_level, log_file=log_file, error_file=error_file)

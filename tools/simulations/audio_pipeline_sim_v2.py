@@ -21,7 +21,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from audio_pipeline_sim import SR, BLOCK, build_track as _build_track_base
+from audio_pipeline_sim import SR, BLOCK
 
 # ------------------------------------------------------------------ rebuild track at the QUIET (harder) breakdown level
 import audio_pipeline_sim as base

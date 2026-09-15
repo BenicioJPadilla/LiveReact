@@ -56,9 +56,8 @@ class ShowSnapshot:
     # for the laser onset trigger specifically — VERIFIED these must stay two
     # separate signals (tools/simulations/audio_pipeline_sim_v2.py), not one
     # derived from the other. band_mid_abs/band_high_abs (2026-09-14,
-    # build_snare_accent Step 0) extend the same idea to the other two bands
-    # for a future snare/hi-hat onset detector -- plumbing only, unconsumed
-    # by anything yet.
+    # build_snare_accent) extend the same idea to the other two bands and
+    # feed core/snare_trigger.py's SnareOnsetDetector (their sum).
     audio_energy: float = 0.0
     audio_band_low: float = 0.333
     audio_band_mid: float = 0.333

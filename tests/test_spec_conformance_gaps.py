@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from livereact.core.show_state import ShowSnapshot
 from livereact.engines.phrase import ROTATION_BARS, PhraseEngine
-from livereact.fixtures.profiles import MovingHead
 from livereact.fixtures.rig import load_rig
 from livereact.merge.merge import Contribution, ManualParams, finalize, merge_contributions
 from livereact.scenes.catalog import bucket_for_energy

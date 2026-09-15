@@ -24,7 +24,7 @@ dependency, just a subprocess call).
 Outputs (next to the input file by default, override with --out):
   <out>.csv   one row per audio block (~23ms) -- every internal signal this
               project has needed to diagnose a live-test complaint so far:
-              energy, energy_norm, bucket, wash_level, kick_level, palette,
+              energy, energy_norm, bucket, wash_level, palette,
               laser/silence active, and per-fixture VisualState (r/g/b,
               brightness, pan, tilt, active) for all 4 real rig fixtures.
   <out>.png   a timeline plot of the same, for eyeballing without a CSV viewer.
@@ -225,7 +225,6 @@ def run(mp3_path: str, bpm: float, duration: float | None, rig_path: str, out_pr
             "energy_norm": round(snap.energy_norm, 4),
             "bucket": bucket,
             "wash_level": round(reactive.wash_level, 4),
-            "kick_level": round(reactive.kick_level, 4),
             "palette": snap.palette,
             "scene": phrase._current.name,
             "scene_uses_lasers": phrase._current.uses_lasers,
@@ -309,7 +308,6 @@ def write_plot(rows: list[dict], path: str, bpm: float) -> None:
 
     ax = axes[1]
     ax.plot(t, [r["wash_level"] for r in rows], color="#c98a2c", lw=1.0, label="wash_level (par/bar)")
-    ax.plot(t, [r["kick_level"] for r in rows], color="#3c8a4a", lw=0.6, label="kick_level (retired, still computed)")
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("wash/par")
     ax.legend(loc="upper right", fontsize=8)

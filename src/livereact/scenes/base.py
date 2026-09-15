@@ -145,11 +145,11 @@ ALL_DARK = AllDark()
 
 def scene_color(snap: ShowSnapshot) -> tuple[float, float, float]:
     """The wash color for this tick: the snapshot's phrase-frozen palette
-    entry (engines/palette.py). Replaces the old per-scene
-    `two_axis_color(snap.replace(energy=1.0))`, which re-picked hue from the
-    audio bands every tick (measured live 2026-09-15 as 6-10 hue flips per
-    second -- "random colors every half beat"). Scenes that want a
-    deliberate fixed mood color still just pass their own RGB."""
+    entry (engines/palette.py). Replaces the old per-scene audio-band hue
+    pick (the deleted `two_axis_color`), which re-picked hue from the audio
+    bands every tick (measured live 2026-09-15 as 6-10 hue flips per second
+    -- "random colors every half beat"). Scenes that want a deliberate fixed
+    mood color still just pass their own RGB."""
     return palette_rgb(snap.palette)
 
 

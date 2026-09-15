@@ -77,7 +77,6 @@ def build_track():
 
     groove_mask = in_section("groove_a") | in_section("groove_b")
     breakdown_mask = in_section("breakdown")
-    silence_mask = in_section("silence")
 
     # kick times: every beat, during groove sections only
     kick_times = []

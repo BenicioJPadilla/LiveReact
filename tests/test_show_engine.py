@@ -10,7 +10,7 @@ from livereact.core.show_engine import ShowEngine
 from livereact.core.show_state import ShowSnapshot, ShowState
 from livereact.engines.reactive import ReactiveLayerEngine
 from livereact.fixtures.rig import load_rig
-from livereact.merge.merge import Contribution, ManualParams
+from livereact.merge.merge import ManualParams
 
 
 def _engine(engines, manual=None, state=None):

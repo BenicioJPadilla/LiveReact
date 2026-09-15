@@ -35,17 +35,17 @@ LIGHTING_BIBLE.md §8.5 full-alignment build): the ratio-based spike check
 above is RELATIVE — it fires on a genuine bass spike regardless of whether
 the song overall is quiet or intense, since it only compares against its
 OWN recent rolling average. A raw `snap.energy >= 0.7` threshold used to be
-the fix for that ("intense parts only"). Now replaced by the SAME
-`bucket_for_energy` check the wash/par model uses (`EnergyBucket.DROP` only)
-— one shared notion of "is this actually a drop," not two different
-intensity concepts living side by side. This is also now what the Bible's
-own §8.5 wants literally: "lasers are punctuation, not continuous texture...
-drops and peaks only."
+the fix for that ("intense parts only"). Now replaced by the SAME debounced
+`snap.bucket` the wash/par model reads (`EnergyBucket.DROP` or `PEAK`) — one
+shared notion of "is this actually a drop," not two different intensity
+concepts living side by side. This is also now what the Bible's own §8.5
+wants literally: "lasers are punctuation, not continuous texture... drops and
+peaks only."
 
 Musical role / duty cycle, full alignment (2026-09-08, LIGHTING_BIBLE.md
 §8.5): three things layered on top of the onset detection above, in the
 same spirit as the wash/par bucket-model build the same session --
-- **Gated to DROP** (see above) -- was a looser `MIN_INTENSITY=0.7` before.
+- **Gated to DROP/PEAK** (see above) -- was a looser `MIN_INTENSITY=0.7` before.
 - **Minimum spacing between separate laser moments** (`MIN_SPACING_S`, the
   Bible's "≥2 phrases (~2 min) so it stays special") -- distinct from
   `REFRACTORY_S` below, which only guards against re-triggering WITHIN a
@@ -60,8 +60,8 @@ Scene-awareness gate (2026-09-07, CONFIRMED live via a real --hardware
 --record capture, see [[livereact-project]] memory): this detector and
 `PhraseEngine`'s scene rotation were fully independent systems that had never
 been wired together -- a real session showed ALL 21 laser flashes that
-session firing during "Slow Color Cycle"/"Deep Wash Breathe" (both
-`uses_lasers=False`), meaning every one was invisible yet still spent the
+session firing during two BREAK looks (both `uses_lasers=False`; one of them,
+"Slow Color Cycle", has since been deleted), meaning every one was invisible yet still spent the
 `MIN_SPACING_S`/`MAX_DUTY` budget above for nothing. `update()` now takes an
 explicit `scene_uses_lasers` flag (the caller's job to supply the active
 scene's own value -- this module still has no scene knowledge of its own,
@@ -164,7 +164,12 @@ class LaserOnsetDetector:
         # why (a fixed absolute DROP threshold against raw RMS doesn't
         # generalize across sessions/tracks, and an undebounced check flaps
         # near the boundary; both found live 2026-09-07).
-        in_drop = EnergyBucket(snap.bucket) == EnergyBucket.DROP
+        # DROP *and* PEAK: PEAK is core/metronome.py's escalation of a
+        # sustained DROP (the most intense stretch of it), not a separate
+        # state the laser should go dark for. Was `== DROP` only until the
+        # 2026-09-15 polish pass -- a straight bug against the docstring's
+        # own "drops and peaks only".
+        in_drop = EnergyBucket(snap.bucket) in (EnergyBucket.DROP, EnergyBucket.PEAK)
         spaced_out = (now - self._last_flash_end_t) >= self.min_spacing_s
         under_duty = self._total_elapsed_s <= 0.0 or \
             (self._total_flash_s / self._total_elapsed_s) < self.max_duty

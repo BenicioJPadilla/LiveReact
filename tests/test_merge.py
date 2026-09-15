@@ -3,7 +3,7 @@ criteria (docs/12 Phase 2)."""
 
 from __future__ import annotations
 
-from livereact.fixtures.profiles import Laser, MovingHead, Par, WashBar
+from livereact.fixtures.profiles import Laser
 from livereact.fixtures.rig import load_rig
 from livereact.merge.merge import (
     Contribution,

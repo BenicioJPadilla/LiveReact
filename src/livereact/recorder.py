@@ -87,7 +87,7 @@ class SessionRecorder(threading.Thread):
         message-capture-and-replay system, this just records the SAME internal
         fields directly off the real, live objects during an actual
         `--hardware --record` session), each tick also captures energy_norm,
-        bucket, wash/kick level, hue, laser/silence state, the active scene,
+        bucket, wash/strobe level, palette, laser/silence state, the active scene,
         and per-fixture DMX-derived state for the whole rig — no separate
         simulation needed, and no fidelity question at all: this IS the live
         run, not an approximation of one."""
@@ -157,7 +157,6 @@ class SessionRecorder(threading.Thread):
         # doesn't expose one of these) still records what it can.
         if self.reactive_engine is not None:
             record["wash_level"] = round(self.reactive_engine.wash_level, 4)
-            record["kick_level"] = round(self.reactive_engine.kick_level, 4)
             record["strobe_level"] = round(self.reactive_engine.strobe_level, 4)
             # 2026-09-15: every automated strobe is a software dimmer toggle
             # on par + wash bar (engines/reactive.py's _StrobeClock), so the

@@ -56,23 +56,24 @@ PALETTE_MIN_HOLD_BARS = 8  # a phrase boundary never re-picks a color younger th
 # wash is white regardless. Long breaks/intros keep the 16-bar walk.
 PHRASE_REPICK_FAMILIES = frozenset({"break"})
 
-# (wash entries, spot entries) per bucket family. A single-entry tuple means
-# "always this" (BUILD's white wash).
+# (wash entries, spot entries) per bucket FAMILY (see `family()` below). A
+# single-entry tuple means "always this" (BUILD's white wash). PEAK shares
+# DROP's list by construction: a PEAK is the escalation of a drop that is
+# already showing its one color, and `_derive_palette` never re-picks on a
+# same-family overlay flip -- a separate PEAK list (blood_red/acid_yellow/
+# hot_magenta, the earlier 2026-09-15 sketch) was unreachable and was
+# removed in the same day's polish pass.
 BREAK_WASH = ("deep_blue", "uv_violet", "cold_steel")
 BREAK_SPOT = BREAK_WASH
 BUILD_WASH = ("neutral_wash",)
 BUILD_SPOT = ("hot_magenta", "deep_amber", "cyan_ice")
 DROP_WASH = ("blood_red", "cold_steel")   # the pair drop_blackout_hit already alternated
 DROP_SPOT = DROP_WASH
-PEAK_WASH = ("blood_red", "acid_yellow", "hot_magenta")
-PEAK_SPOT = PEAK_WASH
 
 _FAMILY: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "break": (BREAK_WASH, BREAK_SPOT),
-    "outro": (BREAK_WASH, BREAK_SPOT),
     "build": (BUILD_WASH, BUILD_SPOT),
     "drop": (DROP_WASH, DROP_SPOT),
-    "peak": (PEAK_WASH, PEAK_SPOT),
 }
 
 
@@ -87,7 +88,7 @@ def pick(bucket: str, phrase_index: int, drop_cycle: int, track_seed: int) -> tu
     """Deterministic (wash_name, spot_name) for this bucket + phrase. Same
     inputs -> same answer (replayable from a recording); `track_seed` and
     `drop_cycle` shift the walk so successive tracks/drops differ."""
-    wash_list, spot_list = _FAMILY.get(bucket, _FAMILY["break"])
+    wash_list, spot_list = _FAMILY.get(family(bucket), _FAMILY["break"])
     idx = phrase_index + drop_cycle + track_seed
     return wash_list[idx % len(wash_list)], spot_list[idx % len(spot_list)]
 

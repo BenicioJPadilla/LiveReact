@@ -17,7 +17,7 @@ import math
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..core.frame_buffer import UNIVERSE_SIZE, DmxFrameBuffer
+from ..core.frame_buffer import DmxFrameBuffer
 from ..fixtures.profiles import Laser, MovingHead, Par, WashBar
 from ..fixtures.rig import Rig, load_rig
 from ..merge.merge import Contribution, ManualParams, render_universe

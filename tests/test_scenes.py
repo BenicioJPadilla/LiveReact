@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from livereact.core.show_state import ShowSnapshot
-from livereact.fixtures.rig import _rig_from_dict, load_rig
+from livereact.fixtures.rig import load_rig
 from livereact.scenes.base import SAFE_DEFAULT, EnergyBucket, Scene
 from livereact.scenes.catalog import SceneCatalog, bucket_for_energy
-from livereact.scenes.library import ALL_SCENES, Converge, DeepWashBreathe, DropBlackoutHit
+from livereact.scenes.library import ALL_SCENES, DeepWashBreathe, DropBlackoutHit
 
 
 def _snap(**kw) -> ShowSnapshot:
@@ -18,10 +18,12 @@ def _snap(**kw) -> ShowSnapshot:
 def test_thirty_scenes_across_all_buckets():
     """Bible-integration Phase 2: OUTRO was a genuinely new state (see
     EnergyBucket's own docstring) with no scene at all until Phase 5's
-    fourth wave -- now every bucket has at least one look. 30 = the
+    fourth wave -- now every bucket has at least one look. 27 = the
     original 8 MINUS 2 (Phase 6 retired FullSpectrumHit/BeamFanLaserTunnel
     -- see the comment above the "drop / peak energy" section header in
-    scenes/library.py for why) + Phase 5's first wave (DropBlackoutHit,
+    scenes/library.py for why) MINUS 4 (the 2026-09-15 polish pass deleted
+    the non-Bible Slow Color Cycle/Converge/Pulse & Drift/Locked Hold, see
+    ALL_SCENES' own comment) + Phase 5's first wave (DropBlackoutHit,
     DropStrobeStab, BuildRiserWash) + second wave (PeakFullRig,
     PeakColorPulseClear, PeakAltHitsClear) + third wave (BreakLowWash,
     BreakSingleSpotSpecial, BreakCeilingDrift, BreakColorHoldClear) +
@@ -40,7 +42,7 @@ def test_thirty_scenes_across_all_buckets():
     build-out (BuildSnareAccent, 2026-09-14 -- depended on new snare-roll
     subdivision detection, core/snare_trigger.py, built this session)."""
     cat = SceneCatalog(full=True)  # the whole library, not the core default
-    assert len(ALL_SCENES) == 31
+    assert len(ALL_SCENES) == 27
     for bucket in EnergyBucket:
         assert cat.bucket(bucket), f"{bucket} has no scenes"
 
@@ -777,39 +779,6 @@ def test_peak_strobe_blackout_conflicts_with_break_low_wash_bidirectionally():
     from livereact.scenes.catalog import SceneCatalog
     from livereact.scenes.library import BreakLowWash, PeakStrobeBlackout
     assert SceneCatalog._conflicts(PeakStrobeBlackout(), BreakLowWash())
-
-
-def test_converge_two_spots_matches_original_spread():
-    """Converge was generalized from a hardcoded 2-fixture L/R split to any
-    fixture count — this pins down that the N=2 case still reduces to
-    exactly the original 0.15/0.85 spread math."""
-    rig = load_rig()  # packaged default: mh_l (left) + mh_r (right)
-    prog = 0.6
-    snap = _snap(energy=prog)
-    c = Converge().render(rig, snap, 1.0)
-    mh_l, mh_r = rig.fixture("mh_l"), rig.fixture("mh_r")
-    assert c.values[mh_l.offset] == round((0.15 + 0.35 * prog) * 255)
-    assert c.values[mh_r.offset] == round((0.85 - 0.35 * prog) * 255)
-
-
-def test_converge_single_spot_narrows_to_center_as_energy_rises():
-    """The old Converge was broken on a 1-fixture rig: both branches of
-    `if side == "left"` collapse to the same one, so "converge from the
-    other side" never happened. The fix expresses the same arc as a sweep
-    that narrows to stillness at center instead."""
-    rig = _rig_from_dict({
-        "name": "single-mh",
-        "slots": [{"slot_id": "mh", "fixture_type": "shehds_180w_mh",
-                   "dmx_address": 1, "role": "spot", "side": "left"}],
-    })
-    mh = rig.fixture("mh")
-    # bar=2, beat 1, phase 0 -> musical_bar_position == 2.0, away from a sin() zero-crossing
-    low = _snap(energy=0.0, bar=2, beat_in_bar=1, beat_phase=0.0)
-    high = _snap(energy=1.0, bar=2, beat_in_bar=1, beat_phase=0.0)
-    pan_low = Converge().render(rig, low, 1.0).values[mh.offset]
-    pan_high = Converge().render(rig, high, 1.0).values[mh.offset]
-    assert pan_high == 128            # full energy -> amplitude 0 -> dead center
-    assert abs(pan_low - 128) > 20    # low energy -> meaningfully off-center, still sweeping
 
 
 # --- build_snare_accent, 2026-09-14 (depended on new snare-roll subdivision detection)

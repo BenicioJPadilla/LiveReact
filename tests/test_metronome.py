@@ -24,7 +24,6 @@ from livereact.core.metronome import (
     EXIT_CONFIRM_DWELL_S,
     FAST_ENTRY_DWELL_S,
     Metronome,
-    OUTRO_LOOKBACK_S,
     PER_STATE_DWELL_S,
 )
 from livereact.core.show_state import ShowState
@@ -549,6 +548,61 @@ def test_manual_bucket_override_takes_priority_and_is_consumed_once():
     # which holds at DROP (just committed, hasn't dwelled long enough to move again)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
+
+
+@pytest.mark.parametrize("cue", [EnergyBucket.PEAK, EnergyBucket.OUTRO])
+def test_manual_override_to_an_overlay_state_holds_and_never_crashes(cue):
+    """2026-09-15 polish pass: PEAK/OUTRO are overlays on a DROP/BREAK base,
+    and the old override path stored them straight into `_base_committed`
+    -- the next tick's `_BUCKET_ORDER.index()` raised ValueError and killed
+    the metronome thread. The cue must land AND survive further ticks."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.0
+    m.request_manual_bucket(cue)
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == cue
+    for _ in range(3):
+        clock.advance(0.1)
+        m._derive_bucket(clock.monotonic())  # used to raise here
+        assert m._base_committed in (EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.DROP)
+    # OUTRO's overlay holds on its own (a recent drop + a sustained break, both
+    # set by the cue); PEAK's additionally reads energy_norm, which is 0 here,
+    # so after the cue tick it correctly falls back to its DROP base.
+    assert m._bucket_committed == (EnergyBucket.OUTRO if cue == EnergyBucket.OUTRO else EnergyBucket.DROP)
+
+
+def test_manual_drop_override_captures_the_drop_bookkeeping():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._bar = 7
+    m.request_manual_bucket(EnergyBucket.DROP)
+    m._derive_bucket(clock.monotonic())
+    assert m.drop_hit_intensity == 1.0  # a manual "drop now" is the real thing
+    assert m.drop_start_bar == 7        # phrase origin for the strobe/palette
+
+
+def test_classifier_uses_the_declared_legal_transition_matrix():
+    """scenes/catalog.py's LEGAL_TRANSITIONS is the single source for which
+    base moves the classifier may consider (2026-09-15 polish pass). A
+    committed DROP must ignore a BUILD-range reading outright (no candidate
+    ever forms), while a BREAK-range one is entertained."""
+    from livereact.scenes.catalog import LEGAL_TRANSITIONS
+    assert EnergyBucket.BUILD not in LEGAL_TRANSITIONS[EnergyBucket.DROP]
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+    clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])
+    m._energy_norm = 0.5  # BUILD range, well clear of the downward margin
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_candidate is None  # illegal edge: never even a candidate
+    m._energy_norm = 0.05  # BREAK range
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_candidate == EnergyBucket.BREAK
 
 
 def test_drop_marker_fires_after_a_qualifying_dip_and_rebound():

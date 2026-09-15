@@ -45,7 +45,7 @@ def list_ipv4_addresses() -> list[tuple[str, str]]:
         buf = bytearray(buf_size)
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            res = fcntl.ioctl(s.fileno(), SIOCGIFCONF, buf)
+            fcntl.ioctl(s.fileno(), SIOCGIFCONF, buf)  # fills `buf` in place
         finally:
             s.close()
         out: list[tuple[str, str]] = []
