@@ -204,6 +204,11 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
 # lever is flash brightness (STROBE_FLASH_DMX), Josh's own cap.
 BUILD_STROBE_START = 0.5
 BUILD_STROBE_RAMP_BARS = 6.0
+BUILD_STROBE_RAMP_EXPONENT = 2.0  # Josh, fifth live test: "the increase should be
+                                  # less linear and more exponential" -- progress
+                                  # is squared, so rate and flash brightness sit
+                                  # near the start for the first bars and do most
+                                  # of their climbing in the last two.
 
 # The build strobe ends on the HIT, not on the commit (same test, Josh: "the
 # strobing continued after the beat drop"): the classifier's confirmation
@@ -809,6 +814,7 @@ class ReactiveLayerEngine:
         pos = musical_bar_position(snap)
         entry = self._build_entry_pos if self._build_entry_pos is not None else pos
         progress = max(0.0, min(1.0, (pos - entry) / BUILD_STROBE_RAMP_BARS))
+        progress = progress ** BUILD_STROBE_RAMP_EXPONENT  # ease-in: most of the rise in the last bars
         self.strobe_flash_dmx = round(STROBE_FLASH_START_DMX + (STROBE_FLASH_DMX - STROBE_FLASH_START_DMX) * progress)
         return STROBE_MAX * (BUILD_STROBE_START + (1.0 - BUILD_STROBE_START) * progress)
 

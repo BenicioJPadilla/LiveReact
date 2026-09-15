@@ -44,7 +44,17 @@ PALETTE_RGB: dict[str, tuple[float, float, float]] = {
     "neutral_wash": (1.0, 1.0, 1.0),
 }
 
-PALETTE_PHRASE_BARS = 16  # §3.8: "on each 16/32-bar boundary"
+PALETTE_PHRASE_BARS = 16  # §3.8: "on each 16/32-bar boundary" -- counted from the
+                          # bar the current bucket family was entered (core/metronome.py)
+PALETTE_MIN_HOLD_BARS = 8  # a phrase boundary never re-picks a color younger than this
+# Only a BREAK re-picks on phrase boundaries at all. A drop's phrase
+# boundaries are where its section changes happen (session-20260915-144431:
+# the breakdown landed exactly 32 bars after the drop), so a boundary
+# re-pick there fires ~2s before the classifier sees the change -- one
+# color, then another, then the break's: Josh's "two or three colors before
+# the scene it should be at." One color per drop/peak stay instead; BUILD's
+# wash is white regardless. Long breaks/intros keep the 16-bar walk.
+PHRASE_REPICK_FAMILIES = frozenset({"break"})
 
 # (wash entries, spot entries) per bucket family. A single-entry tuple means
 # "always this" (BUILD's white wash).

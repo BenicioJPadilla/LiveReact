@@ -774,3 +774,33 @@ def test_a_track_transition_shifts_the_palette_walk():
     # same phrase index, same bucket -- a different entry purely because the track changed
     assert m.tick().palette == BREAK_WASH[1 % len(BREAK_WASH)]
     assert m.tick().palette != before
+
+
+def test_palette_boundary_cannot_repick_a_color_that_just_landed():
+    """session-20260915-144431: a set-anchored 16-bar boundary landed 0.7s
+    after a drop commit and swapped the drop's color within one bar.
+    Phrases now count from the bar the family was entered, a boundary
+    never re-picks a pick younger than PALETTE_MIN_HOLD_BARS, and the drop
+    family holds one color for its whole stay."""
+    from livereact.engines.palette import BREAK_WASH, PALETTE_PHRASE_BARS
+    clock = FakeClock()
+    m = _metronome(clock)
+    m.tick()
+    m._bar = PALETTE_PHRASE_BARS - 1  # one bar before a set-anchored boundary
+    m._bucket_committed = EnergyBucket.DROP
+    m._derive_palette()
+    drop_pick = m.palette
+    for bar in range(PALETTE_PHRASE_BARS, PALETTE_PHRASE_BARS + 3 * PALETTE_PHRASE_BARS):
+        m._bar = bar  # across the old boundary and the drop's own boundaries
+        m._derive_palette()
+        assert m.palette == drop_pick, bar
+    m._bucket_committed = EnergyBucket.BREAK  # family change re-picks at once...
+    m._derive_palette()
+    first_break = m.palette
+    assert first_break in BREAK_WASH
+    m._bar += PALETTE_PHRASE_BARS // 2  # ...a boundary from bar 0's point of view, but too young
+    m._derive_palette()
+    assert m.palette == first_break
+    m._bar += PALETTE_PHRASE_BARS // 2  # the break's own first phrase boundary
+    m._derive_palette()
+    assert m.palette != first_break

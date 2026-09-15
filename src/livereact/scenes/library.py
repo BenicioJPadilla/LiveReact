@@ -32,14 +32,20 @@ class DeepWashBreathe(Scene):
     intensity is now owned exclusively by the Reactive layer's beat pulse
     (see paint_wash's docstring), so this scene only sets color/mood now.
     Renaming/redesigning is a separate future call, not made yet.
-    """
+
+    Color: the phrase-frozen BREAK palette entry since 2026-09-15 (was a
+    fixed deep blue). Being the one core look with its own hard-coded
+    color made every crossfade into or out of it a visible hue slide
+    (cold_steel -> its blue over a bar after a drop), and a BUILD that
+    committed while it was showing strobed BLUE for two bars until Rising
+    Tide arrived -- the palette is already white on the bucket change."""
 
     name = "Deep Wash Breathe"
     bucket = EnergyBucket.BREAK
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = 0.1, 0.1, 0.9  # deep blue
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.12 * intensity)
         for fx in rig.by_role("spot"):

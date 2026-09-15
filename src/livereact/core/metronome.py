@@ -99,6 +99,15 @@ ENERGY_NORM_ATTACK_TAU_S = 0.4        # smoothing tau for a RISE only (2026-09-1
                                        # earlier. (A 1.5s RELEASE tau was tried
                                        # too -- exits 3s sooner, but the intro's
                                        # dips then delayed the first build ~2s.)
+INST_PEAK_HOLD_S = 0.6                # peak-hold on the unsmoothed level for the
+                                       # BUILD -> DROP lead (see _derive_bucket):
+                                       # longer than one beat at any club tempo
+                                       # (0.3s was tried: the dip between two kicks
+                                       # at 133 BPM emptied it and reset the
+                                       # candidate), still shorter than the dwell.
+DROP_LEAD_CEILING_FRACTION = 0.9      # _lead_next_drop: the ceiling counts as
+                                       # "set by a drop" once it is within this
+                                       # fraction of the last drop's own level.
 ENERGY_NORM_WINDOW_S = 90.0           # how far back to look for "this set's recent
                                        # range" -- roughly 2-3 phrases: long enough
                                        # that one kick/riser can't move it, short
@@ -391,6 +400,8 @@ class Metronome(threading.Thread):
         self._energy_norm = 0.0
         self._energy_norm_inst: float | None = None  # unsmoothed twin of _energy_norm, see
                                                      # _derive_energy_norm; None until first derived
+        self._inst_recent: deque[tuple[float, float]] = deque()  # (t, inst) over INST_PEAK_HOLD_S, see _inst_peak
+        self._drop_commit_energy: float | None = None  # smoothed raw energy at the last DROP commit, see _lead_next_drop
 
         # bucket debounce state (Bible-integration Phase 2 -- see PER_STATE_DWELL_S above)
         self._base_committed = EnergyBucket.BREAK  # BREAK/BUILD/DROP only -- see EnergyBucket's docstring
@@ -422,9 +433,11 @@ class Metronome(threading.Thread):
 
         # phrase-frozen palette (engines/palette.py, see ShowSnapshot.palette)
         self.palette, self.palette_spot = palette_mod.pick(EnergyBucket.BREAK.value, 0, 0, 0)
-        self._palette_phrase: int | None = None   # PALETTE_PHRASE_BARS-bucket the current pick was made in
+        self._palette_phrase: int | None = None   # phrase index (from _palette_origin_bar) the current pick was made in
         self._palette_family: str | None = None   # bucket family it was made for
         self._palette_seed: int | None = None     # track seed it was made with
+        self._palette_origin_bar = 0              # bar the current family was entered in -- phrases count from here
+        self._palette_pick_bar = 0                # bar the current pick was made in (PALETTE_MIN_HOLD_BARS)
         self._track_seed = 0                      # bumped per detected track transition -> per-song variety
 
         # real audio (docs/14) — kept separate from _midi's fields; see
@@ -656,6 +669,9 @@ class Metronome(threading.Thread):
         # sound still there right now" -- used only to confirm an upward
         # bucket move (see _derive_bucket), never to classify directly.
         self._energy_norm_inst = max(0.0, min(1.0, (self._energy - self._energy_floor) / span))
+        self._inst_recent.append((now, self._energy_norm_inst))
+        while self._inst_recent and now - self._inst_recent[0][0] > INST_PEAK_HOLD_S:
+            self._inst_recent.popleft()
 
     def request_manual_bucket(self, bucket: EnergyBucket) -> None:
         """Bible-integration Phase 2 hook: a future DJ-triggered cue ("the
@@ -680,6 +696,7 @@ class Metronome(threading.Thread):
         span = 1.0 - BUILD_MAX
         progress = max(0.0, min(1.0, (self._energy_norm - BUILD_MAX) / span)) if span > 0 else 1.0
         self.drop_hit_intensity = DROP_INTENSITY_FLOOR + (DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR) * progress
+        self._drop_commit_energy = self._energy_smooth  # raw level of this drop -- see _lead_next_drop
         # Phrase origin for anything counting bars from the drop: the bar
         # the DROP candidate first appeared in, not this (later) commit bar
         # -- see ShowSnapshot.drop_start_bar. A manual override has no
@@ -712,6 +729,27 @@ class Metronome(threading.Thread):
             return
 
         raw = bucket_for_energy_with_hysteresis(self._energy_norm, self._base_committed)
+        # BUILD -> DROP leads with the sound RIGHT NOW, but only when the
+        # window ceiling was set by a previous drop (2026-09-15, recordings/
+        # session-20260915-144431): a track's second drop is judged against
+        # a ceiling (and floor) its first drop already raised, so the
+        # smoothed value's asymptote sits AT the 0.85 threshold (measured
+        # 0.83 -- it only crossed on the loudest kicks) and the commit came
+        # 2.3s after the hit, the build strobe running 1s into it. The
+        # instantaneous level cleared the threshold on the hit's own tick.
+        # Read through a peak-hold (_inst_peak) so between-kick dips don't
+        # reset the candidate. The ceiling condition (_lead_next_drop) is
+        # what makes this safe: with a LOW ceiling (first build of a set,
+        # ceiling = intro loudness) the build's own kicks already read as
+        # instantaneous "DROP" and this lead fired 11s early on every one of
+        # the day's captures -- while the smoothed path needs no help there
+        # (it jumps to 1.0 on the hit). Validated by replaying all five
+        # captures: no new transitions, second drops commit 2 beats after
+        # the hit like first drops.
+        if self._base_committed == EnergyBucket.BUILD and raw != EnergyBucket.DROP and self._lead_next_drop():
+            peak = self._inst_peak()
+            if peak is not None and bucket_for_energy_with_hysteresis(peak, self._base_committed) == EnergyBucket.DROP:
+                raw = EnergyBucket.DROP
         # A DROP/PEAK breakdown exits on the sound RIGHT NOW (2026-09-15,
         # recordings/session-20260915-140630): the music dropped out at
         # 158.6s but the smoothed value (3s release tau, which exists to
@@ -793,8 +831,11 @@ class Metronome(threading.Thread):
                     self._bucket_candidate_since = now
                     self._bucket_candidate_bar = self._bar  # where the sound first supported this
                 elif now - self._bucket_candidate_since >= confirm_s:
-                    if direction_up and self._energy_norm_inst is not None and (
-                        _BUCKET_ORDER.index(bucket_for_energy_with_hysteresis(self._energy_norm_inst, self._base_committed))
+                    leading = (raw == EnergyBucket.DROP and self._base_committed == EnergyBucket.BUILD
+                               and self._lead_next_drop())
+                    inst_now = self._inst_peak() if leading and self._inst_peak() is not None else self._energy_norm_inst
+                    if direction_up and inst_now is not None and (
+                        _BUCKET_ORDER.index(bucket_for_energy_with_hysteresis(inst_now, self._base_committed))
                         < _BUCKET_ORDER.index(raw)
                     ):
                         # The smoothed signal says "up" but the sound RIGHT
@@ -803,7 +844,14 @@ class Metronome(threading.Thread):
                         # one isolated cue-tap hit (raw 0.51 for ~0.5s in
                         # silence) rode the slow release into a 9s BUILD.
                         # A real section keeps its instantaneous level up;
-                        # keep the candidate and re-check next tick.
+                        # keep the candidate and re-check next tick. Only
+                        # the led BUILD -> DROP case reads the peak-hold
+                        # here (so a between-kick dip on the commit tick
+                        # doesn't push the commit out); everywhere else the
+                        # plain instantaneous level keeps its job of
+                        # rejecting a lone cue-tap whose spike has passed
+                        # (the peak-hold outlives the dwell by 0.1s and
+                        # let one through when tried unconditionally).
                         pass
                     elif raw == EnergyBucket.DROP:
                         self._bucket_candidate = None
@@ -929,6 +977,22 @@ class Metronome(threading.Thread):
         self._drop_marker_pulse = True
         self._marker_cooldown_until = now + MARKER_COOLDOWN_S
 
+    def _lead_next_drop(self) -> bool:
+        """True when the normaliser's ceiling is already at drop level (set
+        by a previous drop still inside the window) -- the one situation
+        where the smoothed energy_norm cannot reach the DROP threshold
+        promptly and the instantaneous lead in _derive_bucket is needed."""
+        return (self._drop_commit_energy is not None
+                and self._energy_ceiling >= DROP_LEAD_CEILING_FRACTION * self._drop_commit_energy)
+
+    def _inst_peak(self) -> float | None:
+        """Max of the unsmoothed energy_norm over the last INST_PEAK_HOLD_S --
+        the level of the loudest recent kick, immune to the dip between
+        kicks. See _derive_bucket's BUILD -> DROP note."""
+        if not self._inst_recent:
+            return None
+        return max(v for _, v in self._inst_recent)
+
     def _derive_palette(self) -> None:
         """Re-pick the phrase-frozen palette entries ONLY when a new
         PALETTE_PHRASE_BARS phrase starts or the bucket FAMILY changes
@@ -937,14 +1001,28 @@ class Metronome(threading.Thread):
         A downward change (drop -> break) re-picks too, deliberately: leaving
         a break under blood_red until the next 16-bar boundary is not what a
         break should look like. See engines/palette.py."""
-        phrase = self._bar // palette_mod.PALETTE_PHRASE_BARS
         bucket = self._bucket_committed.value
         fam = palette_mod.family(bucket)
-        if phrase == self._palette_phrase and fam == self._palette_family and self._track_seed == self._palette_seed:
-            return
+        family_changed = fam != self._palette_family or self._track_seed != self._palette_seed
+        if family_changed:
+            # Phrases count from the bar the family was entered (the drop's
+            # own phrases from the drop, like the strobe's), not from bar 0
+            # of the set -- 2026-09-15, session-20260915-144431: a bar-0-
+            # anchored 16-bar boundary landed 0.7s after a drop commit
+            # (cold_steel -> blood_red within one bar) and 0.5s before the
+            # second drop's cut (heads cyan -> amber -> red). Josh: "it'll
+            # hit one scene, another one, and then the scene it should be at."
+            self._palette_origin_bar = self._bar
+        phrase = (self._bar - self._palette_origin_bar) // palette_mod.PALETTE_PHRASE_BARS
+        if not family_changed:
+            if phrase == self._palette_phrase or fam not in palette_mod.PHRASE_REPICK_FAMILIES:
+                return  # drop/peak and build hold one color for the whole stay, see palette.py
+            if self._bar - self._palette_pick_bar < palette_mod.PALETTE_MIN_HOLD_BARS:
+                return  # a boundary can't re-pick a color that just landed
         self._palette_phrase = phrase
         self._palette_family = fam
         self._palette_seed = self._track_seed  # a new track re-picks right away, not at the next boundary
+        self._palette_pick_bar = self._bar
         self.palette, self.palette_spot = palette_mod.pick(bucket, phrase, self.drop_cycle, self._track_seed)
 
     # ------------------------------------------------------------------ health
