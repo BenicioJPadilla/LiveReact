@@ -24,12 +24,28 @@ from ..scenes.catalog import SceneCatalog
 log = logging.getLogger(__name__)
 
 ROTATION_BARS = 16   # rotate the look on this cadence
-CROSSFADE_BARS = 2   # crossfade duration
+CROSSFADE_BARS = 2   # crossfade duration (scheduled rotations)
+BUCKET_CHANGE_CROSSFADE_BARS = 1  # a bucket-driven rotation (see _maybe_rotate): quicker, the
+                                  # music already moved; DROP-family entries cut hard instead
 HOLD_BARS = 4        # minimum hold after any change
-# Energy-state ordering for "is this bucket change an escalation" -- see
-# _maybe_rotate. PEAK/OUTRO are metronome overlays: PEAK ranks with DROP
-# (same drop, escalated), OUTRO with BREAK (a promoted break).
-_ESCALATION_RANK = {"break": 0, "outro": 0, "build": 1, "drop": 2, "peak": 2}
+# How a bucket change drives rotation (2026-09-15, third live capture,
+# recordings/session-20260915-125433 replayed with the one-look-per-bucket
+# core catalog). Two questions per change: did the bucket FAMILY change
+# (break/outro, build, drop/peak -- the same grouping engines/palette.py
+# uses), and did the rank go UP within the family (DROP -> PEAK)?
+#   family change, any direction  -> rotate, bypass the hold (the classifier
+#                                    already debounced it; re-gating it here
+#                                    just played a break under the drop look)
+#   rank up within the family     -> rotate, bypass the hold (DROP -> PEAK)
+#   rank down within the family   -> nothing (PEAK -> DROP is an overlay flip
+#                                    on the same drop; swapping looks on it
+#                                    was pure churn, and once the crossfade
+#                                    outlived the drop it put the DROP look
+#                                    over a break)
+# Entering the drop family is additionally a HARD CUT on the very tick it
+# commits (mid-bar included): LIGHTING_BIBLE.md §5, "the cut IS the effect."
+_FAMILY = {"break": "break", "outro": "break", "build": "build", "drop": "drop", "peak": "drop"}
+_RANK = {"break": 0, "outro": 0, "build": 1, "drop": 2, "peak": 3}
 
 
 class PhraseEngine:
@@ -38,11 +54,13 @@ class PhraseEngine:
         self._current: Scene = self.catalog.default()
         self._next: Scene | None = None
         self._crossfade_start_pos = 0.0
+        self._crossfade_bars = float(CROSSFADE_BARS)  # per-rotation: 0 for a DROP/PEAK hard cut
         self._last_change_bar = 0
         self._last_bar_seen = -1
         self._last_bucket_seen: str | None = None
         self._skip_requested = False
-        self._escalation_requested = False  # an UPWARD bucket change -- bypasses the hold floor, see _maybe_rotate
+        self._bucket_rotation_requested = False  # a bucket change that must rotate, see _maybe_rotate
+        self._hard_cut_requested = False         # ...and cut instead of crossfading (drop-family entry)
         self._was_in_transition = False
         self.rotations = 0  # for tests/telemetry
 
@@ -84,44 +102,41 @@ class PhraseEngine:
         self._was_in_transition = snap.in_transition
 
     def _maybe_rotate(self, snap: ShowSnapshot, rig: Rig) -> None:
-        # Only act on a *new* bar so a boundary fires once, not every tick.
-        if snap.bar == self._last_bar_seen:
+        # A real energy-state change should prompt a rotation on its own
+        # timeline, not wait for the next scheduled ROTATION_BARS boundary --
+        # CONFIRMED live (2026-09-09 hardware capture, see [[livereact-project]]
+        # memory): scene rotation and bucket classification were otherwise two
+        # fully independent clocks, measured as long as 24s/14 bars of the calm
+        # `Deep Wash Breathe` running over a real drop. See _FAMILY/_RANK
+        # above for exactly which changes rotate. Checked every tick (not only
+        # on a new bar) so a drop-family entry can cut on the tick it commits.
+        if self._last_bucket_seen is not None and snap.bucket != self._last_bucket_seen:
+            old_fam, new_fam = _FAMILY.get(self._last_bucket_seen, "break"), _FAMILY.get(snap.bucket, "break")
+            if new_fam != old_fam:
+                self._bucket_rotation_requested = True
+                self._hard_cut_requested = new_fam == "drop"
+            elif _RANK.get(snap.bucket, 0) > _RANK.get(self._last_bucket_seen, 0):
+                self._bucket_rotation_requested = True
+        self._last_bucket_seen = snap.bucket
+
+        # Only act on a *new* bar so a boundary fires once, not every tick --
+        # except a hard cut, which lands the moment it's asked for.
+        if snap.bar == self._last_bar_seen and not self._hard_cut_requested:
             return
         self._last_bar_seen = snap.bar
 
-        # A real energy-state change (e.g. into DROP) should prompt a fresh
-        # rotation check on its own timeline, not wait for the next scheduled
-        # ROTATION_BARS boundary -- CONFIRMED live (2026-09-09 hardware
-        # capture, see [[livereact-project]] memory) that scene rotation and
-        # bucket classification were otherwise two fully independent clocks:
-        # a bucket could jump straight into DROP while the active scene
-        # (chosen for a totally different energy state, e.g. the calm
-        # `Deep Wash Breathe`) kept running for up to a full ROTATION_BARS=16
-        # bars before catching up -- measured as long as 24s/14 bars on a
-        # real drop, directly producing "still blue during the drop."
-        # Reuses the existing `_skip_requested` flag/path (same as an
-        # explicit operator skip or a DJ-transition-end), so this does NOT
-        # bypass the HOLD_BARS anti-whiplash floor below -- it's still
-        # subject to the exact same minimum hold as every other trigger
-        # here, just one more legitimate reason to ask for a rotation check.
-        if self._last_bucket_seen is not None and snap.bucket != self._last_bucket_seen:
-            self._skip_requested = True
-            # An UPWARD change (into BUILD, or into DROP/PEAK) also bypasses
-            # the hold floor below (2026-09-15, recordings/session-20260915-
-            # 121503): the floor is an anti-whiplash guard against the
-            # scheduler flipping looks too often, but an escalation is
-            # already debounced upstream (core/metronome.py's dwell +
-            # confirm), so re-gating it here just meant a real build ran
-            # its full 11s under `Break Ceiling Drift`, and the drop that
-            # followed played its first 13s under the same break look --
-            # Josh: "break setting seemed to not really work." Downward
-            # and lateral changes still respect the outgoing look's hold.
-            if _ESCALATION_RANK.get(snap.bucket, 0) > _ESCALATION_RANK.get(self._last_bucket_seen, 0):
-                self._escalation_requested = True
-        self._last_bucket_seen = snap.bucket
-
         if self._next is not None:
-            return  # already crossfading
+            if not self._bucket_rotation_requested:
+                return  # already crossfading
+            # A bucket change landing mid-crossfade (2026-09-15, recordings/
+            # session-20260915-125433: a scheduled rotation into a second
+            # BREAK look had just started when BUILD committed, so the build
+            # look waited a full crossfade + a bar -- 3.3 bars of an 8-bar
+            # build under a break look) finishes the in-flight fade now and
+            # rotates right away instead of waiting it out.
+            self._current = self._next
+            self._next = None
+            self._last_change_bar = snap.bar
         if snap.in_transition or snap.loop_active:
             return  # suspend rotations during a mix or loop
 
@@ -136,16 +151,36 @@ class PhraseEngine:
         # must be shown before any rotation away from it, falling back to
         # the catalog-wide HOLD_BARS when a scene doesn't override it (the
         # 8 pre-Bible-integration scenes, which never set this field).
+        # A bucket-driven rotation bypasses it (see _FAMILY/_RANK above):
+        # the floor is an anti-whiplash guard on the SCHEDULER, and a bucket
+        # change is already debounced upstream (core/metronome.py's dwell +
+        # confirm) -- re-gating it here meant a real build ran its full 11s
+        # under `Break Ceiling Drift` (2026-09-15, session-20260915-121503).
         hold_bars = self._current.min_hold_bars if self._current.min_hold_bars is not None else HOLD_BARS
         bars_since_change = snap.bar - self._last_change_bar
-        if bars_since_change < hold_bars and not self._escalation_requested:
+        if bars_since_change < hold_bars and not self._bucket_rotation_requested:
             return  # enforce the minimum hold
 
-        if self._skip_requested or self._escalation_requested or bars_since_change >= ROTATION_BARS:
-            self._escalation_requested = False
-            self._begin_rotation(snap, rig)
+        if not (self._skip_requested or self._bucket_rotation_requested):
+            # Scheduled cadence only: while a higher-ranked look of the same
+            # family is showing (Peak Full Rig after PEAK fell back to plain
+            # DROP), keep it -- see the PEAK -> DROP rule above; the scheduler
+            # must not do the swap the bucket rule declined.
+            cur = self._current.bucket.value
+            if _FAMILY.get(cur) == _FAMILY.get(snap.bucket) and _RANK.get(cur, 0) > _RANK.get(snap.bucket, 0):
+                return
+        if self._skip_requested or self._bucket_rotation_requested or bars_since_change >= ROTATION_BARS:
+            if self._hard_cut_requested:
+                crossfade = 0.0
+            elif self._bucket_rotation_requested:
+                crossfade = float(BUCKET_CHANGE_CROSSFADE_BARS)
+            else:
+                crossfade = float(CROSSFADE_BARS)
+            self._bucket_rotation_requested = False
+            self._hard_cut_requested = False
+            self._begin_rotation(snap, rig, crossfade_bars=crossfade)
 
-    def _begin_rotation(self, snap: ShowSnapshot, rig: Rig) -> None:
+    def _begin_rotation(self, snap: ShowSnapshot, rig: Rig, crossfade_bars: float = float(CROSSFADE_BARS)) -> None:
         # snap.bucket -- an ALREADY-DEBOUNCED, already-adaptively-rescaled
         # bucket_for_energy(energy_norm), computed once in metronome.py (see
         # BUCKET_MIN_DWELL_S there), not a fresh call here. Same reasoning as
@@ -159,11 +194,19 @@ class PhraseEngine:
         # no-op for all 8 pre-Phase-1 scenes (empty requires, 0.0 atm
         # requirement, always satisfied), real once Phase 5 adds looks that
         # actually declare requires{}.
-        self._next = self.catalog.pick(bucket, rig, exclude=self._current)
-        self._crossfade_start_pos = musical_bar_position(snap)
+        candidate = self.catalog.pick(bucket, rig, exclude=self._current)
         self._skip_requested = False
+        if candidate is self._current:
+            # The only eligible look for this bucket is the one already
+            # showing (the core catalog has exactly one for BUILD/DROP/PEAK,
+            # scenes/library.py's CORE_SCENES) -- a crossfade into itself is
+            # a no-op that would only reset the hold clock. Stay put.
+            return
+        self._next = candidate
+        self._crossfade_start_pos = musical_bar_position(snap)
+        self._crossfade_bars = crossfade_bars
         self.rotations += 1
-        log.info("Scene rotate -> %s (bucket=%s)", self._next.name, bucket.value)
+        log.info("Scene rotate -> %s (bucket=%s%s)", self._next.name, bucket.value, ", hard cut" if crossfade_bars <= 0 else "")
 
     def _advance_crossfade(self, snap: ShowSnapshot) -> None:
         if self._next is None:
@@ -174,8 +217,10 @@ class PhraseEngine:
             self._last_change_bar = snap.bar
 
     def _progress(self, snap: ShowSnapshot) -> float:
+        if self._crossfade_bars <= 0.0:
+            return 1.0  # hard cut
         elapsed = musical_bar_position(snap) - self._crossfade_start_pos
-        return max(0.0, min(1.0, elapsed / CROSSFADE_BARS))
+        return max(0.0, min(1.0, elapsed / self._crossfade_bars))
 
     def _render(self, snap: ShowSnapshot, rig: Rig) -> Contribution:
         if self._next is None:

@@ -4,10 +4,11 @@ Wash/par brightness follows LIGHTING_BIBLE.md's per-energy-state model (§5/
 §9.1, 2026-09-08 full-alignment build) — a held constant at DROP, a
 structural bar-position ramp at BUILD, a slow non-pulsing "breathing"
 envelope at BREAKDOWN/HOLD — rather than one continuous kick-locked pulse
-everywhere (see the retirement note near `HUE_UPDATE_BARS` for why, and
+everywhere (see the kick-follow retirement note above `PEAK_BOOST` for why, and
 what's kept for a possible future accent feature). BPM-locked symmetric
-movement on the moving heads and frequency-driven color from the two-axis
-model (hue frozen per phrase, §3.8) round out the always-on layer. This is
+movement on the moving heads and the phrase-frozen palette color
+(engines/palette.py, §3.8 -- picked by the metronome, shared with every
+scene) round out the always-on layer. This is
 what makes the rig feel musical even before scenes and transitions exist; it
 reads only the metronome's interpolated clock, never raw packet timing.
 """
@@ -26,7 +27,7 @@ from ..merge.merge import Contribution
 from ..scenes.base import EnergyBucket
 from ..scenes.catalog import BREAK_MAX, BUILD_MAX
 from ..core.snare_trigger import SnareOnsetDetector, SnareRollDetector
-from .color import band_levels, two_axis_color
+from ..scenes.base import scene_color, spot_color
 
 PULSE_MIN = 0.03        # fallback-only now (see KICK_* below) — used solely when real
                         # audio isn't connected (demo mode / MIDI-only), to keep the
@@ -90,23 +91,35 @@ STROBE_MAX = 0.75       # CEILING, Josh's explicit call (2026-09-14, live on rea
 # _bucket_wash_level's own BUILD branch computes -- both smooth, structural,
 # and exactly as "linear throughout" as Josh asked for, not audio-reactive.
 
-# Par has no native strobe channel (4CH: dimmer/R/G/B -- see Par's class
-# docstring in fixtures/profiles.py), so its strobe is synthesized via a real
-# software-timed dimmer on/off toggle (2026-09-14, extending the wash bar's
-# strobe to Par, Josh's explicit ask). `rate01` (the same 0..STROBE_MAX value
-# computed for WashBar) scales a real flash Hz up to this ceiling -- capped at
-# the Bible's own SAFETY_STROBE_SUSTAINED_MAX_HZ, and UNLIKE the wash bar this
-# is exactly enforceable, not a placeholder: we own the on/off timing directly,
-# there's no unmeasured fixture byte-to-Hz curve in the loop at all.
-PAR_STROBE_MAX_HZ = SAFETY_STROBE_SUSTAINED_MAX_HZ  # 4.0
+# EVERY automated strobe is a software-timed dimmer on/off toggle, on the
+# par AND the wash bar, driven by ONE shared `_StrobeClock` (2026-09-15,
+# third live capture, recordings/session-20260915-125433). History: the par
+# has no native strobe channel (4CH dimmer/R/G/B), so 2026-09-14 gave it a
+# software toggle while the wash bar kept using its native ch2 rate byte.
+# Josh, live: "there's a strobe discrepancy between the wash bar and the par
+# lights. They should be going at the exact same time." Structurally they
+# never could -- two different clocks (ours vs. the fixture's own oscillator,
+# whose byte-to-Hz curve nobody has measured). Now both fixtures flash from
+# the same phase accumulator, so they are on/off on the same DMX frame, and
+# the flash Hz is an exact known number capped at the Bible's
+# SAFETY_STROBE_SUSTAINED_MAX_HZ -- the unmeasured fixture curve is out of the
+# automated loop entirely (only the operator's manual burst, merge.py's
+# `apply_strobe_burst`, still writes ch2). The same capture also showed the
+# old `(t * hz) % 1` phase formula: with hz ramping every tick the phase
+# jumped discontinuously -- measured par on/off durations of 0.1s and 0.7s
+# where ~0.3s was expected -- read live as the build strobe "looking
+# inconsistent, not synced with the music." `_StrobeClock` accumulates
+# phase += hz * dt instead, so a ramping rate still flashes evenly.
+STROBE_TOGGLE_MAX_HZ = SAFETY_STROBE_SUSTAINED_MAX_HZ  # 4.0 -- rate01 == STROBE_MAX maps here
 
-PAR_STROBE_BRIGHTNESS_CAP = 140 / 255  # starting default, NOT independently
-                        # confirmed on this fixture: reuses the same numeric
-                        # ceiling Josh gave for the wash bar's brightness cap
-                        # (~140/255) as a reasonable first guess for Par's own
-                        # "on"-phase brightness during a strobe. Par is a
-                        # different fixture with different real output -- watch
-                        # it live and adjust if it reads too bright/dim.
+# On-phase brightness of every strobe flash: Josh's cap byte (2026-09-14:
+# "around 130-150", WashBar.STROBE_BRIGHTNESS_CAP_DMX) -- ALWAYS, not the
+# ambient wash level. The third capture showed the build's flashes riding
+# the 20%-start wash ramp: 12-25% brightness for the first three bars,
+# invisible. Josh's call (2026-09-15): flash at the cap, dark between, and
+# let the build be a RATE ramp. Same number for the par -- not independently
+# confirmed on that fixture; watch it live.
+STROBE_FLASH_DMX = WashBar.STROBE_BRIGHTNESS_CAP_DMX  # 140
 
 # Burst-duration limit (LIGHTING_BIBLE.md §13, 2026-09-08 audit): "assert
 # strobe_burst_duration <= 1.5s then a mandatory gap." Previously the reactive
@@ -169,14 +182,11 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
 # BUILD_STROBE_START of STROBE_MAX at build entry and climbs linearly to
 # STROBE_MAX over BUILD_RAMP_BARS, riding the same bar-position ramp as the
 # wash level. Safety: §13's burst/gap rule is for strobe BURSTS; a sustained
-# rate is governed by SAFETY_STROBE_SUSTAINED_MAX_HZ (4 Hz), which Par's
-# software toggle meets EXACTLY (its Hz is computed from this rate, capped at
-# PAR_STROBE_MAX_HZ = 4.0) and the wash bar meets only as far as STROBE_MAX
-# itself is trusted -- the same unmeasured byte-to-Hz placeholder as every
-# other wash-bar strobe use here (spec/FINDINGS.md SAFE-01/02/03). The floor
-# exists because Par's toggle at a very low rate reads as the light going OUT
-# for seconds, not as a strobe: 0.25 x STROBE_MAX -> 1 Hz on Par, byte ~48 on
-# the bar ("slow" end of its 10-255 range per the manual).
+# rate is governed by SAFETY_STROBE_SUSTAINED_MAX_HZ (4 Hz), which the
+# software toggle meets EXACTLY on both fixtures (its Hz is computed from
+# this rate, capped at STROBE_TOGGLE_MAX_HZ = 4.0 -- see that constant). The
+# floor exists because a toggle at a very low rate reads as the light going
+# OUT for seconds, not as a strobe: 0.25 x STROBE_MAX -> 1 Hz.
 BUILD_STROBE_START = 0.25
 
 # build_snare_accent's roll-triggered strobe gets its OWN burst gate (2026-09-15,
@@ -330,16 +340,13 @@ KICK_CEILING = 0.95     # small enough to stay out of contrast's way
 # for that decision. If a future "sparse accent" feature is built, this is
 # the mechanism to reuse, not rebuild.
 
-# Hue frozen at phrase boundaries (LIGHTING_BIBLE.md §3.8, 2026-09-08 audit):
-# two_axis_color() used to recompute the dominant band -- and therefore hue --
-# every single tick, for every fixture this engine drives. Since the dominant
-# band naturally flickers between low/mid/high during ordinary audio
-# variation, this caused real hue churn (a likely contributor to the earlier
-# "colors feel random/disconnected from the vibe" complaint, previously
-# blamed entirely on the energy-pinning bug and never separately addressed).
-# Matches PhraseEngine's own ROTATION_BARS cadence -- one shared notion of
-# "a phrase," not two different clocks governing scene changes vs. color.
-HUE_UPDATE_BARS = 16
+# Color: the phrase-frozen palette entry on the snapshot (engines/palette.py,
+# picked by core/metronome.py). This engine used to keep its own 16-bar
+# frozen hue anchor (`HUE_UPDATE_BARS`, 2026-09-08) -- but it never reached
+# the wash (COLOR is LTP by priority and every Phrase scene outranks this
+# layer) and it was pinned to the low band 100% of every capture (bass always
+# wins a raw max() in electronic music). Retired 2026-09-15 in favor of the
+# one shared pick.
 
 # Wash/par brightness driven by energy-state (LIGHTING_BIBLE.md §5 look
 # library + §9.1's per-position behavior table), replacing kick-follow as the
@@ -543,6 +550,40 @@ class _BurstGate:
         return rate
 
 
+class _StrobeClock:
+    """The one flash clock behind every automated strobe (see the
+    STROBE_TOGGLE_MAX_HZ comment above). `advance(rate01)` returns True during
+    the ON half of the current flash period. Phase is ACCUMULATED (phase +=
+    hz * dt), never derived from wall time, so a rate that ramps every tick
+    still produces evenly spaced flashes; a moment that starts from silence
+    (rate 0 -> >0) restarts at phase 0 so its first frame is ON."""
+
+    def __init__(self, clock: Clock) -> None:
+        self.clock = clock
+        self._phase = 0.0
+        self._last_t: float | None = None
+        self._was_on = False  # rate > 0 on the previous call
+
+    @staticmethod
+    def hz_for(rate01: float) -> float:
+        return (min(rate01, STROBE_MAX) / STROBE_MAX) * STROBE_TOGGLE_MAX_HZ
+
+    def advance(self, rate01: float) -> bool:
+        now = self.clock.monotonic()
+        dt = (now - self._last_t) if self._last_t is not None else 0.0
+        self._last_t = now
+        if rate01 <= 0.0:
+            self._was_on = False
+            self._phase = 0.0
+            return False
+        if not self._was_on:
+            self._phase = 0.0  # fresh moment: lead with a flash
+            self._was_on = True
+        else:
+            self._phase = (self._phase + self.hz_for(rate01) * dt) % 1.0
+        return self._phase < 0.5
+
+
 class ReactiveLayerEngine:
     """Always-on beat/energy/color reactivity."""
 
@@ -560,9 +601,9 @@ class ReactiveLayerEngine:
         self._ambient_gate = _BurstGate(clock, STROBE_MAX_BURST_S, STROBE_MIN_SPACING_S)
         self._roll_gate = _BurstGate(clock, STROBE_MAX_BURST_S, ROLL_STROBE_MIN_SPACING_S)
         self.strobe_level = 0.0     # exposed for the recorder: last post-gate 0..STROBE_MAX rate
+        self._strobe_clock = _StrobeClock(clock)  # ONE clock for par + wash bar, see STROBE_TOGGLE_MAX_HZ
+        self.strobe_on = False      # exposed for the recorder/visualizer: this tick's flash phase
         self._drop_entry_bar: int | None = None  # bar the current DROP landed on; phrase origin for _strobe_rate
-        self._hue_idx = 0           # frozen hue-anchor band index (0=low/1=mid/2=high)
-        self._hue_update_bar: int | None = None  # which HUE_UPDATE_BARS bucket _hue_idx was picked in
         self._prev_bucket: EnergyBucket | None = None    # to detect a bucket change
         self._build_entry_pos: float | None = None       # musical position (bars) BUILD was entered at
         self._break_breath = 0.0        # slow low-pass envelope, BREAK's "breathing"
@@ -595,8 +636,7 @@ class ReactiveLayerEngine:
 
     def tick(self, snap: ShowSnapshot, rig: Rig) -> Contribution:
         c = Contribution()
-        self._maybe_update_hue(snap)
-        r, g, b = two_axis_color(snap, hue_idx=self._hue_idx)
+        r, g, b = scene_color(snap)
         self._kick_pulse(snap)  # still computed every tick (see the retirement note
                                  # above) -- kept "live" for `self.kick_level` and any
                                  # future accent feature, just not used for wash_level
@@ -604,47 +644,37 @@ class ReactiveLayerEngine:
         strobe = self._snare_accent_strobe_rate(snap)
         self.strobe_level = strobe
 
-        # --- washes: bucket-driven brightness (LIGHTING_BIBLE.md §5/§9.1), hue from the bands ---
+        # --- washes: bucket-driven brightness (LIGHTING_BIBLE.md §5/§9.1), palette color ---
+        # One flash clock for every wash fixture (see STROBE_TOGGLE_MAX_HZ):
+        # while a strobe is active, par AND wash bar toggle their real dimmer
+        # channel together -- ON at exactly STROBE_FLASH_DMX, OFF at 0 -- on
+        # the same DMX frame. The wash bar's native ch2 is never written here.
+        on_phase = self._strobe_clock.advance(strobe)
+        self.strobe_on = strobe > 0 and on_phase
         for fx in rig.by_role("wash"):
             if isinstance(fx, (Par, WashBar)):
                 # VERIFIED ON HARDWARE: Par has a real dimmer channel, same as
                 # WashBar (not "baked into color" as previously assumed — that
                 # left the dimmer at 0 and the real fixture never lit).
-                if strobe > 0 and isinstance(fx, Par):
-                    # Par is 4CH (dimmer/R/G/B, see its class docstring) -- no
-                    # native strobe channel to hand a rate byte to like WashBar's
-                    # ch2. Synthesized instead via a real, software-timed
-                    # dimmer on/off toggle (2026-09-14, extending the wash bar's
-                    # strobe behavior here too, Josh's explicit ask). This is a
-                    # DIFFERENT technique with a DIFFERENT, arguably better,
-                    # safety story: since we own the on/off timing ourselves,
-                    # the flash rate is an exact, known Hz value we chose
-                    # (PAR_STROBE_MAX_HZ, capped at the Bible's own documented
-                    # SAFETY_STROBE_SUSTAINED_MAX_HZ) rather than an unmeasured
-                    # fixture byte-to-Hz curve -- no open calibration gap here.
-                    on_phase = self._par_strobe_on_phase(strobe)
-                    fx.set_intensity(c, wash_level if on_phase else 0.0)
-                    fx.set_color(c, r, g, b)
+                fx.set_color(c, r, g, b)
+                if strobe > 0:
+                    fx.set_intensity(c, 0.0)
                     if on_phase:
-                        # Byte-level cap AFTER set_intensity's gamma+floor
-                        # curve (fixtures/profiles.py's _intensity_to8) --
-                        # capping the pre-curve level01 instead would land on
-                        # a much dimmer actual byte than intended (gamma
-                        # compresses the low end), same mistake WashBar's own
-                        # cap avoids by clamping ch1's final byte directly.
-                        cap_byte = round(PAR_STROBE_BRIGHTNESS_CAP * 255)
-                        c.values[fx.offset] = min(c.values[fx.offset], cap_byte)
+                        # Written as a final BYTE, not through set_intensity's
+                        # gamma+floor curve (fixtures/profiles.py's
+                        # _intensity_to8): the cap is a byte Josh chose by eye
+                        # on the real fixture, and the same byte on both
+                        # fixtures is the point.
+                        c.set(fx.offset + 1, STROBE_FLASH_DMX)  # ch1 dimmer, 1-based
                 else:
                     fx.set_intensity(c, wash_level)
-                    fx.set_color(c, r, g, b)
-                    if strobe > 0 and isinstance(fx, WashBar):
-                        fx.set_strobe(c, strobe)
 
         # --- moving heads: steady-ish dimmer, mirrored BPM-locked sweep ---
         position = self._musical_position(snap)
+        sr, sg, sb = spot_color(snap)
         for fx in rig.by_role("spot"):
             fx.set_intensity(c, snap.energy)
-            fx.set_color(c, r, g, b)
+            fx.set_color(c, sr, sg, sb)
             mirror = 1.0 if fx.side == "left" else -1.0
             pan = 0.5 + 0.4 * math.sin(position * 0.4) * mirror
             tilt = 0.45 + 0.15 * math.sin(position * 0.2)
@@ -754,47 +784,16 @@ class ReactiveLayerEngine:
         progress = max(0.0, min(1.0, (pos - entry) / BUILD_RAMP_BARS))
         return STROBE_MAX * (BUILD_STROBE_START + (1.0 - BUILD_STROBE_START) * progress)
 
-    def _par_strobe_on_phase(self, rate01: float) -> bool:
-        """True during the "on" half of Par's synthesized dimmer-toggle
-        strobe (see the PAR_STROBE_* constants' comment above for why this
-        technique exists and its different safety story). `rate01` is the
-        SAME post-burst-gate value passed to WashBar.set_strobe -- already
-        byte-quantized and already burst/spacing-gated, so Par's strobe
-        automatically inherits the same STROBE_MAX_BURST_S/STROBE_MIN_
-        SPACING_S moment shape as the wash bar, just realized as a real
-        on/off toggle instead of a rate byte. 50% duty cycle at whatever Hz
-        `rate01` (0..STROBE_MAX) scales to within PAR_STROBE_MAX_HZ."""
-        if rate01 <= 0.0:
-            return True  # not strobing right now -- fully "on"
-        hz = (rate01 / STROBE_MAX) * PAR_STROBE_MAX_HZ
-        phase = (self.clock.monotonic() * hz) % 1.0
-        return phase < 0.5
-
     def _musical_position(self, snap: ShowSnapshot) -> float:
         """Continuous position in beats, for smooth tempo-locked movement."""
         return snap.bar * 4 + (snap.beat_in_bar - 1) + snap.beat_phase
-
-    def _maybe_update_hue(self, snap: ShowSnapshot) -> None:
-        """Re-pick the frozen hue-anchor band only when we've crossed into a
-        new HUE_UPDATE_BARS bucket (LIGHTING_BIBLE.md §3.8) -- otherwise leave
-        `self._hue_idx` exactly as it was, so two_axis_color's hue stays fixed
-        for the whole phrase regardless of how the live audio bounces around
-        tick to tick."""
-        bucket = int(snap.bar) // HUE_UPDATE_BARS
-        if bucket == self._hue_update_bar:
-            return
-        self._hue_update_bar = bucket
-        low, mid, high = band_levels(snap)
-        bands = (low, mid, high)
-        if max(bands) > 0.0:
-            self._hue_idx = bands.index(max(bands))
 
     def _bucket_wash_level(self, snap: ShowSnapshot) -> float:
         """Wash/par brightness per LIGHTING_BIBLE.md's per-energy-state model
         (see the module-level constants above for exactly what's Bible-
         sourced vs. this project's own extrapolation for PEAK/OUTRO's exact
         numbers). Replaces kick-follow as the default driver -- see the
-        retirement note above `HUE_UPDATE_BARS`."""
+        retirement note above `PEAK_BOOST`."""
         now = self.clock.monotonic()
         dt = (now - self._last_bucket_tick_t) if self._last_bucket_tick_t is not None else 1 / 60
         self._last_bucket_tick_t = now

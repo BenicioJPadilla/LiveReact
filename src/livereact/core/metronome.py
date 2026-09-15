@@ -27,6 +27,7 @@ import threading
 from collections import deque
 
 from ..clock import Clock, LoopTimer
+from ..engines import palette as palette_mod
 from ..scenes.base import EnergyBucket
 from ..scenes.catalog import _BUCKET_ORDER, BUILD_MAX, bucket_for_energy_with_hysteresis
 from .messages import AudioLevelMessage, BeatMessage, MidiControlMessage, StatusMessage, TransitionMessage
@@ -398,6 +399,13 @@ class Metronome(threading.Thread):
         self.drop_hit_intensity = DROP_INTENSITY_FLOOR
         self.drop_start_bar: int | None = None  # see ShowSnapshot.drop_start_bar
 
+        # phrase-frozen palette (engines/palette.py, see ShowSnapshot.palette)
+        self.palette, self.palette_spot = palette_mod.pick(EnergyBucket.BREAK.value, 0, 0, 0)
+        self._palette_phrase: int | None = None   # PALETTE_PHRASE_BARS-bucket the current pick was made in
+        self._palette_family: str | None = None   # bucket family it was made for
+        self._palette_seed: int | None = None     # track seed it was made with
+        self._track_seed = 0                      # bumped per detected track transition -> per-song variety
+
         # real audio (docs/14) — kept separate from _midi's fields; see
         # AudioLevelMessage's docstring for why band_low_abs stays un-normalized
         self._audio_band_low = 0.333
@@ -435,6 +443,7 @@ class Metronome(threading.Thread):
         self._derive_energy_norm(now)
         self._derive_bucket(now)
         self._derive_drop_marker(now)
+        self._derive_palette()
         snap = self._build_snapshot(now)
         self.show_state.publish(snap)
         self._maybe_log(now, snap)
@@ -842,6 +851,7 @@ class Metronome(threading.Thread):
         in_transition_now = now < self._transition_until
         if in_transition_now and not self._prev_in_transition:
             self.drop_cycle = 0
+            self._track_seed += 1  # next track walks the palettes from a different start
         self._prev_in_transition = in_transition_now
 
         self._recent_energy.append((now, self._energy_norm))
@@ -880,6 +890,24 @@ class Metronome(threading.Thread):
         self.drop_cycle += 1
         self._drop_marker_pulse = True
         self._marker_cooldown_until = now + MARKER_COOLDOWN_S
+
+    def _derive_palette(self) -> None:
+        """Re-pick the phrase-frozen palette entries ONLY when a new
+        PALETTE_PHRASE_BARS phrase starts or the bucket FAMILY changes
+        (break/outro, build, drop/peak -- a family change is already
+        debounced by _derive_bucket, so this never flickers); hold otherwise.
+        A downward change (drop -> break) re-picks too, deliberately: leaving
+        a break under blood_red until the next 16-bar boundary is not what a
+        break should look like. See engines/palette.py."""
+        phrase = self._bar // palette_mod.PALETTE_PHRASE_BARS
+        bucket = self._bucket_committed.value
+        fam = palette_mod.family(bucket)
+        if phrase == self._palette_phrase and fam == self._palette_family and self._track_seed == self._palette_seed:
+            return
+        self._palette_phrase = phrase
+        self._palette_family = fam
+        self._palette_seed = self._track_seed  # a new track re-picks right away, not at the next boundary
+        self.palette, self.palette_spot = palette_mod.pick(bucket, phrase, self.drop_cycle, self._track_seed)
 
     # ------------------------------------------------------------------ health
     def _is_pdl_fresh(self, now: float) -> bool:
@@ -925,6 +953,8 @@ class Metronome(threading.Thread):
             drop_cycle=self.drop_cycle,
             drop_hit_intensity=self.drop_hit_intensity,
             drop_start_bar=self.drop_start_bar,
+            palette=self.palette,
+            palette_spot=self.palette_spot,
             transition_likely=self.transition_likely,
             drop_pending=self._pending_drop_release,
             drop_marker=self._drop_marker_pulse,

@@ -22,6 +22,7 @@ from .core.metronome import Metronome
 from .core.show_engine import ShowEngine
 from .core.show_state import ShowState
 from .engines.phrase import PhraseEngine
+from .scenes.catalog import SceneCatalog
 from .engines.reactive import ReactiveLayerEngine
 from .engines.transition import TransitionEngine
 from .fixtures.rig import Rig, load_rig
@@ -50,6 +51,8 @@ class AppConfig:
         # default (old instant-hard-zero auto_blackout stays selectable); when True, auto_blackout
         # fades to LIGHTING_BIBLE.md's real safe_default look instead (LOOK-08/FAIL-04). See
         # docs/bible_integration/ and /Users/joshuaracimora/.claude/plans/adaptive-squishing-pebble.md.
+    full_catalog: bool = False  # rotate ALL_SCENES instead of the one-look-per-bucket
+        # CORE_SCENES default (scenes/library.py, 2026-09-15) -- see --full-catalog.
     laser_height_override_m: float | None = None  # SESSION-SCOPED test override for
         # LASER-09/10/11's geometry safety gate (fixtures/profiles.py Laser.apply_safety).
         # Deliberately NOT persisted to the rig manifest -- operator must type this
@@ -113,7 +116,7 @@ class App:
         # real/hardware mode leaves them disarmed until the operator arms (safety).
         if self.config.demo:
             self.manual.laser_enable = True
-        self.phrase_engine = PhraseEngine()
+        self.phrase_engine = PhraseEngine(SceneCatalog(full=self.config.full_catalog))
         self.reactive_engine = ReactiveLayerEngine(self.clock)
         # Order matters: Reactive base, then Phrase (scene movement/laser win via
         # last-write), then Transition (its lift max-merges over the held look).

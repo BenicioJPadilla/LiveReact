@@ -11,6 +11,7 @@ from __future__ import annotations
 from enum import Enum
 
 from ..core.show_state import ShowSnapshot
+from ..engines.palette import rgb as palette_rgb
 from ..fixtures.profiles import Par, WashBar
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
@@ -141,6 +142,23 @@ ALL_DARK = AllDark()
 
 
 # --- painting helpers shared by scenes -------------------------------------
+
+def scene_color(snap: ShowSnapshot) -> tuple[float, float, float]:
+    """The wash color for this tick: the snapshot's phrase-frozen palette
+    entry (engines/palette.py). Replaces the old per-scene
+    `two_axis_color(snap.replace(energy=1.0))`, which re-picked hue from the
+    audio bands every tick (measured live 2026-09-15 as 6-10 hue flips per
+    second -- "random colors every half beat"). Scenes that want a
+    deliberate fixed mood color still just pass their own RGB."""
+    return palette_rgb(snap.palette)
+
+
+def spot_color(snap: ShowSnapshot) -> tuple[float, float, float]:
+    """Moving-head color: the palette's spot entry (differs from the wash
+    only in BUILD, where the wash is white for the strobe and the heads
+    carry the hue)."""
+    return palette_rgb(snap.palette_spot)
+
 
 def paint_wash(c: Contribution, rig: Rig, r: float, g: float, b: float) -> None:
     """Set all wash fixtures to an RGB color (mood/hue only).

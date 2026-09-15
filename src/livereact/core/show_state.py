@@ -114,6 +114,14 @@ class ShowSnapshot:
     # song-structure signal here, see LIGHTING_BIBLE.md §9.9) -- just the
     # earliest bar the sound itself supports. None until the first drop.
     drop_start_bar: int | None = None
+    # Phrase-frozen palette entries (engines/palette.py, LIGHTING_BIBLE.md
+    # §3.2/§3.8), picked by core/metronome.py's `_derive_palette` on 16-bar
+    # phrase boundaries and bucket-family changes only -- 2026-09-15, third
+    # live capture: per-tick hue from the audio bands read as random color
+    # flicker. Every scene and the Reactive layer read these (scenes/base.py's
+    # scene_color/spot_color); nothing derives wash hue from audio anymore.
+    palette: str = "deep_blue"
+    palette_spot: str = "deep_blue"
     # Bible-integration Phase 3 heuristic (core/metronome.py's
     # _apply_bucket_overlay) -- a plain rule, NOT prediction or ML: true when
     # a sustained DROP/PEAK has run past a typical duration, or the track's

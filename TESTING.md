@@ -269,6 +269,10 @@ python -m livereact --hardware --fixture-test --record --rig rigs/josh_rig.json
 > data on its own address and cycles patterns by itself. Only the wash bar
 > (address 69 in both files) behaves. If the wash bar is physically out, use
 > `rigs/josh_rig_no_bar.json` instead.
+>
+> Since 2026-09-15 the show rotates only the six core looks (one per energy
+> state, `scenes/library.py`'s `CORE_SCENES`); add `--full-catalog` to rotate
+> the whole library again.
 
 For **each** fixture (MH L/R, Laser L/R, Par L/R, Bar L/R):
 1. Click its **Flash** button — the right fixture should light up. Note in `NOTES.md`

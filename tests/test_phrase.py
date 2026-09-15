@@ -219,16 +219,50 @@ def test_bucket_change_forces_rotation_after_minimum_hold():
     assert eng.rotations == 1
 
 
-def test_downward_bucket_change_before_minimum_hold_is_still_deferred():
-    """The bucket-change trigger must not bypass the anti-whiplash floor
-    for a DOWNWARD move -- it's one more reason to check, not a shortcut
-    around HOLD_BARS. (An upward move does bypass it: see the escalation
-    test below.)"""
+def test_downward_family_change_also_bypasses_the_hold():
+    """Reversed 2026-09-15 (third live capture, replayed): a DROP -> BREAK
+    change that respected the outgoing drop look's 8-bar hold played a
+    whole 8s break under the red drop look. Any bucket FAMILY change is
+    already debounced upstream (core/metronome.py's CUT_EXIT_CONFIRM_S), so
+    it rotates on the next bar regardless of the hold."""
     rig = load_rig()
     eng = PhraseEngine()
     eng.tick(_snap(0, energy=1.0), rig)  # drop baseline
     eng.tick(_snap(HOLD_BARS - 1, energy=0.2), rig)  # falls to break, still inside the hold
-    assert eng.rotations == 0
+    assert eng.rotations == 1
+    assert eng._next is not None and eng._next.bucket.value == "break"
+
+
+def test_peak_falling_back_to_drop_does_not_rotate():
+    """PEAK -> DROP is an overlay flip on the same drop (same family, rank
+    down): swapping looks on it was churn, and a crossfade that outlived
+    the drop put the DROP look over the break that followed (replayed
+    2026-09-15)."""
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2), rig)   # break baseline
+    eng.tick(_snap(0, energy=1.0, beat_in_bar=3), rig)   # drop (hard cut)
+    eng.tick(_snap(1, energy=1.0, bucket="peak"), rig)  # escalates: rank up -> rotates to the PEAK look
+    assert eng.rotations == 2
+    for bar in range(2, 5):
+        eng.tick(_snap(bar, energy=1.0, bucket="peak"), rig)
+    assert eng._current.bucket.value == "peak"
+    eng.tick(_snap(5, energy=1.0, bucket="drop"), rig)  # back to plain DROP
+    for bar in range(6, 6 + 2 * ROTATION_BARS):  # ...and the scheduler must not swap it either
+        eng.tick(_snap(bar, energy=1.0, bucket="drop"), rig)
+    assert eng.rotations == 2
+    assert eng._current.bucket.value == "peak" and eng._next is None
+
+
+def test_drop_entry_cuts_on_the_tick_it_commits_not_the_next_bar():
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2), rig)
+    eng.tick(_snap(0, energy=0.2, beat_in_bar=2), rig)
+    # bucket flips mid-bar (beat 3 of the SAME bar) -- no bar boundary
+    eng.tick(_snap(0, energy=1.0, beat_in_bar=3, beat_phase=0.4), rig)
+    assert eng.rotations == 1
+    assert eng._current.bucket.value == "drop" and eng._next is None
 
 
 def test_upward_bucket_change_bypasses_the_outgoing_looks_hold():
@@ -237,13 +271,56 @@ def test_upward_bucket_change_bypasses_the_outgoing_looks_hold():
     first 13s under the same break look, because the outgoing look's
     min_hold_bars re-gated a bucket change the metronome had already
     debounced. An escalation (into BUILD, or into DROP/PEAK) now rotates on
-    the next bar boundary regardless of the hold."""
+    the next bar boundary regardless of the hold -- and a DROP/PEAK
+    escalation is a HARD CUT (2026-09-15, third capture): the drop look is
+    `_current` on that same tick, no crossfade pending."""
     rig = load_rig()
     eng = PhraseEngine()
     eng.tick(_snap(0, energy=0.2), rig)  # break baseline
     eng.tick(_snap(1, energy=1.0), rig)  # -> drop, one bar in, well inside the hold
     assert eng.rotations == 1
-    assert eng._next is not None and eng._next.bucket.value == "drop"
+    assert eng._next is None and eng._current.bucket.value == "drop"
+
+
+def test_build_escalation_still_crossfades():
+    """Only DROP/PEAK cut hard; BREAK -> BUILD keeps the normal crossfade."""
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2), rig)
+    eng.tick(_snap(1, energy=0.5), rig)  # -> build
+    assert eng.rotations == 1
+    assert eng._next is not None and eng._next.bucket.value == "build"
+    assert eng._current.bucket.value == "break"
+
+
+def test_escalation_mid_crossfade_finishes_it_and_rotates_same_bar():
+    """Third capture (session-20260915-125433): BUILD committed while a
+    scheduled BREAK->BREAK crossfade was in flight, so the build look waited
+    out the fade plus a bar. Now the in-flight fade completes instantly and
+    the escalation rotates on the very bar it was seen."""
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2), rig)
+    eng.tick(_snap(ROTATION_BARS, energy=0.2), rig)  # scheduled break rotation starts a crossfade
+    assert eng._next is not None and eng._next.bucket.value == "break"
+    eng.tick(_snap(ROTATION_BARS + 1, energy=0.5), rig)  # -> build, mid-crossfade
+    assert eng.rotations == 2
+    assert eng._next is not None and eng._next.bucket.value == "build"
+
+
+def test_single_look_bucket_does_not_rotate_into_itself():
+    """The core catalog has exactly one DROP look: the scheduled
+    ROTATION_BARS cadence must not crossfade it into itself."""
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2), rig)
+    eng.tick(_snap(1, energy=1.0), rig)  # -> drop (hard cut)
+    drop_scene = eng._current
+    assert eng.rotations == 1
+    for bar in range(2, 2 + 3 * ROTATION_BARS):
+        eng.tick(_snap(bar, energy=1.0), rig)
+    assert eng.rotations == 1
+    assert eng._current is drop_scene and eng._next is None
 
 
 def test_bucket_change_rotation_picks_a_scene_for_the_new_bucket():
@@ -254,9 +331,8 @@ def test_bucket_change_rotation_picks_a_scene_for_the_new_bucket():
     rig = load_rig()
     eng = PhraseEngine()
     eng.tick(_snap(0, energy=0.2), rig)
-    eng.tick(_snap(HOLD_BARS, energy=1.0), rig)  # -> drop bucket
-    assert eng._next is not None
-    assert eng._next.bucket.value == "drop"
+    eng.tick(_snap(HOLD_BARS, energy=1.0), rig)  # -> drop bucket (hard cut, so already current)
+    assert eng._current.bucket.value == "drop"
 
 
 def test_drop_scene_emits_laser_channels_through_the_engine():

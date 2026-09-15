@@ -16,11 +16,11 @@ import math
 from ..color import hsv_to_rgb
 from ..dynamics import musical_bar_position
 from ..core.show_state import ShowSnapshot
-from ..engines.color import laser_color_for_bands, two_axis_color
+from ..engines.color import laser_color_for_bands
 from ..fixtures.profiles import Par, WashBar
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
-from .base import EnergyBucket, Scene, paint_spots, paint_wash
+from .base import EnergyBucket, Scene, paint_spots, paint_wash, scene_color, spot_color
 
 
 # --- breakdown / low energy (lasers OFF, strobe OFF) -----------------------
@@ -65,21 +65,21 @@ class SlowColorCycleAmbient(Scene):
 # --- build / rising energy (lasers OFF; strobe ramps, capped elsewhere) -----
 
 class RisingTide(Scene):
-    """Wash ramps with energy, warming toward white; MH movement climbing."""
+    """The core BUILD look: white wash under the Reactive layer's
+    accelerating strobe (Josh, 2026-09-15: the build strobe "should be
+    white"), moving heads carrying the phrase's palette hue and climbing.
+    The wash's old "desaturate toward raw energy" math is gone -- the BUILD
+    palette's wash entry is already white (engines/palette.py)."""
 
     name = "Rising Tide"
     bucket = EnergyBucket.BUILD
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))  # hue from bands, full value
-        # Desaturate toward white as energy climbs.
-        warm = snap.energy
-        r = r + (1 - r) * warm
-        g = g + (1 - g) * warm
-        b = b + (1 - b) * warm
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, r, g, b, (0.5 + 0.5 * snap.energy) * intensity)
+        sr, sg, sb = spot_color(snap)
+        paint_spots(c, rig, sr, sg, sb, (0.5 + 0.5 * snap.energy) * intensity)
         pos = musical_bar_position(snap)
         for fx in rig.by_role("spot"):
             mirror = 1.0 if fx.side == "left" else -1.0
@@ -106,7 +106,7 @@ class Converge(Scene):
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, 1.0, 1.0, 1.0, (0.5 + 0.5 * snap.energy) * intensity)
         prog = max(0.0, min(1.0, snap.energy))
@@ -194,25 +194,29 @@ class DropBlackoutHit(Scene):
 
 
 class DropStrobeStab(Scene):
-    """LIGHTING_BIBLE.md §5: "native-strobe stabs on drop accents... uses
-    native strobe channel, never dimmer toggling." The actual strobe stab
-    itself is already produced by ReactiveLayerEngine's own strobe channel
-    (engines/reactive.py's `_strobe_rate`/`_strobe_burst_gate`, SAFE-01..06-
-    capped) -- a SEPARATE physical DMX channel from color/dimmer, written
-    every tick regardless of which Phrase scene is active. This look's job
-    is just the color/movement CONTEXT the stab plays over: a bright,
-    static-ish accent look, deliberately simple so it doesn't compete with
-    the strobe channel for visual attention."""
+    """LIGHTING_BIBLE.md §5: "native-strobe stabs on drop accents." The
+    core DROP look. The actual strobe stab itself is produced by
+    ReactiveLayerEngine (engines/reactive.py's `_strobe_rate` + phrase-tail
+    gating, SAFE-01..06-capped), written every tick regardless of which
+    Phrase scene is active -- since 2026-09-15 as a software dimmer toggle on
+    par + wash bar together, NOT the wash bar's native ch2 (the Bible's
+    "never dimmer toggling" was written for fixtures whose native strobe
+    Hz is known; ours isn't, and two clocks could never flash in sync --
+    see reactive.py's STROBE_TOGGLE_* comment). This look's job is just the
+    color/movement CONTEXT the stab plays over: the phrase's DROP palette
+    entry (blood_red / cold_steel, Josh's 2026-09-15 pick, replacing the
+    earlier plain white), static heads."""
 
     name = "Drop Strobe Stab"
     bucket = EnergyBucket.DROP
     min_hold_bars = 8
     dark_pct = 0.20
-    reactivity_note = "audio:[strobe gated to drop-accent bars only] -- via the Reactive layer's own strobe channel, not this scene"
+    reactivity_note = "audio:[strobe gated to drop-accent bars only] -- via the Reactive layer's own strobe toggle, not this scene"
+    color_note = "DROP palette (blood_red / cold_steel), phrase-frozen -- see engines/palette.py"
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = 1.0, 1.0, 1.0  # bright white accent -- lets the strobe channel itself read as the "stab"
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, intensity)
         for fx in rig.by_role("spot"):
@@ -226,20 +230,19 @@ class BuildRiserWash(Scene):
     produced by ReactiveLayerEngine's own `_bucket_wash_level` BUILD branch
     (bar-position-driven, LOOK-04, confirmed correct) -- wash intensity is
     deliberately not set here at all (see `paint_wash`'s own docstring).
-    This look's job is the color: `two_axis_color`, same mechanism as the
-    other BUILD scenes. NOT fully implementing "static:[hue]" here -- a
-    truly frozen-per-phrase hue for an individual Phrase scene (as opposed
-    to the Reactive layer's own already-frozen hue) would need real
-    per-scene state tracking, disclosed as a known gap rather than faked."""
+    This look's job is the color: the phrase-frozen palette (`scene_color`,
+    engines/palette.py), same mechanism as the other BUILD scenes -- which
+    since 2026-09-15 IS "static:[hue]" (one entry per 16-bar phrase, picked
+    by the metronome, no per-scene state needed)."""
 
     name = "Build Riser Wash"
     bucket = EnergyBucket.BUILD
     min_hold_bars = 8  # dark_pct deliberately left unset -- the Bible gives "30->0%," a range, not a single value
-    reactivity_note = "audio:[wash.dimmer tied to bar-count envelope] (via ReactiveLayerEngine, not this scene), static:[hue] -- NOT fully implemented, see class docstring"
+    reactivity_note = "audio:[wash.dimmer tied to bar-count envelope] (via ReactiveLayerEngine, not this scene), static:[hue] via engines/palette.py"
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.5 * intensity)
         return c
@@ -302,13 +305,14 @@ class PeakFullRig(Scene):
     bucket = EnergyBucket.PEAK
     dark_pct = 0.10
     min_hold_bars = 8
-    reactivity_note = "static hue+pan, kick_follow:false -- hue NOT fully frozen here, see class docstring (same disclosed gap as BuildRiserWash)"
+    reactivity_note = "static hue+pan, kick_follow:false -- hue phrase-frozen via engines/palette.py since 2026-09-15"
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, r, g, b, intensity)  # "spot 100%"
+        sr, sg, sb = spot_color(snap)
+        paint_spots(c, rig, sr, sg, sb, intensity)  # "spot 100%"
         pos = musical_bar_position(snap)
         for fx in rig.by_role("spot"):
             mirror = 1.0 if fx.side == "left" else -1.0
@@ -343,7 +347,7 @@ class PeakColorPulseClear(Scene):
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         # "on bar downbeat only" -- a short pulse right at beat 1, decaying
         # across the rest of the bar, same shape as beat_pulse but gated to
         # only the bar's first beat instead of every beat.
@@ -408,10 +412,12 @@ class BreakLowWash(Scene):
     BuildRiserWash/PeakColorPulseClear) -- the 15-35% breathing envelope is
     already produced by ReactiveLayerEngine's own BREAK branch
     (`_bucket_wash_level`'s low-pass `_break_breath` envelope; name and
-    range match this exact look). This class's job is only the color: a
-    fixed cold_steel (shared constant with DropBlackoutHit's alternate drop
-    color), never audio-band-driven -- "static:[hue]" per the Bible's own
-    reactivity block."""
+    range match this exact look). This class's job is only the color: the
+    phrase-frozen BREAK palette entry (deep_blue / uv_violet / cold_steel,
+    engines/palette.py -- was a fixed cold_steel until 2026-09-15; the
+    palette walk is what gives different songs different breaks), never
+    audio-band-driven -- "static:[hue]" per the Bible's own reactivity
+    block."""
 
     name = "Break Low Wash"
     bucket = EnergyBucket.BREAK
@@ -423,11 +429,11 @@ class BreakLowWash(Scene):
     # conflict check SceneCatalog._conflicts already does for every pair.
     conflicts = frozenset({"Peak Strobe Blackout"})
     reactivity_note = "audio:[wash.dimmer, soft RMS breathing] (via ReactiveLayerEngine, not this scene), static:[hue], kick_follow:false"
-    color_note = "cold_steel"
+    color_note = "BREAK palette (deep_blue / uv_violet / cold_steel), phrase-frozen"
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = COLD_STEEL
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.25 * intensity)  # dim ambient presence -- not the focal point of a break
         return c
@@ -655,13 +661,13 @@ class ChaseWashLr(Scene):
     dark_pct = 0.30
     min_hold_bars = 8
     reactivity_note = "movement only (chase, period_bars 2); no reactivity{} block given by the Bible for this look"
-    color_note = "not specified by the Bible for this look -- reuses two_axis_color for BUILD-family consistency with Rising Tide/Converge"
+    color_note = "not specified by the Bible for this look -- reuses the phrase-frozen palette (scene_color) for BUILD-family consistency with Rising Tide/Converge"
 
     PERIOD_BARS = 2.0
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         pos = musical_bar_position(snap)
         for fx in rig.by_role("wash"):
             if isinstance(fx, (Par, WashBar)):
@@ -722,11 +728,11 @@ class BuildBeamRaise(Scene):
     degrade_to = BuildRiserWash
     min_hold_bars = 8
     reactivity_note = "movement only (tilt_raise ramp); no reactivity{} block given by the Bible for this look"
-    color_note = "not specified by the Bible for this look -- reuses two_axis_color for BUILD-family consistency"
+    color_note = "not specified by the Bible for this look -- reuses the phrase-frozen palette (scene_color) for BUILD-family consistency"
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, (0.5 + 0.5 * snap.energy) * intensity)
         progress = max(0.0, min(1.0, snap.energy))  # progress proxy -- see class docstring
@@ -839,14 +845,14 @@ class PeakBeamSweep(Scene):
     dark_pct = 0.15
     min_hold_bars = 8
     reactivity_note = "no reactivity{} block given by the Bible for this look"
-    color_note = "not specified by the Bible for this look -- reuses two_axis_color for PEAK-family consistency"
+    color_note = "not specified by the Bible for this look -- reuses the phrase-frozen palette (scene_color) for PEAK-family consistency"
 
     PERIOD_BARS = 2.0
     PAN_AMP = 0.40
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, intensity)
         pos = musical_bar_position(snap)
@@ -904,14 +910,14 @@ class MirrorCrossBeam(Scene):
     degrade_to = PeakBeamSweep
     min_hold_bars = 8
     reactivity_note = "no reactivity{} block given by the Bible for this look"
-    color_note = "not specified by the Bible for this look -- reuses two_axis_color for PEAK-family consistency"
+    color_note = "not specified by the Bible for this look -- reuses the phrase-frozen palette (scene_color) for PEAK-family consistency"
 
     PERIOD_BARS = 4.0
     PAN_AMP = 0.25
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, intensity)
         pos = musical_bar_position(snap)
@@ -1123,7 +1129,7 @@ class PulseAndDriftSustain(Scene):
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.6 * intensity)
         pos = musical_bar_position(snap)
@@ -1142,7 +1148,7 @@ class LockedHold(Scene):
 
     def render(self, rig: Rig, snap: ShowSnapshot, intensity: float = 1.0) -> Contribution:
         c = Contribution()
-        r, g, b = two_axis_color(snap.replace(energy=1.0))
+        r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, 0.4 * intensity)
         for fx in rig.by_role("spot"):
@@ -1195,4 +1201,22 @@ ALL_SCENES: list[type[Scene]] = [
     # build_snare_accent, 2026-09-14 -- depended on new snare-roll subdivision
     # detection (core/snare_trigger.py), built out this session (Steps 0-3):
     BuildSnareAccent,
+]
+
+# The CORE catalog -- what SceneCatalog() actually rotates through since
+# 2026-09-15 (third live test, Josh: "a lot of different scenes, even when
+# the buildups were pretty similar" -> "one look per bucket ... whichever is
+# the easiest to make more controlled and fine tuned"). One look per bucket
+# (two alternating for BREAK, the state a set spends most of its time in);
+# per-song variety comes from the phrase-frozen palette (engines/palette.py),
+# not from swapping looks. Everything else in ALL_SCENES stays importable,
+# tested, and reachable via SceneCatalog(scenes=[cls() for cls in ALL_SCENES])
+# / `--full-catalog`, just not rotated by default.
+CORE_SCENES: list[type[Scene]] = [
+    DeepWashBreathe,
+    BreakLowWash,
+    RisingTide,
+    DropStrobeStab,
+    PeakFullRig,
+    OutroFadeWash,
 ]

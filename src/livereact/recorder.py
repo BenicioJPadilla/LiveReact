@@ -149,6 +149,8 @@ class SessionRecorder(threading.Thread):
             "band_low": round(snap.audio_band_low_abs, 4),   # the SnareOnsetDetector /
             "band_mid": round(snap.audio_band_mid_abs, 4),   # kick-follow inputs, so a
             "band_high": round(snap.audio_band_high_abs, 4), # session can be replayed offline
+            "palette": snap.palette,            # phrase-frozen palette entries (engines/palette.py)
+            "palette_spot": snap.palette_spot,
         }
         # Engine/rig internals -- all optional (see __init__): each guarded
         # separately so a partially-wired recorder (or a future engine that
@@ -156,8 +158,13 @@ class SessionRecorder(threading.Thread):
         if self.reactive_engine is not None:
             record["wash_level"] = round(self.reactive_engine.wash_level, 4)
             record["kick_level"] = round(self.reactive_engine.kick_level, 4)
-            record["hue_idx"] = self.reactive_engine._hue_idx
             record["strobe_level"] = round(self.reactive_engine.strobe_level, 4)
+            # 2026-09-15: every automated strobe is a software dimmer toggle
+            # on par + wash bar (engines/reactive.py's _StrobeClock), so the
+            # per-fixture `*_strobe` fields below (the wash bar's native ch2)
+            # stay 0 -- `strobe_level` (the rate) and `strobe_on` (this
+            # tick's flash phase) are the truth about strobing.
+            record["strobe_on"] = self.reactive_engine.strobe_on
             record["snare_onset"] = self.reactive_engine.snare_onset_active
             record["snare_roll_active"] = self.reactive_engine.snare_roll_active
         if self.phrase_engine is not None:

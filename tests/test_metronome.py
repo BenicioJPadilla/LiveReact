@@ -718,3 +718,59 @@ def test_drop_cycle_resets_on_a_track_transition():
     m.queue.put(TransitionMessage(clock.monotonic(), active=True))
     m.tick()
     assert m.drop_cycle == 0
+
+
+# --- phrase-frozen palette (engines/palette.py, 2026-09-15) ------------------
+
+def _bars(m: Metronome, n: int, bpm: float = 120.0) -> None:
+    """Advance the metronome's bar counter by n full bars of master beats."""
+    for _ in range(n):
+        for beat in (2, 3, 4, 1):
+            m.queue.put(BeatMessage(0.0, beat, bpm, True, 1))
+            m.tick()
+
+
+def test_palette_holds_within_a_phrase_and_can_change_at_the_boundary():
+    from livereact.engines.palette import BREAK_WASH, PALETTE_PHRASE_BARS
+    clock = FakeClock()
+    m = _metronome(clock)
+    first = m.tick().palette
+    assert first in BREAK_WASH
+    _bars(m, PALETTE_PHRASE_BARS - 2)  # still inside phrase 0
+    assert m.tick().palette == first
+    _bars(m, 2)  # bar 16 -> phrase 1
+    assert m.tick().bar == PALETTE_PHRASE_BARS
+    assert m.tick().palette == BREAK_WASH[1 % len(BREAK_WASH)]  # deterministic walk, next entry
+
+
+def test_palette_repicks_on_a_bucket_family_change_but_not_on_a_peak_overlay():
+    from livereact.engines.palette import BREAK_WASH, BUILD_WASH, DROP_WASH
+    clock = FakeClock()
+    m = _metronome(clock)
+    m.tick()
+
+    def with_bucket(bucket: EnergyBucket) -> str:
+        # drive _derive_palette directly off a committed bucket (the same
+        # way the PEAK/OUTRO overlay tests above poke the classifier state)
+        m._bucket_committed = bucket
+        m._derive_palette()
+        return m.palette
+
+    assert with_bucket(EnergyBucket.BUILD) in BUILD_WASH  # white wash for the build strobe
+    drop_pick = with_bucket(EnergyBucket.DROP)
+    assert drop_pick in DROP_WASH
+    assert with_bucket(EnergyBucket.PEAK) == drop_pick  # an overlay on the same drop -- same family
+    assert with_bucket(EnergyBucket.BREAK) in BREAK_WASH  # downward change re-picks too: no red breaks
+
+
+def test_a_track_transition_shifts_the_palette_walk():
+    from livereact.engines.palette import BREAK_WASH
+    clock = FakeClock()
+    m = _metronome(clock)
+    before = m.tick().palette
+    m.queue.put(TransitionMessage(timestamp=clock.monotonic(), active=True))
+    m.tick()
+    assert m._track_seed == 1
+    # same phrase index, same bucket -- a different entry purely because the track changed
+    assert m.tick().palette == BREAK_WASH[1 % len(BREAK_WASH)]
+    assert m.tick().palette != before

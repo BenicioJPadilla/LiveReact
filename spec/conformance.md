@@ -85,6 +85,18 @@ explicitly out of scope:
   shipped only the interim conservative cap Josh chose (`STROBE_MAX`
   0.30→0.15), NOT a real Hz clamp. No hardware calibration exists; none
   was fabricated. This remains the highest-priority open safety item.
+  **Update 2026-09-15 (third live test):** every AUTOMATED strobe is now
+  a software-timed dimmer toggle on both the par and the wash bar
+  (`engines/reactive.py` `_StrobeClock`, `STROBE_TOGGLE_MAX_HZ = 4.0 =
+  SAFETY_STROBE_SUSTAINED_MAX_HZ`), so the automated path's flash Hz is an
+  exact known number ≤ 4.0 Hz — `SAFE-01` and `SAFE-03` hold by
+  construction for that path, and `SAFE-02`'s 10–25 Hz band is
+  unreachable from it. The wash bar's native ch2 (the unmeasured
+  byte→Hz curve) is written only by the operator's manual burst
+  (`merge.py` `apply_strobe_burst`), which still carries the original
+  caveat. Not re-graded row-by-row below; `LATENCY-02`'s "never
+  dimmer-toggle" reading is superseded for the same reason (its <6 Hz
+  dimmer-toggle allowance is exactly what the 4 Hz cap satisfies).
 - **Fog fail-closed**: nothing to fix — no fog subsystem exists at all
   (confirmed absent in Stage 4); out of scope for a "fix" pass.
 Tests: 223 passed (+3 new/updated), 5 failed (unchanged, Stage 2's

@@ -24,7 +24,7 @@ dependency, just a subprocess call).
 Outputs (next to the input file by default, override with --out):
   <out>.csv   one row per audio block (~23ms) -- every internal signal this
               project has needed to diagnose a live-test complaint so far:
-              energy, energy_norm, bucket, wash_level, kick_level, hue_idx,
+              energy, energy_norm, bucket, wash_level, kick_level, palette,
               laser/silence active, and per-fixture VisualState (r/g/b,
               brightness, pan, tilt, active) for all 4 real rig fixtures.
   <out>.png   a timeline plot of the same, for eyeballing without a CSV viewer.
@@ -226,7 +226,7 @@ def run(mp3_path: str, bpm: float, duration: float | None, rig_path: str, out_pr
             "bucket": bucket,
             "wash_level": round(reactive.wash_level, 4),
             "kick_level": round(reactive.kick_level, 4),
-            "hue_idx": reactive._hue_idx,
+            "palette": snap.palette,
             "scene": phrase._current.name,
             "scene_uses_lasers": phrase._current.uses_lasers,
             "bar_strobe": frame[fixtures["bar"].offset + 1],  # raw CH2 (strobe) byte, 0-255

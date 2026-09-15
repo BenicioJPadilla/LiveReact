@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..fixtures.rig import Rig
 from .base import EnergyBucket, Scene
-from .library import ALL_SCENES
+from .library import ALL_SCENES, CORE_SCENES
 
 
 # Named so other modules (e.g. engines/reactive.py's per-bucket wash model,
@@ -116,8 +116,14 @@ def bucket_for_energy_with_hysteresis(
 
 
 class SceneCatalog:
-    def __init__(self, scenes: list[Scene] | None = None) -> None:
-        instances = scenes if scenes is not None else [cls() for cls in ALL_SCENES]
+    def __init__(self, scenes: list[Scene] | None = None, full: bool = False) -> None:
+        """Defaults to `library.CORE_SCENES` (one look per bucket, 2026-09-15
+        -- see that list's comment); `full=True` rotates the whole
+        `ALL_SCENES` catalog instead; an explicit `scenes` list wins over
+        both."""
+        if scenes is None:
+            scenes = [cls() for cls in (ALL_SCENES if full else CORE_SCENES)]
+        instances = scenes
         self._by_bucket: dict[EnergyBucket, list[Scene]] = {b: [] for b in EnergyBucket}
         for scene in instances:
             self._by_bucket[scene.bucket].append(scene)

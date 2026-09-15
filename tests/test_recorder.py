@@ -127,6 +127,7 @@ def test_recorder_captures_strobe_and_snare_state_directly(tmp_path):
     state = ShowState()
     state.publish(ShowSnapshot(bpm=128.0, bar=7, beat_in_bar=3, energy=0.6, energy_norm=0.9,
                                 bucket="drop", drop_hit_intensity=0.93, drop_pending=False,
+                                palette="cold_steel", palette_spot="blood_red",
                                 audio_fresh=True, audio_band_low_abs=4.0,
                                 audio_band_mid_abs=2.5, audio_band_high_abs=1.25))
     fb = DmxFrameBuffer()
@@ -152,6 +153,8 @@ def test_recorder_captures_strobe_and_snare_state_directly(tmp_path):
     assert row["strobe_level"] == reactive.strobe_level
     assert row["snare_onset"] is False
     assert row["snare_roll_active"] is False
+    assert row["strobe_on"] is False
+    assert (row["palette"], row["palette_spot"]) == ("cold_steel", "blood_red")
     key = bar.label.lower().replace(" ", "_")
     assert row[f"{key}_strobe"] == round(128 / 255, 3)
 

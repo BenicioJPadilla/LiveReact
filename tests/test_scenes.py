@@ -39,7 +39,7 @@ def test_thirty_scenes_across_all_buckets():
     re-audit -- a real Bible look that all 7 waves had missed) + one more
     build-out (BuildSnareAccent, 2026-09-14 -- depended on new snare-roll
     subdivision detection, core/snare_trigger.py, built this session)."""
-    cat = SceneCatalog()
+    cat = SceneCatalog(full=True)  # the whole library, not the core default
     assert len(ALL_SCENES) == 31
     for bucket in EnergyBucket:
         assert cat.bucket(bucket), f"{bucket} has no scenes"
@@ -93,7 +93,7 @@ def test_bucket_thresholds():
 
 
 def test_round_robin_avoids_repeating_current():
-    cat = SceneCatalog()
+    cat = SceneCatalog(full=True)  # the whole library, not the core default
     first = cat.pick(EnergyBucket.DROP)
     second = cat.pick(EnergyBucket.DROP, exclude=first)
     assert second is not first
@@ -335,13 +335,49 @@ def test_break_low_wash_does_not_set_wash_intensity():
     assert not c.touched[bar.offset]  # ch1 = dimmer, untouched
 
 
-def test_break_low_wash_uses_cold_steel():
-    from livereact.scenes.library import COLD_STEEL, BreakLowWash
+def test_break_low_wash_uses_the_snapshots_palette_entry():
+    """Was a fixed cold_steel until 2026-09-15; now the phrase-frozen BREAK
+    palette entry on the snapshot (engines/palette.py) -- same hue for the
+    whole phrase, different across songs."""
+    from livereact.engines.palette import rgb as palette_rgb
+    from livereact.scenes.library import BreakLowWash
     rig = load_rig()
     par = rig.fixture("par_l")
-    c = BreakLowWash().render(rig, _snap(), 1.0)
-    r, g, b = (round(v * 255) for v in COLD_STEEL)
-    assert (c.values[par.offset + 1], c.values[par.offset + 2], c.values[par.offset + 3]) == (r, g, b)
+    for name in ("cold_steel", "uv_violet"):
+        c = BreakLowWash().render(rig, _snap(palette=name), 1.0)
+        r, g, b = (round(v * 255) for v in palette_rgb(name))
+        assert (c.values[par.offset + 1], c.values[par.offset + 2], c.values[par.offset + 3]) == (r, g, b)
+
+
+def test_default_catalog_is_the_core_one_look_per_bucket_set():
+    """2026-09-15 (Josh, third live test): "a lot of different scenes, even
+    when the buildups were pretty similar" -> one look per bucket by
+    default; the full library stays reachable via full=True."""
+    from livereact.scenes.library import ALL_SCENES, CORE_SCENES
+    core = SceneCatalog()
+    assert [type(s) for b in EnergyBucket for s in core.bucket(b)] == \
+        sorted(CORE_SCENES, key=lambda cls: list(EnergyBucket).index(cls.bucket))
+    assert len(core.bucket(EnergyBucket.BUILD)) == 1
+    assert len(core.bucket(EnergyBucket.DROP)) == 1
+    assert len(core.bucket(EnergyBucket.PEAK)) == 1
+    assert len(core.bucket(EnergyBucket.BREAK)) == 2
+    assert sum(len(SceneCatalog(full=True).bucket(b)) for b in EnergyBucket) == len(ALL_SCENES)
+
+
+def test_scene_hue_does_not_move_with_the_audio_bands():
+    """The measured bug: every BUILD/PEAK look re-picked hue from the
+    instantaneous dominant band each tick (6-10 flips/s live). Now the bands
+    can flip freely and the rendered wash color is identical."""
+    from livereact.scenes.library import PeakFullRig, RisingTide
+    rig = load_rig()
+    par = rig.fixture("par_l")
+    for scene in (RisingTide(), PeakFullRig()):
+        colors = set()
+        for bands in ((1.0, 0.2, 0.2), (0.2, 1.0, 0.2), (0.2, 0.2, 1.0)):
+            c = scene.render(rig, _snap(palette="hot_magenta", eq_low_a=bands[0], eq_mid_a=bands[1],
+                                        eq_high_a=bands[2]), 1.0)
+            colors.add((c.values[par.offset + 1], c.values[par.offset + 2], c.values[par.offset + 3]))
+        assert len(colors) == 1, scene.name
 
 
 def test_break_low_wash_conflicts_with_peak_strobe_blackout():
@@ -544,7 +580,7 @@ def test_all_six_atmosphere_gated_scenes_are_always_ineligible_on_this_rig():
         MirrorCrossBeam, PeakBeamSweep, PeakLaserTunnel,
     )
     rig = load_rig()
-    cat = SceneCatalog()
+    cat = SceneCatalog(full=True)  # the whole library, not the core default
     for cls in (BuildBeamRaise, DropBeamFan, DropLaserPunctuation, PeakBeamSweep, PeakLaserTunnel, MirrorCrossBeam):
         scene = next(s for s in cat.bucket(cls.bucket) if type(s) is cls)
         assert not cat._eligible(scene, rig), f"{cls.__name__} should never be eligible on this rig"
@@ -555,7 +591,7 @@ def test_build_bucket_pick_never_surfaces_build_beam_raise_directly():
     through BUILD with a rig should never actually return it by name."""
     from livereact.scenes.catalog import SceneCatalog
     rig = load_rig()
-    cat = SceneCatalog()
+    cat = SceneCatalog(full=True)  # the whole library, not the core default
     seen = {cat.pick(EnergyBucket.BUILD, rig=rig).name for _ in range(20)}
     assert "Build Beam Raise" not in seen
 
@@ -567,7 +603,7 @@ def test_drop_bucket_pick_never_surfaces_beam_fan_or_laser_punctuation_directly(
     one-hop-only case, not just a single successful hop like the others)."""
     from livereact.scenes.catalog import SceneCatalog
     rig = load_rig()
-    cat = SceneCatalog()
+    cat = SceneCatalog(full=True)  # the whole library, not the core default
     seen = {cat.pick(EnergyBucket.DROP, rig=rig).name for _ in range(30)}
     assert "Drop Beam Fan" not in seen
     assert "Drop Laser Punctuation" not in seen
@@ -580,7 +616,7 @@ def test_peak_bucket_pick_never_surfaces_the_three_atmosphere_gated_looks_direct
     recursive-degrade, one-hop-only case as DropLaserPunctuation's)."""
     from livereact.scenes.catalog import SceneCatalog
     rig = load_rig()
-    cat = SceneCatalog()
+    cat = SceneCatalog(full=True)  # the whole library, not the core default
     seen = {cat.pick(EnergyBucket.PEAK, rig=rig).name for _ in range(30)}
     assert "Peak Beam Sweep" not in seen
     assert "Peak Laser Tunnel" not in seen
@@ -674,7 +710,7 @@ def test_drop_gobo_projection_clear_is_always_ineligible_and_has_no_degrade_targ
     from livereact.scenes.catalog import SceneCatalog
     from livereact.scenes.library import DropGoboProjectionClear
     rig = load_rig()
-    cat = SceneCatalog()
+    cat = SceneCatalog(full=True)  # the whole library, not the core default
     scene = next(s for s in cat.bucket(EnergyBucket.DROP) if type(s) is DropGoboProjectionClear)
     assert not cat._eligible(scene, rig)
     assert DropGoboProjectionClear.degrade_to is None
@@ -683,7 +719,7 @@ def test_drop_gobo_projection_clear_is_always_ineligible_and_has_no_degrade_targ
 def test_drop_bucket_pick_never_surfaces_gobo_projection_directly():
     from livereact.scenes.catalog import SceneCatalog
     rig = load_rig()
-    cat = SceneCatalog()
+    cat = SceneCatalog(full=True)  # the whole library, not the core default
     seen = {cat.pick(EnergyBucket.DROP, rig=rig).name for _ in range(30)}
     assert "Drop Gobo Projection Clear" not in seen
 
@@ -695,7 +731,7 @@ def test_drop_blinder_clear_is_eligible_and_reachable_via_round_robin():
     from livereact.scenes.catalog import SceneCatalog
     from livereact.scenes.library import DropBlinderClear
     rig = load_rig()
-    cat = SceneCatalog()
+    cat = SceneCatalog(full=True)  # the whole library, not the core default
     scene = next(s for s in cat.bucket(EnergyBucket.DROP) if type(s) is DropBlinderClear)
     assert cat._eligible(scene, rig)
     seen = {cat.pick(EnergyBucket.DROP, rig=rig).name for _ in range(30)}
