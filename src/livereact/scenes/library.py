@@ -258,11 +258,11 @@ class BuildSnareAccent(Scene):
     snare_roll_sim.py`), BUILD-gated and simulation-confirmed to catch a
     real accelerating roll while never false-firing on an ordinary steady
     backbeat. The actual accent flashes themselves are produced by
-    `ReactiveLayerEngine._snare_accent_strobe_rate` (Step 3, combined via
-    max() with the existing energy-threshold strobe rate, BEFORE the single
-    `_strobe_burst_gate` call -- so a confirmed roll can't legally chain
-    bursts closer together than STROBE_MIN_SPACING_S/STROBE_MAX_BURST_S
-    intend, keeping "obey §13" true regardless of which trigger fired) --
+    `ReactiveLayerEngine._snare_accent_strobe_rate` (Step 3; since
+    2026-09-15 the roll path has its own `_BurstGate` -- STROBE_MAX_BURST_S
+    cap, ROLL_STROBE_MIN_SPACING_S gap -- separate from the ambient DROP/
+    PEAK path's, so §13's burst/gap rule still holds per source while a
+    DROP-side burst can no longer silence the build's accent) --
     a separate DMX channel from color/dimmer, written every tick. Same
     restraint as `DropStrobeStab`/`PeakStrobeBlackout`: this class supplies
     color/context only, never touches the strobe channel itself.

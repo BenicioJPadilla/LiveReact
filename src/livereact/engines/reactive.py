@@ -138,6 +138,42 @@ STROBE_MIN_SPACING_S = 8.0    # NOT yet tuned by ear/measurement, this project's
                               # accents, short enough to still land more than
                               # once across a long loud passage.
 
+# Phrase-aligned DROP/PEAK strobe (2026-09-15, from the first real
+# --hardware --record capture after the held-value redesign: recordings/
+# session-20260915-114303). The held drop_hit_intensity rate was CONSTANT for
+# the whole drop, so the burst gate above was the only thing shaping it --
+# measured: 21 bursts, every one 1.4-1.5s long, spaced 9.4-9.6s apart like a
+# clock, landing on random beat positions. Josh, live: "start strobing
+# randomly for maybe one beat and then just stop... multiple times." A timer,
+# not music. Now the strobe only fires in the TAIL of each STROBE_PHRASE_BARS-
+# bar phrase, counted from the drop's own downbeat (`bar` is a locally-
+# reconstructed counter with no real phrase awareness -- the drop commit is
+# beat-quantized to a downbeat in core/metronome.py, so "phrases since the
+# drop landed" is the best alignment available; see the busking note in
+# LIGHTING_BIBLE.md §9.9). The burst-cap/spacing gate above stays as a pure
+# safety floor (8 bars at any plausible tempo is well past 8s), no longer
+# the thing deciding WHEN a strobe happens.
+STROBE_PHRASE_BARS = 8        # the Bible's own phrase length
+STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
+                              # into the phrase change," ends exactly on the
+                              # next downbeat. ~0.9s at 133bpm, under
+                              # STROBE_MAX_BURST_S at anything above ~80bpm.
+
+# build_snare_accent's roll-triggered strobe gets its OWN burst gate (2026-09-15,
+# same capture): sharing one gate with the ambient path meant any burst -- the
+# roll firing at a BUILD entry edge, or the ambient BUILD ramp -- imposed the
+# full STROBE_MIN_SPACING_S on the roll too, so for 8 of every ~9.5s NO strobe
+# could fire at all; on the real track that gap covered most of the actual
+# build (197-205s of an 11s BUILD). The two sources are bucket-exclusive (roll
+# = BUILD only via SnareRollDetector; ambient = DROP/PEAK only, see
+# _strobe_rate) so separate gates can't chain bursts closer than either
+# gate's own spacing within one bucket. The old BUILD-bucket ambient ramp
+# strobe is retired here (a build's ramp IS the build per build_riser_wash;
+# build_snare_accent is the BUILD strobe, and the ramp strobe was the other
+# "random one-beat strobe" Josh saw mid-build).
+ROLL_STROBE_MIN_SPACING_S = 2.0  # a roll can span several bars; let the accent
+                                 # re-fire within it, just not chain back-to-back.
+
 # Direct audio-envelope-follower for wash/par brightness (docs/14 §5 REDESIGNED
 # 2026-09-03, Josh, in three passes):
 #
@@ -314,7 +350,37 @@ HUE_UPDATE_BARS = 16
 # a small additive boost on top of that SAME drop's captured hit intensity
 # -- "more committed than the drop" scales with how big the drop already
 # was, rather than jumping to an unrelated fixed ceiling.
-PEAK_BOOST = 0.03  # added to snap.drop_hit_intensity, clamped to 1.0
+PEAK_BOOST = 0.03  # added to the held DROP level, clamped to 1.0
+
+# Held DROP wash level -- 2026-09-15, a deliberate, disclosed DEVIATION from
+# the Bible's literal "wash 85-100%" for drop_blackout_hit/peak_full_rig.
+# Rendering drop_hit_intensity (0.85..1.0) directly as the held level left
+# NO headroom above it: measured on the first real capture after the beat-4
+# flash landed (recordings/session-20260915-114303), mean wash-bar brightness
+# on beat 4 was 0.965 vs 0.964 on beats 1-3 -- the flash was mathematically
+# invisible (on a track whose hit captured as 1.0, literally zero), and a
+# strobe burst (brightness-capped at WashBar.STROBE_BRIGHTNESS_CAP_DMX=140)
+# read as a 45% brightness CUT against the full wash rather than an accent.
+# Josh, live: "aren't beating on the fourth beat... or if they are, it's
+# very, very subtle"; "they just strobe and then turn off really quick."
+# So the held level now maps the captured hit onto [DROP_HELD_LOW,
+# DROP_HELD_HIGH] instead -- still "chosen once, not chased," still scaling
+# with how loud the real hit was -- leaving the top quarter for the beat-4
+# accent and keeping the held byte at/below the strobe brightness cap
+# (0.76 -> byte 139 through fixtures/profiles.py's gamma curve, vs the
+# cap's 140; 0.66 -> ~103), so a burst is never a visible dim. In linear
+# light that's roughly 40-55% output. NOT yet tuned by eye on hardware.
+DROP_HELD_LOW = 0.66
+DROP_HELD_HIGH = 0.76
+
+
+def _drop_held_level(drop_hit_intensity: float) -> float:
+    """Map the once-captured hit intensity (core/metronome.py's
+    DROP_INTENSITY_FLOOR..CEIL range) onto the held wash range above."""
+    span = DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR
+    progress = (drop_hit_intensity - DROP_INTENSITY_FLOOR) / span if span > 0 else 1.0
+    progress = max(0.0, min(1.0, progress))
+    return DROP_HELD_LOW + (DROP_HELD_HIGH - DROP_HELD_LOW) * progress
 
 # Beat-4 accent flash, DROP/PEAK only -- Josh's own directed design call
 # (2026-09-13, after watching two real --hardware --record sessions), NOT
@@ -328,17 +394,29 @@ PEAK_BOOST = 0.03  # added to snap.drop_hit_intensity, clamped to 1.0
 # DEVIATION from the Bible's literal text, not an oversight -- kept
 # separate from PEAK_BOOST above (a real Bible-sourced number) so this
 # doesn't get mistaken for one. HTP-style: only ever ADDS brightness on
-# top of the held DROP/PEAK level via max(), never dims it, so "relatively
-# static" the rest of the bar is genuinely untouched.
-BEAT4_FLASH_PEAK = 1.0  # ceiling the flash decays from, at the start of beat 4
+# top of the held DROP/PEAK level, never dims it, so "relatively static"
+# the rest of the bar is genuinely untouched.
+#
+# 2026-09-15 rework (same capture as DROP_HELD_* above): the old version
+# decayed from 1.0 to 0 across the WHOLE beat via max(held, flash), so with
+# a held level of 0.92-1.0 it only ever exceeded the base for the first
+# ~8% of the beat (~35ms) -- unseeable. Now the flash decays from full back
+# down to the HELD level over the first BEAT4_FLASH_DECAY_PHASE of the beat,
+# so the whole visible excursion is held->1.0->held (~270ms at 133bpm),
+# regardless of what the held level happens to be.
+BEAT4_FLASH_PEAK = 1.0          # the flash always peaks at full
+BEAT4_FLASH_DECAY_PHASE = 0.6   # fraction of beat 4 the flash takes to fall back to held
 
 
-def _beat4_flash(snap: ShowSnapshot) -> float:
-    """0 outside beat 4; decays linearly from BEAT4_FLASH_PEAK to ~0 across
-    beat 4's own phase, so it reads as one accent hit per bar, not a hold."""
-    if snap.beat_in_bar != 4:
-        return 0.0
-    return BEAT4_FLASH_PEAK * (1.0 - snap.beat_phase)
+def _beat4_flash(snap: ShowSnapshot, held: float) -> float:
+    """The wash level during beat 4: starts at BEAT4_FLASH_PEAK on the beat
+    and falls linearly back to `held` by BEAT4_FLASH_DECAY_PHASE of the
+    beat, then stays at `held`. Returns `held` unchanged on any other
+    beat."""
+    if snap.beat_in_bar != 4 or snap.beat_phase >= BEAT4_FLASH_DECAY_PHASE:
+        return held
+    remaining = 1.0 - snap.beat_phase / BEAT4_FLASH_DECAY_PHASE
+    return held + (BEAT4_FLASH_PEAK - held) * remaining
 
 # BUILD (`build_riser_wash`, the Bible's own "canonical build"): "intensity
 # climbs across the build... the ramp IS the build; drive it from bar
@@ -395,6 +473,57 @@ WASH_CROSSFADE_TAU_S = 0.6
 WASH_TRANSITION_WINDOW_S = 3 * WASH_CROSSFADE_TAU_S  # ~95% converged by then
 
 
+class _BurstGate:
+    """Cap a single continuous strobe MOMENT at `max_burst_s`, then enforce
+    `min_spacing_s` before the next one can start (LIGHTING_BIBLE.md §13) —
+    CONFIRMED BUGGY then fixed 2026-09-08 (see STROBE_MIN_SPACING_S's own
+    comment above for the full story): a moment ending EITHER way (hit the
+    duration cap, or the source rate simply dropped to zero first) earns the
+    same minimum spacing before a new one is allowed to start, so a sustained
+    loud section can't chain moments back-to-back with only a token gap.
+
+    One instance per strobe SOURCE (2026-09-15, see ROLL_STROBE_MIN_SPACING_S)
+    -- the ambient DROP/PEAK path and build_snare_accent's roll path each own
+    their own moment/gap state instead of sharing one.
+
+    Byte-quantized FIRST (2026-09-14, found while re-testing after
+    _strobe_rate's bucket-gated redesign): a genuinely nonzero-but-sub-half-
+    byte float rounds to DMX byte 0 -- invisible on the real fixture -- but
+    without this rounding it still reads as `rate > 0.0` below and silently
+    starts consuming the burst-duration budget, eventually forcing the
+    mandatory gap during a stretch that never visibly strobed at all.
+    Comparing the byte-quantized value instead means only an actually-
+    visible rate ever starts or extends a moment."""
+
+    def __init__(self, clock: Clock, max_burst_s: float, min_spacing_s: float) -> None:
+        self.clock = clock
+        self.max_burst_s = max_burst_s
+        self.min_spacing_s = min_spacing_s
+        self._burst_start: float | None = None  # when the current continuous burst began
+        self._gap_until: float = 0.0             # can't strobe again until this time
+
+    def apply(self, rate: float) -> float:
+        rate = round(rate * 255) / 255.0
+        now = self.clock.monotonic()
+        if now < self._gap_until:
+            return 0.0  # serving the minimum spacing before a new moment can start
+        if rate <= 0.0:
+            if self._burst_start is not None:
+                # the moment just ended naturally -- this earns the same
+                # cooldown as hitting the duration cap (both are "the moment
+                # is over," just two different reasons for it ending)
+                self._burst_start = None
+                self._gap_until = now + self.min_spacing_s
+            return 0.0
+        if self._burst_start is None:
+            self._burst_start = now
+        if now - self._burst_start >= self.max_burst_s:
+            self._gap_until = now + self.min_spacing_s
+            self._burst_start = None
+            return 0.0
+        return rate
+
+
 class ReactiveLayerEngine:
     """Always-on beat/energy/color reactivity."""
 
@@ -409,8 +538,10 @@ class ReactiveLayerEngine:
         self._prev_beat_phase = 0.0    # to detect a beat boundary (phase wrapping back near 0)
         self._last_tick_t: float | None = None
         self.kick_level = 0.0       # exposed for the console: last computed 0..1 brightness
-        self._strobe_burst_start: float | None = None  # when the current continuous burst began
-        self._strobe_gap_until: float = 0.0             # can't strobe again until this time
+        self._ambient_gate = _BurstGate(clock, STROBE_MAX_BURST_S, STROBE_MIN_SPACING_S)
+        self._roll_gate = _BurstGate(clock, STROBE_MAX_BURST_S, ROLL_STROBE_MIN_SPACING_S)
+        self.strobe_level = 0.0     # exposed for the recorder: last post-gate 0..STROBE_MAX rate
+        self._drop_entry_bar: int | None = None  # bar the current DROP landed on; phrase origin for _strobe_rate
         self._hue_idx = 0           # frozen hue-anchor band index (0=low/1=mid/2=high)
         self._hue_update_bar: int | None = None  # which HUE_UPDATE_BARS bucket _hue_idx was picked in
         self._prev_bucket: EnergyBucket | None = None    # to detect a bucket change
@@ -425,15 +556,14 @@ class ReactiveLayerEngine:
                                             # real monotonic clock reads > 0.0)
         # build_snare_accent delivery (2026-09-14) -- Steps 0-2's detectors,
         # owned and driven HERE (not a separate top-level engine like
-        # LaserOnsetDetector) specifically so the roll-triggered rate can be
-        # combined with _strobe_rate's own energy-threshold rate via max()
-        # BEFORE the single _strobe_burst_gate call, per the safety-
-        # integration requirement in the plan doc: two independently-gated
-        # strobe triggers could otherwise legally chain bursts closer
-        # together than STROBE_MIN_SPACING_S intends.
+        # LaserOnsetDetector) so the roll-triggered rate shares one strobe
+        # output with the ambient path (_snare_accent_strobe_rate). Since
+        # 2026-09-15 each source has its own _BurstGate -- see
+        # ROLL_STROBE_MIN_SPACING_S for why the shared gate was retired.
         self._snare_onset = SnareOnsetDetector(clock)
         self._snare_roll = SnareRollDetector(clock)
-        self.snare_roll_active = False  # exposed for the console/tests
+        self.snare_roll_active = False  # exposed for the console/tests/recorder
+        self.snare_onset_active = False  # exposed for the recorder: this tick's raw onset
 
     # LIGHTING_BIBLE.md §2.3's Titan tiers (Bible-integration Phase 4):
     # Safety=255 (not a contribution -- merge/merge.py's finalize() clamp,
@@ -451,8 +581,9 @@ class ReactiveLayerEngine:
         self._kick_pulse(snap)  # still computed every tick (see the retirement note
                                  # above) -- kept "live" for `self.kick_level` and any
                                  # future accent feature, just not used for wash_level
-        wash_level = self._bucket_wash_level(snap)
-        strobe = self._strobe_burst_gate(self._snare_accent_strobe_rate(snap))
+        wash_level = self._bucket_wash_level(snap)  # also records DROP entry (phrase origin for strobe)
+        strobe = self._snare_accent_strobe_rate(snap)
+        self.strobe_level = strobe
 
         # --- washes: bucket-driven brightness (LIGHTING_BIBLE.md §5/§9.1), hue from the bands ---
         for fx in rig.by_role("wash"):
@@ -512,105 +643,67 @@ class ReactiveLayerEngine:
         return 1.0 - (1.0 - PULSE_MIN) * snap.beat_phase
 
     def _snare_accent_strobe_rate(self, snap: ShowSnapshot) -> float:
-        """build_snare_accent delivery (2026-09-14): combines the ambient,
-        held/ramped strobe rate (`_strobe_rate` -- since 2026-09-14 driven by
-        drop_hit_intensity/bar-position, not raw energy_norm, see its own
-        docstring) with a second, independently-triggered rate driven by a
-        confirmed accelerating snare roll (Steps 0-2, verified by simulation
-        -- see snare_trigger.py's module docstring). The two are combined via
-        max() BEFORE the single `_strobe_burst_gate` call below (not two
-        separate gated calls) specifically so they can't legally chain
-        bursts closer together than STROBE_MIN_SPACING_S intends -- that
-        was the whole point of the safety-integration note in the plan doc.
+        """The single strobe value for this tick: the ambient, phrase-aligned
+        DROP/PEAK rate (`_strobe_rate`) and build_snare_accent's roll-
+        triggered rate, EACH through its own burst gate, combined via max().
+
+        2026-09-14 had both rates share ONE gate (max() before a single
+        gate call) so they couldn't chain bursts closer than
+        STROBE_MIN_SPACING_S. The first real capture showed the cost: the
+        roll's own burst (or the old BUILD ramp's) imposed the full 8s gap
+        on everything, so the accent structurally couldn't show at the end
+        of a build (see ROLL_STROBE_MIN_SPACING_S's comment above). The two
+        sources are bucket-exclusive -- roll = BUILD only (SnareRollDetector
+        enforces the Bible's [BUILD] tag), ambient = DROP/PEAK only -- so
+        separate gates can't produce back-to-back bursts within one bucket
+        either; a BUILD->DROP seam is the only place they could abut, and the
+        ambient path can't fire until the drop's first phrase tail anyway.
 
         The roll-triggered rate is capped at STROBE_MAX, same ceiling as
-        the ambient path -- this is an ACCENT on top of the existing strobe
+        the ambient path -- this is an ACCENT on the existing strobe
         channel, not a second, higher-authority strobe path with its own
         safety ceiling."""
         onset = self._snare_onset.update(snap)
+        self.snare_onset_active = onset
         self.snare_roll_active = self._snare_roll.update(onset, snap.bucket)
         roll_rate = STROBE_MAX if self.snare_roll_active else 0.0
-        return max(self._strobe_rate(snap), roll_rate)
+        ambient = self._ambient_gate.apply(self._strobe_rate(snap))
+        roll = self._roll_gate.apply(roll_rate)
+        return max(ambient, roll)
 
     def _strobe_rate(self, snap: ShowSnapshot) -> float:
-        """Strobe intensity as a smooth, structural progression -- NOT raw
-        per-tick energy_norm (see the retirement note above this method for
-        why: confirmed live, 2026-09-14, to read as random flicker rather
-        than a strobe). Still gated to BUILD/DROP/PEAK only (never fires
-        outside a buildup or drop), but each bucket now drives it from the
-        SAME held/ramped value _bucket_wash_level itself uses, just rescaled
-        onto [0, STROBE_MAX]:
-          - DROP/PEAK: snap.drop_hit_intensity (+ PEAK_BOOST for PEAK, same
-            as wash_level's own PEAK branch) -- captured ONCE at the real
-            drop commit, held static. Rescaled off its own known
-            [DROP_INTENSITY_FLOOR, DROP_INTENSITY_CEIL] range, so the
-            quietest confirmed drop still starts near 0 and the loudest
-            reaches the full ceiling -- not an arbitrary reference number.
-          - BUILD: the same bar-position ramp (0 at entry -> 1 over
-            BUILD_RAMP_BARS) wash_level's own BUILD branch computes --
-            genuinely linear across the whole build, immune to per-tick
-            audio noise.
-        Bucket transitions/PEAK-escalation logic itself lives in
-        core/metronome.py -- see the separate open item (2026-09-14, Josh)
-        about a sustained drop with no quiet section getting stuck past
-        where it musically ended; not addressed here."""
+        """Ambient strobe rate, DROP/PEAK only, and only during the last
+        STROBE_PHRASE_TAIL_BEATS of every STROBE_PHRASE_BARS-bar phrase
+        counted from the bar the drop landed on (see STROBE_PHRASE_BARS'
+        comment above for the capture that motivated this -- the previous
+        held-constant rate turned the burst gate into a 9.5s clock).
+
+        The rate itself is still the held drop_hit_intensity (+ PEAK_BOOST
+        for PEAK), captured ONCE at the drop commit and rescaled off its
+        known [DROP_INTENSITY_FLOOR, DROP_INTENSITY_CEIL] range onto
+        [0, STROBE_MAX] -- NOT raw per-tick energy_norm (confirmed live
+        2026-09-14 to read as random flicker). BUILD no longer has an
+        ambient strobe: build_snare_accent's roll path is the BUILD strobe.
+        Bucket transitions/PEAK-escalation logic lives in core/metronome.py
+        -- see the separate open item (2026-09-14, Josh) about a sustained
+        drop with no quiet section getting stuck; not addressed here."""
         bucket = EnergyBucket(snap.bucket)
-        if bucket == EnergyBucket.DROP:
-            span = DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR
-            intensity = (snap.drop_hit_intensity - DROP_INTENSITY_FLOOR) / span if span > 0 else 1.0
-        elif bucket == EnergyBucket.PEAK:
-            span = DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR
-            boosted = min(1.0, snap.drop_hit_intensity + PEAK_BOOST)
-            intensity = (boosted - DROP_INTENSITY_FLOOR) / span if span > 0 else 1.0
-        elif bucket == EnergyBucket.BUILD:
-            pos = musical_bar_position(snap)
-            entry = self._build_entry_pos if self._build_entry_pos is not None else pos
-            intensity = (pos - entry) / BUILD_RAMP_BARS
-        else:
+        if bucket not in (EnergyBucket.DROP, EnergyBucket.PEAK):
             return 0.0
+        if self._drop_entry_bar is None:
+            return 0.0  # engine started mid-drop with no known downbeat to count from
+        bars_in = snap.bar - self._drop_entry_bar
+        last_bar_of_phrase = (bars_in % STROBE_PHRASE_BARS) == STROBE_PHRASE_BARS - 1
+        in_tail = snap.beat_in_bar > 4 - STROBE_PHRASE_TAIL_BEATS
+        if not (last_bar_of_phrase and in_tail):
+            return 0.0
+        span = DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR
+        hit = snap.drop_hit_intensity
+        if bucket == EnergyBucket.PEAK:
+            hit = min(1.0, hit + PEAK_BOOST)
+        intensity = (hit - DROP_INTENSITY_FLOOR) / span if span > 0 else 1.0
         intensity = max(0.0, min(1.0, intensity))
         return intensity * STROBE_MAX
-
-    def _strobe_burst_gate(self, rate: float) -> float:
-        """Cap a single continuous strobe MOMENT at STROBE_MAX_BURST_S, then
-        enforce STROBE_MIN_SPACING_S before the next one can start (LIGHTING_
-        BIBLE.md §13) — CONFIRMED BUGGY then fixed 2026-09-08 (see
-        STROBE_MIN_SPACING_S's own comment above for the full story): a moment
-        ending EITHER way (hit the duration cap, or energy simply dropped
-        below threshold first) now earns the same minimum spacing before a new
-        one is allowed to start, so a sustained loud section can't chain
-        moments back-to-back with only a token gap between them.
-
-        Byte-quantized FIRST (2026-09-14, found while re-testing after
-        _strobe_rate's bucket-gated redesign): the old fixed threshold made
-        `rate` an exact 0.0 below it, so this never mattered before, but the
-        new continuous energy-correlated rate can be a genuinely nonzero-but-
-        sub-half-byte float (e.g. a very quiet moment inside a long BUILD)
-        that would round to DMX byte 0 -- invisible on the real fixture, but
-        without this rounding it still reads as `rate > 0.0` below and
-        silently starts consuming the burst-duration budget, eventually
-        forcing the mandatory 8s gap during a stretch that never visibly
-        strobed at all. Comparing the byte-quantized value instead means only
-        an actually-visible rate ever starts or extends a moment."""
-        rate = round(rate * 255) / 255.0
-        now = self.clock.monotonic()
-        if now < self._strobe_gap_until:
-            return 0.0  # serving the minimum spacing before a new moment can start
-        if rate <= 0.0:
-            if self._strobe_burst_start is not None:
-                # the moment just ended naturally -- this earns the same
-                # cooldown as hitting the duration cap (both are "the moment
-                # is over," just two different reasons for it ending)
-                self._strobe_burst_start = None
-                self._strobe_gap_until = now + STROBE_MIN_SPACING_S
-            return 0.0
-        if self._strobe_burst_start is None:
-            self._strobe_burst_start = now
-        if now - self._strobe_burst_start >= STROBE_MAX_BURST_S:
-            self._strobe_gap_until = now + STROBE_MIN_SPACING_S
-            self._strobe_burst_start = None
-            return 0.0
-        return rate
 
     def _par_strobe_on_phase(self, rate01: float) -> bool:
         """True during the "on" half of Par's synthesized dimmer-toggle
@@ -678,6 +771,14 @@ class ReactiveLayerEngine:
             self._build_entry_pos = pos
         if entering_new_bucket and energy_bucket == EnergyBucket.OUTRO:
             self._outro_entry_pos = pos
+        # DROP entry marks the phrase origin _strobe_rate counts from. PEAK
+        # is an overlay on the SAME drop (core/metronome.py), so DROP<->PEAK
+        # moves in either direction keep the origin (found by replaying the
+        # real capture: resetting on PEAK->DROP skipped a whole phrase's
+        # strobe); only arriving from outside the drop sets a fresh one.
+        if entering_new_bucket and energy_bucket in (EnergyBucket.DROP, EnergyBucket.PEAK) \
+                and self._prev_bucket not in (EnergyBucket.DROP, EnergyBucket.PEAK):
+            self._drop_entry_bar = snap.bar
         # Crossfade-arming is guarded on `self._prev_bucket is not None`,
         # UNLIKE the build-entry reset above: the engine's very first tick
         # ever has no meaningful prior state to blend FROM, and must land
@@ -695,11 +796,11 @@ class ReactiveLayerEngine:
         self._prev_bucket = energy_bucket
 
         if energy_bucket == EnergyBucket.DROP:
-            target = snap.drop_hit_intensity  # how loud THIS hit was, captured once (core/metronome.py)
-            target = max(target, _beat4_flash(snap))  # Josh's beat-4 accent, see BEAT4_FLASH_PEAK above
+            held = _drop_held_level(snap.drop_hit_intensity)  # how loud THIS hit was, captured once
+            target = _beat4_flash(snap, held)  # Josh's beat-4 accent, see BEAT4_FLASH_PEAK above
         elif energy_bucket == EnergyBucket.PEAK:
-            target = min(1.0, snap.drop_hit_intensity + PEAK_BOOST)
-            target = max(target, _beat4_flash(snap))  # same beat-4 accent
+            held = min(1.0, _drop_held_level(snap.drop_hit_intensity) + PEAK_BOOST)
+            target = _beat4_flash(snap, held)  # same beat-4 accent
         elif energy_bucket == EnergyBucket.BUILD:
             entry = self._build_entry_pos if self._build_entry_pos is not None else pos
             progress = max(0.0, min(1.0, (pos - entry) / BUILD_RAMP_BARS))

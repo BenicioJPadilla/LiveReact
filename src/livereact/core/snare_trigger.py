@@ -116,8 +116,24 @@ class SnareOnsetDetector:
 # accelerating distinction is qualitatively binary here: 4 consecutive
 # tightening intervals never occurs by chance in a steady pattern, so
 # precise tuning matters less than for the continuous energy-ratio case).
-ROLL_HISTORY = 4           # onset times tracked; need this many for a 3-interval window to compare
+#
+# 2026-09-15 hardening, from the first real capture (recordings/session-
+# 20260915-114303): the strobe channel lit at the EXACT tick BUILD committed
+# on both tracks played -- 3s and 11s before their drops, on intro/break
+# content -- and the ambient path is provably 0 at a BUILD entry, so this was
+# the roll path. Two causes, both fixed here: (1) `_onset_times` survived
+# across buckets, so hats/claps from the preceding BREAK were already a
+# "history" the instant BUILD started -- history is now cleared whenever the
+# bucket isn't BUILD, so a roll has to be earned inside the build; (2) the
+# overall-window test alone (latest interval <= 0.7 x earliest, 3 intervals)
+# is trivially satisfied by an ordinary quarter-then-two-eighths hat figure --
+# now the window is longer AND every step must be non-increasing (a plateau
+# is fine, a widening gap resets the pattern), which the simulation's own
+# adversary set never produces but a textbook roll always does.
+ROLL_HISTORY = 6           # onset times tracked -> a 5-interval window
 ROLL_TIGHTEN_RATIO = 0.7   # the window's LATEST interval must be at most this fraction of its EARLIEST
+ROLL_PLATEAU_TOLERANCE = 0.15  # each interval may exceed the one before it by at most this
+                               # fraction (timing jitter / a plateau), otherwise it isn't a roll
 ROLL_MAX_AGE_S = 0.5       # a roll "expires" (active->False) if no qualifying onset in this long
 
 
@@ -146,12 +162,19 @@ class SnareRollDetector:
 
     def update(self, onset_fired: bool, bucket: str, max_age_s: float = ROLL_MAX_AGE_S) -> bool:
         now = self.clock.monotonic()
+        if bucket != "build":
+            # History must be EARNED inside the build (2026-09-15, see the
+            # constants' comment above) -- onsets from the preceding section
+            # can't pre-load a "roll" that unmasks the instant BUILD commits.
+            self._onset_times = []
+            self.active = False
+            return False
         if onset_fired:
             self._onset_times.append(now)
             self._onset_times = self._onset_times[-self.history:]
 
         fresh_enough = bool(self._onset_times) and (now - self._onset_times[-1]) <= max_age_s
-        self.active = bucket == "build" and fresh_enough and self._is_accelerating()
+        self.active = fresh_enough and self._is_accelerating()
         return self.active
 
     def _is_accelerating(self) -> bool:
@@ -160,11 +183,15 @@ class SnareRollDetector:
         intervals = [b - a for a, b in zip(self._onset_times, self._onset_times[1:])]
         # OVERALL trend across the whole window (latest interval vs. the
         # earliest one in it) -- NOT "every single consecutive pair must
-        # individually tighten." FOUND BY SIMULATION (2026-09-14): a real
-        # roll naturally plateaus at each subdivision level for a couple of
-        # hits before dropping to the next (quarter, quarter, eighth,
-        # eighth, sixteenth...) -- requiring strict pairwise tightening at
-        # every step rejected a real, textbook roll pattern outright. The
-        # overall-window comparison tolerates that plateau while still
-        # requiring genuine acceleration across the window, not just "fast."
+        # strictly tighten." FOUND BY SIMULATION (2026-09-14): a real roll
+        # naturally plateaus at each subdivision level for a couple of hits
+        # before dropping to the next (quarter, quarter, eighth, eighth,
+        # sixteenth...) -- requiring strict pairwise tightening at every
+        # step rejected a real, textbook roll pattern outright. The window
+        # must still be NON-increasing step to step within a small
+        # tolerance (2026-09-15): a plateau passes, but any gap that opens
+        # back up means the hits aren't accelerating into anything.
+        for earlier, later in zip(intervals, intervals[1:]):
+            if later > earlier * (1.0 + ROLL_PLATEAU_TOLERANCE):
+                return False
         return intervals[-1] <= intervals[0] * self.tighten_ratio

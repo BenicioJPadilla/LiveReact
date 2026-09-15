@@ -139,6 +139,16 @@ class SessionRecorder(threading.Thread):
             "active_channels": sum(1 for b in uni if b),
             "energy_norm": round(snap.energy_norm, 4),
             "bucket": snap.bucket,
+            # 2026-09-15: the first post-build_snare_accent capture couldn't
+            # answer "did the roll fire / did the strobe byte move / what was
+            # the hit intensity" at all -- every one of those had to be
+            # inferred from the par dimmer toggling. Recorded directly now.
+            "drop_hit_intensity": round(snap.drop_hit_intensity, 4),
+            "drop_pending": snap.drop_pending,
+            "audio_fresh": snap.audio_fresh,
+            "band_low": round(snap.audio_band_low_abs, 4),   # the SnareOnsetDetector /
+            "band_mid": round(snap.audio_band_mid_abs, 4),   # kick-follow inputs, so a
+            "band_high": round(snap.audio_band_high_abs, 4), # session can be replayed offline
         }
         # Engine/rig internals -- all optional (see __init__): each guarded
         # separately so a partially-wired recorder (or a future engine that
@@ -147,6 +157,9 @@ class SessionRecorder(threading.Thread):
             record["wash_level"] = round(self.reactive_engine.wash_level, 4)
             record["kick_level"] = round(self.reactive_engine.kick_level, 4)
             record["hue_idx"] = self.reactive_engine._hue_idx
+            record["strobe_level"] = round(self.reactive_engine.strobe_level, 4)
+            record["snare_onset"] = self.reactive_engine.snare_onset_active
+            record["snare_roll_active"] = self.reactive_engine.snare_roll_active
         if self.phrase_engine is not None:
             record["scene"] = self.phrase_engine._current.name
             record["scene_uses_lasers"] = self.phrase_engine._current.uses_lasers
@@ -165,6 +178,7 @@ class SessionRecorder(threading.Thread):
                 record[f"{key}_pan"] = round(vs.pan, 3)
                 record[f"{key}_tilt"] = round(vs.tilt, 3)
                 record[f"{key}_active"] = vs.active
+                record[f"{key}_strobe"] = round(vs.strobe, 3)
         assert self._fh is not None
         self._fh.write(json.dumps(record) + "\n")
         self.samples += 1

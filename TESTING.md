@@ -260,8 +260,15 @@ Goal: confirm each of the 8 fixtures is wired/addressed correctly and that every
 channel does what the profile claims.
 
 ```
-python -m livereact --hardware --fixture-test --record
+python -m livereact --hardware --fixture-test --record --rig rigs/josh_rig.json
 ```
+
+> **Always pass `--rig rigs/josh_rig.json`** (found 2026-09-14): without it the
+> app silently loads the packaged 8-fixture `default_rig.json`, whose addresses
+> don't match the real rig — the MH goes dark and the laser receives MH-shaped
+> data on its own address and cycles patterns by itself. Only the wash bar
+> (address 69 in both files) behaves. If the wash bar is physically out, use
+> `rigs/josh_rig_no_bar.json` instead.
 
 For **each** fixture (MH L/R, Laser L/R, Par L/R, Bar L/R):
 1. Click its **Flash** button — the right fixture should light up. Note in `NOTES.md`
@@ -281,7 +288,7 @@ above head height. Confirm the laser is OFF at slider 0.
 
 ```
 python -m livereact --net-check          # check the link-local IP + firewall first
-python -m livereact --hardware --visualize --record
+python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json
 ```
 
 Play a track on the XDJ-XZ.
@@ -322,7 +329,7 @@ appear at all — note which.)
 ## Test 4 — Full end-to-end
 
 ```
-python -m livereact --hardware --visualize --record
+python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json
 ```
 
 Play a set: a track, a build, a drop, then mix into another track.

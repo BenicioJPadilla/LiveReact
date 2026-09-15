@@ -85,8 +85,25 @@ ENERGY_NORM_MIN_SAMPLES = 20          # require ~20s of real history before trus
                                        # principle as the laser trigger's WARMUP_S.
                                        # Report 0.0 (BREAKDOWN, the safe default)
                                        # before this, not a meaningless ratio.
-ENERGY_NORM_MIN_SPAN = 0.10           # floor on (ceiling - floor) -- avoids the
+ENERGY_NORM_MIN_SPAN = 0.20           # floor on (ceiling - floor) -- avoids the
                                        # ratio blowing up when the set's been flat.
+                                       # 0.10 -> 0.20 (2026-09-15, replaying
+                                       # recordings/session-20260915-114303): with
+                                       # silence excluded from the window (see
+                                       # ENERGY_NORM_SILENCE_FLOOR), a quiet intro
+                                       # (raw 0.10-0.17) leaves a FLAT window whose
+                                       # span sits at this floor -- and at 0.10 a
+                                       # single 0.2 blip in that intro was "0.1
+                                       # above the floor" = 1.0 = DROP, hit 0.94,
+                                       # 6s before the track's real content began.
+                                       # At 0.20 a section must be at least ~0.16
+                                       # above the set's floor to read as a drop
+                                       # (the same track's real drop, raw 0.30,
+                                       # still does; a 0.55 drop against a 0.30
+                                       # break has a real span above this floor
+                                       # and is unaffected). Raw-energy units, so
+                                       # tied to inputs/audio.py's ENERGY_GAIN
+                                       # calibration like every threshold here.
 ENERGY_NORM_MIN_CEILING = 0.05        # if nothing above this has happened
                                        # recently, the set is genuinely silent --
                                        # report 0.0 rather than let a tiny residual
@@ -95,6 +112,29 @@ ENERGY_NORM_MIN_CEILING = 0.05        # if nothing above this has happened
                                        # track ending (a long stretch at energy=0)
                                        # followed by any small noise spiked
                                        # energy_norm straight to ~1.0 ("DROP").
+ENERGY_NORM_SILENCE_FLOOR = 0.03      # smoothed energy below this is SILENCE, not
+                                       # part of the set's loudness range, and is
+                                       # never added to the rolling window. FOUND
+                                       # LIVE (recordings/session-20260915-114303):
+                                       # the window is mostly zeros after any
+                                       # silence, so its p10 floor is 0 and its p90
+                                       # ceiling is whatever quiet intro just
+                                       # started -- a track intro at raw 0.14 (the
+                                       # quietest audible content of the night)
+                                       # normalized to 1.00 and committed a full
+                                       # DROP with drop_hit_intensity=1.0, bigger
+                                       # than the real drop (raw 0.55) got. Same
+                                       # thing again at a track restart after ~2min
+                                       # of silence. ENERGY_NORM_MIN_CEILING alone
+                                       # can't catch this (0.14 clears 0.05
+                                       # easily). Keeping silence out of the window
+                                       # means the range is always music-vs-music:
+                                       # a cold start reports 0.0 (BREAK) until
+                                       # ENERGY_NORM_MIN_SAMPLES of actual music
+                                       # has played, and a restart after silence
+                                       # still compares against the previous
+                                       # track's real range. Session silence
+                                       # measured 0.00-0.01; quietest music ~0.10.
 
 # Bucket debounce (2026-09-07, FOUND LIVE + via tools/simulations/replay_song.py
 # on a real track): `bucket_for_energy` is a stateless boundary check on
@@ -176,6 +216,10 @@ EXIT_CONFIRM_DWELL_S = 4.0 * 60.0 / NOMINAL_BPM  # ~1.88s at 128 BPM
 # track because a `EnergyBucket.OUTRO` currently non-empty. See _base_committed
 # and _last_drop_or_peak_t below.
 OUTRO_LOOKBACK_S = 32.0 * SECONDS_PER_BAR  # ~60s at 128 BPM -- [CONVENTION], tunable
+PEAK_EXIT_MARGIN = 0.10  # once PEAK, stay PEAK until energy_norm falls this far
+                         # below BUILD_MAX (see _apply_bucket_overlay) -- this
+                         # project's own number, not the Bible's; same size as
+                         # the base classifier's downward margin.
 
 # `transition_likely` heuristic (Bible-integration Phase 3, D1 in
 # docs/bible_integration/SPEC_DEVIATIONS.md's "partial mitigation" note --
@@ -518,11 +562,15 @@ class Metronome(threading.Thread):
         if (self._last_energy_sample_t is None
                 or now - self._last_energy_sample_t >= ENERGY_NORM_SAMPLE_INTERVAL_S):
             self._last_energy_sample_t = now
-            self._energy_history.append(self._energy_smooth)
-            vals = sorted(self._energy_history)
-            n = len(vals)
-            self._energy_floor = vals[int(0.10 * (n - 1))]
-            self._energy_ceiling = vals[int(0.90 * (n - 1))]
+            # Silence is the absence of a set, not the bottom of its range
+            # (see ENERGY_NORM_SILENCE_FLOOR) -- the window only ever holds
+            # music, so floor/ceiling stay wherever the last music left them.
+            if self._energy_smooth >= ENERGY_NORM_SILENCE_FLOOR:
+                self._energy_history.append(self._energy_smooth)
+                vals = sorted(self._energy_history)
+                n = len(vals)
+                self._energy_floor = vals[int(0.10 * (n - 1))]
+                self._energy_ceiling = vals[int(0.90 * (n - 1))]
 
         if (len(self._energy_history) < ENERGY_NORM_MIN_SAMPLES
                 or self._energy_ceiling < ENERGY_NORM_MIN_CEILING):
@@ -652,7 +700,15 @@ class Metronome(threading.Thread):
         classifier's own state, never itself gating the base."""
         if self._base_committed == EnergyBucket.DROP:
             sustained = now - self._base_committed_since >= PER_STATE_DWELL_S[EnergyBucket.DROP]
-            final = EnergyBucket.PEAK if (sustained and self._energy_norm >= BUILD_MAX) else EnergyBucket.DROP
+            # Hysteresis on the escalation (2026-09-15, replaying recordings/
+            # session-20260915-114303 through this code): energy_norm sat
+            # within a hair of BUILD_MAX for a real ~10s stretch and the
+            # overlay toggled DROP<->PEAK five times in it. Visually near-
+            # identical (PEAK_BOOST is tiny), but every toggle is a bucket
+            # change PhraseEngine treats as a reason to consider rotating
+            # the look. Same fix shape as the base classifier's own margins.
+            threshold = BUILD_MAX - (PEAK_EXIT_MARGIN if self._bucket_committed == EnergyBucket.PEAK else 0.0)
+            final = EnergyBucket.PEAK if (sustained and self._energy_norm >= threshold) else EnergyBucket.DROP
         elif self._base_committed == EnergyBucket.BREAK:
             # Sustained-dwell requirement added 2026-09-13 (first real
             # --hardware --record session): PEAK escalation above already

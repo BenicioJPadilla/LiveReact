@@ -118,6 +118,44 @@ def test_recorder_captures_engine_and_rig_internals_when_given(tmp_path):
         assert f"{key}_active" in row
 
 
+def test_recorder_captures_strobe_and_snare_state_directly(tmp_path):
+    """2026-09-15: the first capture after build_snare_accent landed could
+    not say whether the roll fired, what the strobe byte was, or what the
+    hit intensity had been -- all inferred from the par dimmer toggling.
+    These are recorded straight off the live objects now, so a session
+    directory is enough to replay the detectors offline."""
+    state = ShowState()
+    state.publish(ShowSnapshot(bpm=128.0, bar=7, beat_in_bar=3, energy=0.6, energy_norm=0.9,
+                                bucket="drop", drop_hit_intensity=0.93, drop_pending=False,
+                                audio_fresh=True, audio_band_low_abs=4.0,
+                                audio_band_mid_abs=2.5, audio_band_high_abs=1.25))
+    fb = DmxFrameBuffer()
+    rig = load_rig()
+    clock = FakeClock()
+    reactive = ReactiveLayerEngine(clock)
+    uni = bytearray(rig.boot_universe())
+    bar = rig.fixture("bar_l")
+    uni[bar.offset + 1] = 128  # a real strobe-rate byte on the wash bar's ch2
+    fb.publish(bytes(uni))
+
+    rec = SessionRecorder(state, fb, clock, __import__("threading").Event(), str(tmp_path),
+                          reactive_engine=reactive, rig=rig)
+    rec.open()
+    rec.tick()
+    rec.close()
+
+    row = json.loads((tmp_path / "state.jsonl").read_text().strip())
+    assert row["drop_hit_intensity"] == 0.93
+    assert row["drop_pending"] is False
+    assert row["audio_fresh"] is True
+    assert (row["band_low"], row["band_mid"], row["band_high"]) == (4.0, 2.5, 1.25)
+    assert row["strobe_level"] == reactive.strobe_level
+    assert row["snare_onset"] is False
+    assert row["snare_roll_active"] is False
+    key = bar.label.lower().replace(" ", "_")
+    assert row[f"{key}_strobe"] == round(128 / 255, 3)
+
+
 def test_notes_meta_and_summary_files(tmp_path):
     d = str(tmp_path)
     write_notes_template(d)

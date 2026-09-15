@@ -42,6 +42,9 @@ class VisualState:
     pan: float         # 0..1 (0.5 = center)
     tilt: float        # 0..1
     active: bool
+    strobe: float = 0.0  # 0..1, the fixture's native strobe-rate channel if it has one
+                         # (2026-09-15: the recorder could only INFER strobe activity
+                         # from brightness sitting at the cap byte before this)
 
 
 def _clamp8(value: float) -> int:
@@ -623,7 +626,9 @@ class WashBar(Fixture):
         dim = uni[self.offset + 0] / 255
         r, g, b, w = (uni[self.offset + k] for k in range(2, 6))
         rr, gg, bb = min(255, r + w), min(255, g + w), min(255, b + w)
-        return VisualState(self.label, self.role, self.side, rr, gg, bb, dim, 0.5, 0.5, dim > 0)
+        strobe = uni[self.offset + 1] / 255  # ch2, the real strobe-rate byte
+        return VisualState(self.label, self.role, self.side, rr, gg, bb, dim, 0.5, 0.5, dim > 0,
+                           strobe=strobe)
 
 
 # Registry mapping rig-file ``fixture_type`` -> profile class.

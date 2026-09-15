@@ -159,3 +159,36 @@ def test_roll_detection_is_gated_to_build_bucket_only():
         if d.update(True, "drop"):  # NOT build
             fired_at_any_point = True
     assert not fired_at_any_point
+
+
+def test_onset_history_is_not_carried_into_the_build_from_the_previous_section():
+    """FOUND LIVE (recordings/session-20260915-114303): the strobe lit at
+    the exact tick BUILD committed on both tracks, because onsets from the
+    preceding BREAK's hats were already a full history the moment the
+    bucket flipped. A roll must be earned INSIDE the build -- the same
+    accelerating pattern fed in during BREAK, then BUILD starting, must
+    not read as a roll until enough new hits happen in BUILD."""
+    clock = FakeClock()
+    d = SnareRollDetector(clock)
+    for interval in [BEAT, BEAT, BEAT / 2, BEAT / 2, BEAT / 4, BEAT / 4]:
+        clock.advance(interval)
+        d.update(True, "break")  # a real roll shape, but in the wrong section
+    clock.advance(0.05)
+    assert d.update(False, "build") is False  # BUILD just began -- nothing earned yet
+    clock.advance(0.05)
+    assert d.update(True, "build") is False   # one hit in BUILD is not a roll either
+
+
+def test_a_quarter_then_two_eighths_hat_figure_never_reads_as_a_roll():
+    """The other half of the 2026-09-15 live false-fire: an ordinary
+    repeating quarter/eighth/eighth hat figure satisfies "latest interval
+    <= 0.7 x earliest" trivially. The window must be non-increasing step
+    to step (plateaus allowed), which this figure's re-opening gap fails."""
+    clock = FakeClock()
+    d = SnareRollDetector(clock)
+    fired_at_any_point = False
+    for interval in [BEAT, BEAT / 2, BEAT / 2] * 4:
+        clock.advance(interval)
+        if d.update(True, "build"):
+            fired_at_any_point = True
+    assert not fired_at_any_point

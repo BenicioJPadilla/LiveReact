@@ -228,6 +228,37 @@ def test_energy_norm_ignores_a_tiny_blip_after_extended_silence():
     assert m.tick().energy_norm == 0.0
 
 
+def test_a_quiet_intro_after_silence_is_not_a_drop():
+    """FOUND LIVE (recordings/session-20260915-114303): with silence counted
+    as the bottom of the set's range, a track intro at raw 0.14 (the
+    quietest audible content of the night) normalized to 1.00 and committed
+    a full DROP -- a bigger show than the real drop (raw 0.55) got. Same
+    thing at a track restart after ~2min of silence. Silence is not part of
+    the range: the window must hold music only."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    _pump_audio(m, clock, rms=0.0, seconds=45.0)   # session start: nothing playing
+    _pump_audio(m, clock, rms=0.14, seconds=30.0)  # a quiet intro starts
+    snap = m.tick()
+    assert snap.energy == pytest.approx(0.14, abs=0.01)
+    assert snap.energy_norm < 0.5, snap.energy_norm  # nowhere near DROP
+
+
+def test_a_restart_after_long_silence_compares_against_the_previous_track():
+    """The 396s event from the same capture: after a full track and ~2min of
+    silence, the next track's quiet intro must be judged against the LAST
+    music that played (which it is far below), not against the silence."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    _pump_audio(m, clock, rms=0.30, seconds=40.0)  # a track's break section
+    _pump_audio(m, clock, rms=0.55, seconds=40.0)  # its drop
+    _pump_audio(m, clock, rms=0.0, seconds=130.0)  # silence between tracks
+    _pump_audio(m, clock, rms=0.16, seconds=10.0)  # next track's quiet intro
+    assert m.tick().energy_norm < 0.3  # BREAK, not DROP
+    _pump_audio(m, clock, rms=0.55, seconds=15.0)  # its drop lands
+    assert m.tick().energy_norm > 0.8  # still recognised as a drop
+
+
 def test_energy_norm_passes_raw_energy_through_when_audio_is_stale():
     """The MIDI-fallback proxy is already a hand-built 0..1 signal (fader/EQ
     position), not a loudness measure -- adaptive rescaling doesn't apply."""

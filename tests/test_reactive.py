@@ -6,7 +6,10 @@ import pytest
 
 from livereact.clock import FakeClock
 from livereact.core.show_state import ShowSnapshot
-from livereact.engines.reactive import STROBE_MAX, ReactiveLayerEngine
+from livereact.engines.reactive import (
+    DROP_HELD_HIGH, DROP_HELD_LOW, PEAK_BOOST, STROBE_MAX, ReactiveLayerEngine, _drop_held_level,
+)
+from livereact.fixtures.profiles import WashBar
 from livereact.fixtures.rig import load_rig
 from livereact.scenes.catalog import bucket_for_energy
 
@@ -132,34 +135,79 @@ def test_strobe_off_outside_build_drop_and_peak_buckets():
     assert c.values[bar.offset + 1] == 0  # strobe ch2 off -- wrong bucket, regardless of energy
 
 
-def test_strobe_ramps_linearly_across_a_build_by_bar_position():
-    """SUPERSEDES the old per-tick-energy version of this test (2026-09-14):
-    strobe during BUILD now reuses the exact same bar-position ramp
-    _bucket_wash_level's own BUILD branch computes (0 at entry -> 1 over
-    BUILD_RAMP_BARS), not raw energy_norm -- confirmed live that chasing
-    energy_norm read as random flicker, not a strobe, during a real build.
-    Early in the build should show a little strobe; further in, more."""
+def test_build_has_no_ambient_strobe_of_its_own():
+    """SUPERSEDES 2026-09-14's bar-position-ramp strobe during BUILD
+    (2026-09-15, first real capture after it landed): that ramp fired a
+    ~1s burst mid-build, then the shared gate silenced everything for 8s --
+    one of the "random strobe for a beat, then stops" moments Josh saw.
+    A build's ramp IS the build (build_riser_wash); build_snare_accent's
+    roll path is the only BUILD strobe now."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     bar = rig.fixture("bar_l")
-    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)  # enters BUILD, sets ramp origin
-    low = eng.tick(_snap(bar=1, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
-    hot = eng.tick(_snap(bar=7, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
-    assert 0 < low.values[bar.offset + 1] < hot.values[bar.offset + 1]
+    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    for b in (1, 4, 7):
+        c = eng.tick(_snap(bar=b, beat_in_bar=4, beat_phase=0.0, bucket="build"), rig)
+        assert c.values[bar.offset + 1] == 0
 
 
-def test_high_energy_engages_capped_strobe():
+# --- phrase-aligned DROP/PEAK strobe (2026-09-15) --------------------------
+# The held-constant rate turned the burst gate into a 9.5s clock (measured:
+# 21 bursts, all 1.4-1.5s, spaced 9.4-9.6s, random beat positions). Now the
+# ambient strobe only fires in the last STROBE_PHRASE_TAIL_BEATS of every
+# STROBE_PHRASE_BARS-bar phrase counted from the drop's own downbeat.
+
+def _enter_drop(eng: ReactiveLayerEngine, rig, entry_bar: int = 0, **kw):
+    """Tick once at the drop's downbeat so the engine records its phrase origin."""
+    return eng.tick(_snap(energy=1.0, bar=entry_bar, beat_in_bar=1, beat_phase=0.0, bucket="drop", **kw), rig)
+
+
+def test_drop_strobe_fires_only_in_the_tail_of_each_phrase():
+    rig = load_rig()
+    eng = ReactiveLayerEngine(FakeClock())
+    bar = rig.fixture("bar_l")
+    _enter_drop(eng, rig, entry_bar=10)
+    # bars 10..16 (phrase bars 0..6) -- silent on every beat, including beat 4
+    for b in range(10, 17):
+        for beat in (1, 2, 3, 4):
+            c = eng.tick(_snap(energy=1.0, bar=b, beat_in_bar=beat, beat_phase=0.0, bucket="drop"), rig)
+            assert c.values[bar.offset + 1] == 0, (b, beat)
+    # bar 17 (phrase bar 7): beats 1-2 still silent, beats 3-4 strobe
+    for beat, expect in ((1, False), (2, False), (3, True), (4, True)):
+        c = eng.tick(_snap(energy=1.0, bar=17, beat_in_bar=beat, beat_phase=0.0, bucket="drop"), rig)
+        assert (c.values[bar.offset + 1] > 0) is expect, beat
+
+
+def test_drop_strobe_repeats_on_the_next_phrase_and_is_capped():
     """Cap value itself is Josh's explicit call (spec/FINDINGS.md SAFE-01/02/
     03/05/06 -- still an interim placeholder, still no real Hz calibration):
     raised 2026-09-14 from 0.15 to 0.75 after he watched a full 0-255 sweep
     live on the real wash bar -- import STROBE_MAX rather than hardcode it
     here, so this test can't silently drift from the real constant again."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    bar = rig.fixture("bar_l")
+    _enter_drop(eng, rig)
+    first = eng.tick(_snap(energy=1.0, bar=7, beat_in_bar=3, beat_phase=0.0, bucket="drop"), rig)
+    assert 0 < first.values[bar.offset + 1] <= int(STROBE_MAX * 255) + 1
+    clock.advance(1.0)
+    eng.tick(_snap(energy=1.0, bar=8, beat_in_bar=1, beat_phase=0.0, bucket="drop"), rig)  # tail over
+    clock.advance(13.0)  # ~7 bars later at 128bpm, well past STROBE_MIN_SPACING_S
+    second = eng.tick(_snap(energy=1.0, bar=15, beat_in_bar=3, beat_phase=0.0, bucket="drop"), rig)
+    assert second.values[bar.offset + 1] > 0
+
+
+def test_peak_keeps_the_phrase_origin_of_the_drop_it_escalated_from():
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     bar = rig.fixture("bar_l")
-    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
-    strobe = c.values[bar.offset + 1]
-    assert 0 < strobe <= int(STROBE_MAX * 255) + 1  # engaged but conservatively capped
+    _enter_drop(eng, rig, entry_bar=3)
+    eng.tick(_snap(energy=1.0, bar=6, beat_in_bar=1, beat_phase=0.0, bucket="peak"), rig)  # escalates
+    mid = eng.tick(_snap(energy=1.0, bar=8, beat_in_bar=4, beat_phase=0.0, bucket="peak"), rig)
+    tail = eng.tick(_snap(energy=1.0, bar=10, beat_in_bar=4, beat_phase=0.0, bucket="peak"), rig)
+    assert mid.values[bar.offset + 1] == 0   # bar 8 is phrase bar 5, not a tail
+    assert tail.values[bar.offset + 1] > 0   # bar 10 is phrase bar 7 -- counted from bar 3, not 6
 
 
 # --- strobe burst-duration cap + minimum spacing (LIGHTING_BIBLE.md §13,
@@ -176,16 +224,26 @@ def test_high_energy_engages_capped_strobe():
 # -- both used to be handled differently, which was itself part of the bug.
 
 
+def _tail(**kw):
+    """A snapshot sitting in a drop's phrase tail (phrase bar 7, beat 3)
+    when the drop was entered at bar 0 -- the ambient strobe WANTS to fire
+    here, so these tests exercise the burst gate alone. Overridable."""
+    base = dict(energy=1.0, bar=7, beat_in_bar=3, beat_phase=0.0, bucket="drop")
+    base.update(kw)
+    return _snap(**base)
+
+
 def test_strobe_cuts_off_after_the_max_burst_duration():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
     bar = rig.fixture("bar_l")
-    # sustained high energy throughout -- would strobe continuously without the gate
-    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    _enter_drop(eng, rig)
+    # held in the tail throughout -- would strobe continuously without the gate
+    c = eng.tick(_tail(), rig)
     assert c.values[bar.offset + 1] > 0  # engaged at the start of the burst
     clock.advance(1.5)  # == STROBE_MAX_BURST_S
-    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    c = eng.tick(_tail(), rig)
     assert c.values[bar.offset + 1] == 0  # forced dark once the burst limit is hit
 
 
@@ -194,14 +252,15 @@ def test_strobe_stays_off_for_the_minimum_spacing_then_resumes():
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
     bar = rig.fixture("bar_l")
-    eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    _enter_drop(eng, rig)
+    eng.tick(_tail(), rig)
     clock.advance(1.5)
-    eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)  # burst cap trips here
+    eng.tick(_tail(), rig)  # burst cap trips here
     clock.advance(5.0)  # still well within STROBE_MIN_SPACING_S (8.0s)
-    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
-    assert c.values[bar.offset + 1] == 0  # still gapped, even though energy is still high
+    c = eng.tick(_tail(), rig)
+    assert c.values[bar.offset + 1] == 0  # still gapped, even though the tail condition holds
     clock.advance(3.1)  # now past the 8.0s minimum spacing
-    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    c = eng.tick(_tail(), rig)
     assert c.values[bar.offset + 1] > 0  # allowed to strobe again
 
 
@@ -216,20 +275,44 @@ def test_strobe_ending_naturally_also_earns_the_minimum_spacing():
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
     bar = rig.fixture("bar_l")
-    eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    _enter_drop(eng, rig)
+    eng.tick(_tail(), rig)
     clock.advance(0.5)  # well under the 1.5s cap
-    # Bucket gate replaced the old fixed energy_norm threshold (2026-09-14) --
-    # leaving BUILD/DROP/PEAK is now what ends a moment "naturally" here, not
-    # a raw energy drop (see reactive.py's STROBE_THRESHOLD retirement note;
-    # PEAK is also an allowed strobe bucket now, so "break" is used here to
-    # genuinely exit all three).
-    eng.tick(_snap(energy=1.0, beat_phase=0.0, bucket="break"), rig)  # bucket exits, strobe naturally off
+    # Leaving the phrase tail (here: the bucket exits entirely) is what ends
+    # a moment "naturally" now, not a raw energy drop.
+    eng.tick(_tail(bucket="break"), rig)  # bucket exits, strobe naturally off
     clock.advance(0.1)  # nowhere near STROBE_MIN_SPACING_S (8.0s)
-    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
-    assert c.values[bar.offset + 1] == 0  # gated -- a natural end earns spacing too now
+    _enter_drop(eng, rig)  # a fresh drop lands immediately...
+    c = eng.tick(_tail(), rig)
+    assert c.values[bar.offset + 1] == 0  # ...but the gate still owes spacing from the last moment
     clock.advance(8.0)  # now past the minimum spacing
-    c = eng.tick(_snap(energy=1.0, beat_phase=0.0), rig)
+    c = eng.tick(_tail(), rig)
     assert c.values[bar.offset + 1] > 0  # allowed to strobe again
+
+
+def test_roll_accent_has_its_own_gate_so_an_ambient_gap_cannot_silence_it():
+    """2026-09-15: with one shared gate, any burst imposed the full 8s gap
+    on the roll path too -- on the real capture that covered most of an
+    11s build. The roll's gate is separate: an ambient DROP burst that
+    just ended must not block a roll confirmed in a BUILD right after."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    bar = rig.fixture("bar_l")
+    _enter_drop(eng, rig)
+    eng.tick(_tail(), rig)
+    clock.advance(1.5)
+    eng.tick(_tail(), rig)  # ambient burst cap trips -> ambient gate now owes 8s
+    clock.advance(0.1)
+    _warm_up_snare(eng, clock, rig)  # in BUILD from here on
+    fired = False
+    for interval in (0.45, 0.45, 0.30, 0.30, 0.20, 0.20):
+        clock.advance(interval)
+        c = eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
+                            audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
+        fired = fired or c.values[bar.offset + 1] > 0
+    assert eng.snare_roll_active
+    assert fired  # well inside the ambient gate's 8s gap, and still visible
 
 
 # --- build_snare_accent delivery (2026-09-14): _snare_accent_strobe_rate
@@ -263,14 +346,14 @@ def test_a_real_accelerating_roll_engages_the_strobe_channel_via_the_roll_path()
     _warm_up_snare(eng, clock, rig)
 
     fired_strobe = False
-    # ROLL_HISTORY=4 -- needs 4 onset times (3 gaps) before _is_accelerating
-    # even evaluates. The first spike here just seeds history; the three
-    # gaps that follow are the actual roll shape being tested (overall
-    # tightening: 0.27 <= 0.4*0.7).
+    # ROLL_HISTORY=6 -- needs 6 onset times (5 gaps) before _is_accelerating
+    # even evaluates. The first spike here just seeds history; the five
+    # gaps that follow are the actual roll shape being tested (non-
+    # increasing, plateaus allowed; overall tightening 0.20 <= 0.45*0.7).
     clock.advance(0.5)
     eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
                     audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
-    for interval in (0.4, 0.35, 0.27):
+    for interval in (0.45, 0.45, 0.30, 0.30, 0.20):
         clock.advance(interval)
         c = eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
                             audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
@@ -312,12 +395,12 @@ def test_the_same_accelerating_roll_is_ignored_outside_the_build_bucket():
     _warm_up_snare(eng, clock, rig)
 
     fired_strobe = False
-    for interval in (0.4, 0.35, 0.27):
+    for interval in (0.45, 0.45, 0.30, 0.30, 0.20):
         clock.advance(interval)
-        # drop_hit_intensity pinned to DROP_INTENSITY_FLOOR (0.85) -- DROP's
-        # own ambient _strobe_rate path is legitimately nonzero at _snap()'s
-        # default of 1.0 (2026-09-14's held-value redesign), which would
-        # bleed into this "roll path only" assertion otherwise.
+        # drop_hit_intensity pinned to DROP_INTENSITY_FLOOR (0.85) and the
+        # snapshot kept off a phrase tail (bar 0, beat 1) -- so DROP's own
+        # ambient _strobe_rate path can't bleed into this "roll path only"
+        # assertion.
         c = eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="drop",  # NOT build
                             drop_hit_intensity=0.85,
                             audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
@@ -522,7 +605,8 @@ def test_drop_bucket_holds_a_constant_intensity_regardless_of_beat():
     bar = rig.fixture("bar_l")
     on_beat = eng.tick(_snap(energy=0.9, beat_phase=0.0, audio_band_low_abs=50.0, drop_hit_intensity=0.9), rig)
     late_beat = eng.tick(_snap(energy=0.9, beat_phase=0.9, audio_band_low_abs=0.0, drop_hit_intensity=0.9), rig)
-    assert on_beat.values[bar.offset] == late_beat.values[bar.offset] == 202  # snap.drop_hit_intensity=0.9, fixed for this test
+    assert on_beat.values[bar.offset] == late_beat.values[bar.offset] > 0
+    assert eng.wash_level == pytest.approx(_drop_held_level(0.9))  # held, not the raw hit
 
 
 def test_drop_and_peak_flash_on_beat_four_but_not_other_beats():
@@ -545,6 +629,38 @@ def test_drop_and_peak_flash_on_beat_four_but_not_other_beats():
         assert beat4_start.values[bar.offset] > beat1.values[bar.offset], bucket  # flash raises it
         assert beat4_start.values[bar.offset] > beat4_late.values[bar.offset], bucket  # decays across beat 4 itself
         assert beat4_late.values[bar.offset] >= beat1.values[bar.offset], bucket  # HTP -- never dips below the held base
+
+
+def test_beat_four_flash_is_a_visible_excursion_not_a_sliver():
+    """FOUND LIVE (recordings/session-20260915-114303): mean wash-bar
+    brightness on beat 4 was 0.965 vs 0.964 on beats 1-3 -- the flash
+    was mathematically invisible against a held level of 0.92-1.0.
+    Now the held level leaves headroom (DROP_HELD_*) and the flash peaks
+    at full, falling back to held over BEAT4_FLASH_DECAY_PHASE of the
+    beat, so it's still clearly above held a third of the way in."""
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    for hit in (0.85, 1.0):  # quietest and loudest confirmed drops alike
+        eng = ReactiveLayerEngine(FakeClock())
+        held = eng.tick(_snap(energy=1.0, bucket="drop", beat_in_bar=1, beat_phase=0.0, drop_hit_intensity=hit), rig)
+        peak = eng.tick(_snap(energy=1.0, bucket="drop", beat_in_bar=4, beat_phase=0.0, drop_hit_intensity=hit), rig)
+        third = eng.tick(_snap(energy=1.0, bucket="drop", beat_in_bar=4, beat_phase=0.2, drop_hit_intensity=hit), rig)
+        assert peak.values[bar.offset] == 255, hit
+        assert peak.values[bar.offset] - held.values[bar.offset] >= 90, hit   # >=35% of full scale
+        assert third.values[bar.offset] - held.values[bar.offset] >= 40, hit  # still clearly up, 1/3 in
+
+
+def test_held_drop_level_stays_at_or_under_the_strobe_brightness_cap():
+    """A strobe burst clamps ch1 to WashBar.STROBE_BRIGHTNESS_CAP_DMX at
+    finalize (Josh, 2026-09-14). With the held level above that byte, each
+    burst read live as a ~45% brightness CUT ("they just strobe and then
+    turn off really quick"). The held level's top of range must render at
+    or near the cap so a burst is never a visible dim."""
+    rig = load_rig()
+    bar = rig.fixture("bar_l")
+    eng = ReactiveLayerEngine(FakeClock())
+    c = eng.tick(_snap(energy=1.0, bucket="drop", beat_in_bar=1, beat_phase=0.0, drop_hit_intensity=1.0), rig)
+    assert c.values[bar.offset] <= WashBar.STROBE_BRIGHTNESS_CAP_DMX + 2
 
 
 def test_build_bucket_ramps_from_bar_position_not_audio():
@@ -587,7 +703,7 @@ def test_build_ramp_restarts_on_a_fresh_entry():
     eng.tick(_snap(energy=0.4, bar=0, beat_in_bar=1, beat_phase=0.0), rig)
     eng.tick(_snap(energy=0.4, bar=8, beat_in_bar=1, beat_phase=0.0), rig)  # ramp completes
     eng.tick(_snap(energy=0.9, bar=9, beat_in_bar=1, beat_phase=0.0, drop_hit_intensity=0.9), rig)  # a drop happens
-    assert eng.wash_level == 0.9  # snap.drop_hit_intensity=0.9 -- entering DROP always snaps instantly
+    assert eng.wash_level == pytest.approx(_drop_held_level(0.9))  # entering DROP always snaps instantly
 
     clock.advance(0.05)
     eng.tick(_snap(energy=0.4, bar=20, beat_in_bar=1, beat_phase=0.0), rig)  # BUILD re-entered
@@ -679,8 +795,8 @@ def test_peak_holds_a_constant_intensity_above_drop():
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     eng.tick(_snap(energy=1.0, bucket="peak", drop_hit_intensity=0.9), rig)
-    assert eng.wash_level == 0.93  # snap.drop_hit_intensity(0.9) + PEAK_BOOST(0.03)
-    assert eng.wash_level > 0.9    # brighter than the drop it escalated from
+    assert eng.wash_level == pytest.approx(_drop_held_level(0.9) + PEAK_BOOST)
+    assert eng.wash_level > _drop_held_level(0.9)  # brighter than the drop it escalated from
 
 
 def test_peak_intensity_scales_with_the_drop_it_escalated_from():
@@ -692,7 +808,7 @@ def test_peak_intensity_scales_with_the_drop_it_escalated_from():
     loud_peak = ReactiveLayerEngine(FakeClock())
     loud_peak.tick(_snap(energy=1.0, bucket="peak", drop_hit_intensity=1.0), rig)
     assert loud_peak.wash_level > quiet_peak.wash_level
-    assert loud_peak.wash_level == 1.0  # clamped, doesn't exceed full
+    assert loud_peak.wash_level == pytest.approx(DROP_HELD_HIGH + PEAK_BOOST)  # top of the held range, plus the boost
 
 
 def test_drop_intensity_reflects_the_actual_hit_not_a_fixed_constant():
@@ -704,8 +820,10 @@ def test_drop_intensity_reflects_the_actual_hit_not_a_fixed_constant():
     loud_drop = ReactiveLayerEngine(FakeClock())
     loud_drop.tick(_snap(energy=1.0, bucket="drop", drop_hit_intensity=1.0), rig)
     assert loud_drop.wash_level > quiet_drop.wash_level
-    assert quiet_drop.wash_level == 0.85
-    assert loud_drop.wash_level == 1.0
+    # 2026-09-15: rendered onto the DROP_HELD_* range, not the raw hit --
+    # the raw 0.85-1.0 left no headroom for the beat-4 accent (see reactive.py)
+    assert quiet_drop.wash_level == pytest.approx(DROP_HELD_LOW)
+    assert loud_drop.wash_level == pytest.approx(DROP_HELD_HIGH)
 
 
 def test_outro_fades_down_from_bar_position_not_audio():
