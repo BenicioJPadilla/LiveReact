@@ -26,6 +26,10 @@ log = logging.getLogger(__name__)
 ROTATION_BARS = 16   # rotate the look on this cadence
 CROSSFADE_BARS = 2   # crossfade duration
 HOLD_BARS = 4        # minimum hold after any change
+# Energy-state ordering for "is this bucket change an escalation" -- see
+# _maybe_rotate. PEAK/OUTRO are metronome overlays: PEAK ranks with DROP
+# (same drop, escalated), OUTRO with BREAK (a promoted break).
+_ESCALATION_RANK = {"break": 0, "outro": 0, "build": 1, "drop": 2, "peak": 2}
 
 
 class PhraseEngine:
@@ -38,6 +42,7 @@ class PhraseEngine:
         self._last_bar_seen = -1
         self._last_bucket_seen: str | None = None
         self._skip_requested = False
+        self._escalation_requested = False  # an UPWARD bucket change -- bypasses the hold floor, see _maybe_rotate
         self._was_in_transition = False
         self.rotations = 0  # for tests/telemetry
 
@@ -101,6 +106,18 @@ class PhraseEngine:
         # here, just one more legitimate reason to ask for a rotation check.
         if self._last_bucket_seen is not None and snap.bucket != self._last_bucket_seen:
             self._skip_requested = True
+            # An UPWARD change (into BUILD, or into DROP/PEAK) also bypasses
+            # the hold floor below (2026-09-15, recordings/session-20260915-
+            # 121503): the floor is an anti-whiplash guard against the
+            # scheduler flipping looks too often, but an escalation is
+            # already debounced upstream (core/metronome.py's dwell +
+            # confirm), so re-gating it here just meant a real build ran
+            # its full 11s under `Break Ceiling Drift`, and the drop that
+            # followed played its first 13s under the same break look --
+            # Josh: "break setting seemed to not really work." Downward
+            # and lateral changes still respect the outgoing look's hold.
+            if _ESCALATION_RANK.get(snap.bucket, 0) > _ESCALATION_RANK.get(self._last_bucket_seen, 0):
+                self._escalation_requested = True
         self._last_bucket_seen = snap.bucket
 
         if self._next is not None:
@@ -121,10 +138,11 @@ class PhraseEngine:
         # 8 pre-Bible-integration scenes, which never set this field).
         hold_bars = self._current.min_hold_bars if self._current.min_hold_bars is not None else HOLD_BARS
         bars_since_change = snap.bar - self._last_change_bar
-        if bars_since_change < hold_bars:
+        if bars_since_change < hold_bars and not self._escalation_requested:
             return  # enforce the minimum hold
 
-        if self._skip_requested or bars_since_change >= ROTATION_BARS:
+        if self._skip_requested or self._escalation_requested or bars_since_change >= ROTATION_BARS:
+            self._escalation_requested = False
             self._begin_rotation(snap, rig)
 
     def _begin_rotation(self, snap: ShowSnapshot, rig: Rig) -> None:

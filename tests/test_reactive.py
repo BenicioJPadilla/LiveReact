@@ -7,7 +7,8 @@ import pytest
 from livereact.clock import FakeClock
 from livereact.core.show_state import ShowSnapshot
 from livereact.engines.reactive import (
-    DROP_HELD_HIGH, DROP_HELD_LOW, PEAK_BOOST, STROBE_MAX, ReactiveLayerEngine, _drop_held_level,
+    BUILD_STROBE_START, DROP_HELD_HIGH, DROP_HELD_LOW, PEAK_BOOST, STROBE_MAX, ReactiveLayerEngine,
+    _drop_held_level,
 )
 from livereact.fixtures.profiles import WashBar
 from livereact.fixtures.rig import load_rig
@@ -135,20 +136,25 @@ def test_strobe_off_outside_build_drop_and_peak_buckets():
     assert c.values[bar.offset + 1] == 0  # strobe ch2 off -- wrong bucket, regardless of energy
 
 
-def test_build_has_no_ambient_strobe_of_its_own():
-    """SUPERSEDES 2026-09-14's bar-position-ramp strobe during BUILD
-    (2026-09-15, first real capture after it landed): that ramp fired a
-    ~1s burst mid-build, then the shared gate silenced everything for 8s --
-    one of the "random strobe for a beat, then stops" moments Josh saw.
-    A build's ramp IS the build (build_riser_wash); build_snare_accent's
-    roll path is the only BUILD strobe now."""
+def test_build_strobe_is_continuous_and_gets_faster_across_the_build():
+    """Josh, 2026-09-15 (second live test): "the strobe should be strobing
+    throughout the build up and... slowly get faster." A sustained rate
+    (not burst-gated) from BUILD_STROBE_START x STROBE_MAX at entry up to
+    STROBE_MAX by the end of BUILD_RAMP_BARS -- never dark mid-build."""
+    clock = FakeClock()
     rig = load_rig()
-    eng = ReactiveLayerEngine(FakeClock())
+    eng = ReactiveLayerEngine(clock)
     bar = rig.fixture("bar_l")
     eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
-    for b in (1, 4, 7):
-        c = eng.tick(_snap(bar=b, beat_in_bar=4, beat_phase=0.0, bucket="build"), rig)
-        assert c.values[bar.offset + 1] == 0
+    seen = []
+    for b in (0, 2, 4, 6, 8):
+        clock.advance(3.75)  # two bars of real time -- far past STROBE_MAX_BURST_S
+        c = eng.tick(_snap(bar=b, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+        seen.append(c.values[bar.offset + 1])
+    assert seen[0] == round(BUILD_STROBE_START * STROBE_MAX * 255)  # starts at the floor, not 0
+    assert all(a < b for a, b in zip(seen, seen[1:]))               # monotonically faster
+    assert seen[-1] == round(STROBE_MAX * 255)                       # reaches the ceiling
+    assert all(v > 0 for v in seen)                                  # never gated dark
 
 
 # --- phrase-aligned DROP/PEAK strobe (2026-09-15) --------------------------
@@ -310,7 +316,7 @@ def test_roll_accent_has_its_own_gate_so_an_ambient_gap_cannot_silence_it():
         clock.advance(interval)
         c = eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
                             audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
-        fired = fired or c.values[bar.offset + 1] > 0
+        fired = fired or c.values[bar.offset + 1] >= round(STROBE_MAX * 255)
     assert eng.snare_roll_active
     assert fired  # well inside the ambient gate's 8s gap, and still visible
 
@@ -357,7 +363,9 @@ def test_a_real_accelerating_roll_engages_the_strobe_channel_via_the_roll_path()
         clock.advance(interval)
         c = eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
                             audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
-        if c.values[bar.offset + 1] > 0:
+        # BUILD's own sustained strobe sits well below the ceiling this early
+        # in the ramp (BUILD_STROBE_START); only the roll reaches STROBE_MAX.
+        if c.values[bar.offset + 1] >= round(STROBE_MAX * 255):
             fired_strobe = True
     assert eng.snare_roll_active  # the roll is confirmed active by the last hit
     assert fired_strobe  # and it actually reached the real strobe channel, not just the flag
@@ -374,15 +382,18 @@ def test_a_steady_non_accelerating_onset_pattern_never_engages_the_strobe_channe
     bar = rig.fixture("bar_l")
     _warm_up_snare(eng, clock, rig)
 
-    fired_strobe = False
+    roll_level = round(STROBE_MAX * 255)
+    reached_roll_level = False
     for _ in range(6):  # constant spacing, well over onset refractory -- never tightens
         clock.advance(0.4)
         c = eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
                             audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
-        if c.values[bar.offset + 1] > 0:
-            fired_strobe = True
+        # BUILD has its own slow sustained strobe (BUILD_STROBE_START); a
+        # roll would jump the channel to the STROBE_MAX ceiling instead.
+        if c.values[bar.offset + 1] >= roll_level:
+            reached_roll_level = True
     assert not eng.snare_roll_active
-    assert not fired_strobe
+    assert not reached_roll_level
 
 
 def test_the_same_accelerating_roll_is_ignored_outside_the_build_bucket():

@@ -219,15 +219,31 @@ def test_bucket_change_forces_rotation_after_minimum_hold():
     assert eng.rotations == 1
 
 
-def test_bucket_change_before_minimum_hold_is_still_deferred():
-    """The new bucket-change trigger must not bypass the existing
-    anti-whiplash floor -- it's one more reason to check, not a shortcut
-    around HOLD_BARS."""
+def test_downward_bucket_change_before_minimum_hold_is_still_deferred():
+    """The bucket-change trigger must not bypass the anti-whiplash floor
+    for a DOWNWARD move -- it's one more reason to check, not a shortcut
+    around HOLD_BARS. (An upward move does bypass it: see the escalation
+    test below.)"""
     rig = load_rig()
     eng = PhraseEngine()
-    eng.tick(_snap(0, energy=0.2), rig)
-    eng.tick(_snap(HOLD_BARS - 1, energy=1.0), rig)  # bucket changed, but still inside the hold
+    eng.tick(_snap(0, energy=1.0), rig)  # drop baseline
+    eng.tick(_snap(HOLD_BARS - 1, energy=0.2), rig)  # falls to break, still inside the hold
     assert eng.rotations == 0
+
+
+def test_upward_bucket_change_bypasses_the_outgoing_looks_hold():
+    """2026-09-15 (recordings/session-20260915-121503): an 11s build ran
+    entirely under `Break Ceiling Drift` and the drop after it played its
+    first 13s under the same break look, because the outgoing look's
+    min_hold_bars re-gated a bucket change the metronome had already
+    debounced. An escalation (into BUILD, or into DROP/PEAK) now rotates on
+    the next bar boundary regardless of the hold."""
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2), rig)  # break baseline
+    eng.tick(_snap(1, energy=1.0), rig)  # -> drop, one bar in, well inside the hold
+    assert eng.rotations == 1
+    assert eng._next is not None and eng._next.bucket.value == "drop"
 
 
 def test_bucket_change_rotation_picks_a_scene_for_the_new_bucket():

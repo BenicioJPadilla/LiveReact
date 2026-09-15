@@ -159,6 +159,26 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
                               # next downbeat. ~0.9s at 133bpm, under
                               # STROBE_MAX_BURST_S at anything above ~80bpm.
 
+# Continuous BUILD strobe (Josh, 2026-09-15, second live test of the day:
+# "the strobe should be strobing throughout the build up and the strobe
+# should slowly get faster throughout the build up but currently it is not
+# doing that, I don't even see the strobe"). Earlier the same day the BUILD
+# strobe had been retired entirely (the burst-gated bar-ramp version fired
+# one ~1s burst then went dark for 8s -- one of the "random strobe" moments).
+# This is the un-gated version of that ramp: a SUSTAINED rate that starts at
+# BUILD_STROBE_START of STROBE_MAX at build entry and climbs linearly to
+# STROBE_MAX over BUILD_RAMP_BARS, riding the same bar-position ramp as the
+# wash level. Safety: §13's burst/gap rule is for strobe BURSTS; a sustained
+# rate is governed by SAFETY_STROBE_SUSTAINED_MAX_HZ (4 Hz), which Par's
+# software toggle meets EXACTLY (its Hz is computed from this rate, capped at
+# PAR_STROBE_MAX_HZ = 4.0) and the wash bar meets only as far as STROBE_MAX
+# itself is trusted -- the same unmeasured byte-to-Hz placeholder as every
+# other wash-bar strobe use here (spec/FINDINGS.md SAFE-01/02/03). The floor
+# exists because Par's toggle at a very low rate reads as the light going OUT
+# for seconds, not as a strobe: 0.25 x STROBE_MAX -> 1 Hz on Par, byte ~48 on
+# the bar ("slow" end of its 10-255 range per the manual).
+BUILD_STROBE_START = 0.25
+
 # build_snare_accent's roll-triggered strobe gets its OWN burst gate (2026-09-15,
 # same capture): sharing one gate with the ambient path meant any burst -- the
 # roll firing at a BUILD entry edge, or the ambient BUILD ramp -- imposed the
@@ -167,10 +187,9 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
 # build (197-205s of an 11s BUILD). The two sources are bucket-exclusive (roll
 # = BUILD only via SnareRollDetector; ambient = DROP/PEAK only, see
 # _strobe_rate) so separate gates can't chain bursts closer than either
-# gate's own spacing within one bucket. The old BUILD-bucket ambient ramp
-# strobe is retired here (a build's ramp IS the build per build_riser_wash;
-# build_snare_accent is the BUILD strobe, and the ramp strobe was the other
-# "random one-beat strobe" Josh saw mid-build).
+# gate's own spacing within one bucket. (BUILD's own sustained strobe --
+# BUILD_STROBE_START above -- is not burst-gated at all, and the roll accent
+# simply rides on top of it via max().)
 ROLL_STROBE_MIN_SPACING_S = 2.0  # a roll can span several bars; let the accent
                                  # re-fire within it, just not chain back-to-back.
 
@@ -667,7 +686,16 @@ class ReactiveLayerEngine:
         self.snare_onset_active = onset
         self.snare_roll_active = self._snare_roll.update(onset, snap.bucket)
         roll_rate = STROBE_MAX if self.snare_roll_active else 0.0
-        ambient = self._ambient_gate.apply(self._strobe_rate(snap))
+        ambient_rate = self._strobe_rate(snap)
+        if EnergyBucket(snap.bucket) == EnergyBucket.BUILD:
+            # The build strobe is a SUSTAINED slow-to-medium rate, not a
+            # burst (see BUILD_STROBE_START) -- it bypasses the burst gate,
+            # which still sees a 0 so any DROP-side moment it was tracking
+            # closes and earns its spacing normally.
+            self._ambient_gate.apply(0.0)
+            ambient = ambient_rate
+        else:
+            ambient = self._ambient_gate.apply(ambient_rate)
         roll = self._roll_gate.apply(roll_rate)
         return max(ambient, roll)
 
@@ -682,17 +710,25 @@ class ReactiveLayerEngine:
         for PEAK), captured ONCE at the drop commit and rescaled off its
         known [DROP_INTENSITY_FLOOR, DROP_INTENSITY_CEIL] range onto
         [0, STROBE_MAX] -- NOT raw per-tick energy_norm (confirmed live
-        2026-09-14 to read as random flicker). BUILD no longer has an
-        ambient strobe: build_snare_accent's roll path is the BUILD strobe.
+        2026-09-14 to read as random flicker). BUILD is a separate,
+        sustained, accelerating strobe -- see _build_strobe_rate.
         Bucket transitions/PEAK-escalation logic lives in core/metronome.py
         -- see the separate open item (2026-09-14, Josh) about a sustained
         drop with no quiet section getting stuck; not addressed here."""
         bucket = EnergyBucket(snap.bucket)
+        if bucket == EnergyBucket.BUILD:
+            return self._build_strobe_rate(snap)
         if bucket not in (EnergyBucket.DROP, EnergyBucket.PEAK):
             return 0.0
-        if self._drop_entry_bar is None:
+        # Phrase origin: the metronome's own drop_start_bar (the bar the
+        # rise was FIRST seen in -- see ShowSnapshot.drop_start_bar) when it
+        # has one; the bar this engine saw the bucket flip in otherwise.
+        # Found live (2026-09-15): the commit bar was a full bar after the
+        # hit, so counting from it put the strobe on the wrong bar.
+        origin = snap.drop_start_bar if snap.drop_start_bar is not None else self._drop_entry_bar
+        if origin is None:
             return 0.0  # engine started mid-drop with no known downbeat to count from
-        bars_in = snap.bar - self._drop_entry_bar
+        bars_in = snap.bar - origin
         last_bar_of_phrase = (bars_in % STROBE_PHRASE_BARS) == STROBE_PHRASE_BARS - 1
         in_tail = snap.beat_in_bar > 4 - STROBE_PHRASE_TAIL_BEATS
         if not (last_bar_of_phrase and in_tail):
@@ -704,6 +740,19 @@ class ReactiveLayerEngine:
         intensity = (hit - DROP_INTENSITY_FLOOR) / span if span > 0 else 1.0
         intensity = max(0.0, min(1.0, intensity))
         return intensity * STROBE_MAX
+
+    def _build_strobe_rate(self, snap: ShowSnapshot) -> float:
+        """Continuous BUILD strobe that gets faster across the build (Josh,
+        2026-09-15 after the second live test: "the strobe should be
+        strobing throughout the build up and... slowly get faster"). Rides
+        the same bar-position ramp as the wash level (0 at entry -> 1 over
+        BUILD_RAMP_BARS), from BUILD_STROBE_START of STROBE_MAX up to
+        STROBE_MAX. Not burst-gated -- see BUILD_STROBE_START's comment for
+        the sustained-rate safety argument and the floor's reason."""
+        pos = musical_bar_position(snap)
+        entry = self._build_entry_pos if self._build_entry_pos is not None else pos
+        progress = max(0.0, min(1.0, (pos - entry) / BUILD_RAMP_BARS))
+        return STROBE_MAX * (BUILD_STROBE_START + (1.0 - BUILD_STROBE_START) * progress)
 
     def _par_strobe_on_phase(self, rate01: float) -> bool:
         """True during the "on" half of Par's synthesized dimmer-toggle

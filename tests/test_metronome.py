@@ -212,7 +212,9 @@ def test_energy_norm_smooths_out_beat_to_beat_oscillation():
                                        band_low_abs=rms * 20, band_mid_abs=rms * 12, band_high_abs=rms * 8))
         samples.append(m.tick().energy_norm)
         clock.advance(0.2)
-    assert max(samples) - min(samples) < 0.35  # smoothed -- doesn't chase every toggle
+    settled = samples[15:]  # after the asymmetric attack (ENERGY_NORM_ATTACK_TAU_S) has settled
+    deltas = [abs(b - a) for a, b in zip(settled, settled[1:])]
+    assert max(deltas) < 0.15  # smoothed -- doesn't chase every toggle
 
 
 def test_energy_norm_ignores_a_tiny_blip_after_extended_silence():
@@ -238,7 +240,7 @@ def test_a_quiet_intro_after_silence_is_not_a_drop():
     clock = FakeClock()
     m = _metronome(clock)
     _pump_audio(m, clock, rms=0.0, seconds=45.0)   # session start: nothing playing
-    _pump_audio(m, clock, rms=0.14, seconds=30.0)  # a quiet intro starts
+    _pump_audio(m, clock, rms=0.14, seconds=60.0)  # a quiet intro, well past the warmup
     snap = m.tick()
     assert snap.energy == pytest.approx(0.14, abs=0.01)
     assert snap.energy_norm < 0.5, snap.energy_norm  # nowhere near DROP
@@ -257,6 +259,27 @@ def test_a_restart_after_long_silence_compares_against_the_previous_track():
     assert m.tick().energy_norm < 0.3  # BREAK, not DROP
     _pump_audio(m, clock, rms=0.55, seconds=15.0)  # its drop lands
     assert m.tick().energy_norm > 0.8  # still recognised as a drop
+
+
+def test_one_isolated_hit_in_silence_does_not_start_a_build():
+    """2026-09-15 replay of recordings/session-20260915-121503 with the
+    faster attack (ENERGY_NORM_ATTACK_TAU_S): a single cue-tap hit (raw
+    0.51 for ~0.5s, everything else ~0) rode the slow release into a 9s
+    BUILD with the build strobe running. An upward move now also needs
+    the UNSMOOTHED level to agree at confirmation time -- a real section
+    keeps its level up; one hit is gone by then."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    _pump_audio(m, clock, rms=0.30, seconds=40.0)  # a track's break
+    _pump_audio(m, clock, rms=0.55, seconds=40.0)  # its drop
+    _pump_audio(m, clock, rms=0.0, seconds=90.0)   # track over, silence (past the OUTRO lookback)
+    assert m.tick().bucket == "break"
+    _pump_audio(m, clock, rms=0.51, seconds=0.6)   # one tap
+    seen = set()
+    for _ in range(50):                            # the next 10s of silence
+        _pump_audio(m, clock, rms=0.0, seconds=0.2)
+        seen.add(m.tick().bucket)
+    assert seen == {"break"}, seen
 
 
 def test_energy_norm_passes_raw_energy_through_when_audio_is_stale():
@@ -602,49 +625,53 @@ def test_drop_commits_immediately_when_already_on_a_downbeat():
     assert not m._pending_drop_release
 
 
-def test_drop_waits_for_the_next_downbeat_when_confirmed_mid_bar():
-    """LIGHTING_BIBLE.md's own language ("releases on the downbeat") --
-    Bible-integration Phase 3 (D1 in docs/bible_integration/
-    SPEC_DEVIATIONS.md): a confirmed DROP doesn't commit the instant its
-    dwell timer clears if that happens mid-bar -- it waits for beat 1."""
+def test_drop_commits_immediately_mid_bar_and_backdates_its_start_bar():
+    """SUPERSEDES the beat-quantized release (Phase 3 D1) for the energy
+    classifier -- 2026-09-15, recordings/session-20260915-121503: the
+    audible hit was a one-tick step ON a downbeat, and by the time the
+    smoothed classifier confirmed it (~3-4 beats later) waiting for the
+    NEXT downbeat pushed the commit a full bar late, with the blackout
+    bridge landing inside the drop. Now: commit the moment the candidate
+    confirms, and publish the bar the candidate FIRST appeared in as the
+    phrase origin (drop_start_bar), not the commit bar."""
     clock = FakeClock()
     m = _metronome(clock)
-    m._beat_in_bar = 3  # mid-bar
+    m._bar = 40
+    m._beat_in_bar = 2
     m._energy_norm = 0.9
-    m._derive_bucket(clock.monotonic())
+    m._derive_bucket(clock.monotonic())  # candidate appears in bar 40
+    m._bar = 41                          # the confirmation lands in the next bar
+    m._beat_in_bar = 3                   # mid-bar -- would previously have waited for beat 1
     clock.advance(FAST_ENTRY_DWELL_S + 0.1)
-    m._derive_bucket(clock.monotonic())
-    assert m._base_committed != EnergyBucket.DROP  # confirmed, but not released yet
-    assert m._pending_drop_release
-
-    m._beat_in_bar = 4  # still not a downbeat
-    m._derive_bucket(clock.monotonic())
-    assert m._base_committed != EnergyBucket.DROP
-    assert m._pending_drop_release
-
-    m._beat_in_bar = 1  # the next real downbeat arrives
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     assert not m._pending_drop_release
+    assert m.drop_start_bar == 40  # backdated to where the sound first supported it
 
 
-def test_pending_drop_release_cancels_if_energy_backs_off_first():
+def test_a_sustained_cut_exits_the_drop_before_its_dwell_floor():
+    """Same capture: the music dropped out mid-drop and the 8-bar DROP dwell
+    floor held full drop lighting over ~8s of quiet ("break setting didn't
+    work"). A BREAK-range reading that persists CUT_EXIT_CONFIRM_S is a
+    real breakdown and may leave DROP early; a shorter dip may not."""
+    from livereact.core.metronome import CUT_EXIT_CONFIRM_S, PER_STATE_DWELL_S
     clock = FakeClock()
     m = _metronome(clock)
-    m._beat_in_bar = 3
     m._energy_norm = 0.9
     m._derive_bucket(clock.monotonic())
     clock.advance(FAST_ENTRY_DWELL_S + 0.1)
     m._derive_bucket(clock.monotonic())
-    assert m._pending_drop_release
-
-    m._energy_norm = 0.3  # the sound itself backed off before the downbeat arrived
+    assert m._base_committed == EnergyBucket.DROP
+    clock.advance(2.0)  # well inside PER_STATE_DWELL_S[DROP] (~15s)
+    m._energy_norm = 0.05  # the kick drops out
     m._derive_bucket(clock.monotonic())
-    assert not m._pending_drop_release
-
-    m._beat_in_bar = 1  # even once a downbeat does arrive, nothing to release anymore
+    clock.advance(CUT_EXIT_CONFIRM_S * 0.5)
     m._derive_bucket(clock.monotonic())
-    assert m._base_committed != EnergyBucket.DROP
+    assert m._base_committed == EnergyBucket.DROP  # a short dip is still a fill, not a breakdown
+    clock.advance(CUT_EXIT_CONFIRM_S * 0.5 + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BREAK  # sustained -> out, ~4s in, not 15s
+    assert clock.monotonic() < PER_STATE_DWELL_S[EnergyBucket.DROP]
 
 
 # --- Bible-integration Phase 3: transition_likely heuristic -----------------

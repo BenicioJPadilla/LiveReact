@@ -105,6 +105,15 @@ class ShowSnapshot:
     # drop intensity should reflect the real sound, not a fixed constant).
     # Default matches DROP_INTENSITY_FLOOR for callers/tests predating this.
     drop_hit_intensity: float = 0.85
+    # The bar the current DROP's energy rise was FIRST seen in (the raw
+    # classifier's candidate start), not the bar it was committed in --
+    # 2026-09-15, recordings/session-20260915-121503: smoothing + dwell put
+    # the commit a full bar (sometimes several) after the audible hit, so
+    # anything counting phrases from the commit bar landed on the wrong bar.
+    # Still a lagging estimate, not a true downbeat detection (there is no
+    # song-structure signal here, see LIGHTING_BIBLE.md §9.9) -- just the
+    # earliest bar the sound itself supports. None until the first drop.
+    drop_start_bar: int | None = None
     # Bible-integration Phase 3 heuristic (core/metronome.py's
     # _apply_bucket_overlay) -- a plain rule, NOT prediction or ML: true when
     # a sustained DROP/PEAK has run past a typical duration, or the track's
@@ -115,7 +124,10 @@ class ShowSnapshot:
     # is confirmed but held for beat-quantized release (core/metronome.py's
     # `_pending_drop_release`, Phase 3) -- "holds dark on the final bar,
     # releases to the DROP look on the downbeat." See merge/merge.py's
-    # finalize() for where this actually forces the hard cut.
+    # finalize() for where this actually forces the hard cut. Since
+    # 2026-09-15 the energy classifier never sets this (its confirmation
+    # always trails the audible hit, so the "final bar" was the drop's own
+    # first bar -- measured live); it stays for a future predictive cue.
     drop_pending: bool = False
     in_transition: bool = False          # inferred / synthetic
 

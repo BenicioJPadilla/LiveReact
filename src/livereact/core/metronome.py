@@ -72,6 +72,19 @@ ENERGY_NORM_SMOOTH_TAU_S = 3.0        # EMA smoothing BEFORE normalizing -- roug
                                        # short window's own range. Smoothing first
                                        # makes the classification reflect a song
                                        # SECTION's character, not one kick.
+ENERGY_NORM_ATTACK_TAU_S = 1.0        # smoothing tau for a RISE only (2026-09-15,
+                                       # recordings/session-20260915-121503): the
+                                       # flapping the 3s tau exists to stop is the
+                                       # DOWNWARD kind -- beat-to-beat dips between
+                                       # kicks -- while a section getting louder is
+                                       # exactly the thing to react to quickly. With
+                                       # one symmetric 3s tau the DROP commit trailed
+                                       # the audible hit by ~4 beats (the hit was
+                                       # a one-tick 0.2 -> 0.55 step on a downbeat;
+                                       # energy_norm crossed 0.80 ~3 beats later).
+                                       # Falls still use ENERGY_NORM_SMOOTH_TAU_S.
+                                       # Validated by replaying both 2026-09-15
+                                       # captures: no extra bucket transitions.
 ENERGY_NORM_WINDOW_S = 90.0           # how far back to look for "this set's recent
                                        # range" -- roughly 2-3 phrases: long enough
                                        # that one kick/riser can't move it, short
@@ -80,11 +93,28 @@ ENERGY_NORM_SAMPLE_INTERVAL_S = 1.0   # how often to add to/recompute the rollin
                                        # window -- doesn't need per-tick precision,
                                        # and keeps the window small (~90 samples)
                                        # so sorting it every time stays cheap.
-ENERGY_NORM_MIN_SAMPLES = 20          # require ~20s of real history before trusting
-                                       # the normalized value at all -- same warmup
-                                       # principle as the laser trigger's WARMUP_S.
-                                       # Report 0.0 (BREAKDOWN, the safe default)
-                                       # before this, not a meaningless ratio.
+ENERGY_NORM_MIN_SAMPLES = 40          # require this many seconds of actual MUSIC
+                                       # (silence isn't sampled, see SILENCE_FLOOR)
+                                       # before trusting the normalized value at
+                                       # all -- same warmup principle as the laser
+                                       # trigger's WARMUP_S. Report 0.0 (BREAK, the
+                                       # safe default) before this, not a
+                                       # meaningless ratio. 20 -> 40 (2026-09-15,
+                                       # replaying BOTH of the day's captures):
+                                       # at 20 the window is still just the intro
+                                       # when it wakes up, and the intro's own
+                                       # louder section (raw ~0.3 vs 0.12) read as
+                                       # a full DROP in both sessions -- at 40 the
+                                       # window spans the intro AND that section,
+                                       # both read BREAK/BUILD, and every real
+                                       # drop (raw ~0.5) still committed in the
+                                       # bar it landed. Cost, disclosed: the first
+                                       # ~40s of music in a set can only ever be
+                                       # BREAK. Tried and rejected instead: gating
+                                       # DROP on the window's natural p10-p90 span
+                                       # -- it delayed the first real drop by 10s
+                                       # (the 90-sample window's p90 takes ~9
+                                       # drop-seconds to move).
 ENERGY_NORM_MIN_SPAN = 0.20           # floor on (ceiling - floor) -- avoids the
                                        # ratio blowing up when the set's been flat.
                                        # 0.10 -> 0.20 (2026-09-15, replaying
@@ -198,6 +228,10 @@ PER_STATE_DWELL_S = {b: bars * SECONDS_PER_BAR for b, bars in PER_STATE_DWELL_BA
 # numbers gate the CANDIDATE's own persistence once that floor is cleared).
 FAST_ENTRY_DWELL_S = 2.0 * 60.0 / NOMINAL_BPM   # ~0.94s at 128 BPM
 EXIT_CONFIRM_DWELL_S = 4.0 * 60.0 / NOMINAL_BPM  # ~1.88s at 128 BPM
+CUT_EXIT_CONFIRM_S = 2.0 * SECONDS_PER_BAR       # ~3.75s: a BREAK-range reading that
+                                                 # persists this long mid-DROP is a
+                                                 # real breakdown and may exit early
+                                                 # (2026-09-15, see _derive_bucket)
 
 # PEAK escalation / OUTRO promotion (Bible-integration Phase 2): neither is
 # reachable from a raw energy level (see EnergyBucket's own docstring) --
@@ -333,6 +367,8 @@ class Metronome(threading.Thread):
         self._last_norm_tick_t: float | None = None
         self._last_energy_sample_t: float | None = None
         self._energy_norm = 0.0
+        self._energy_norm_inst: float | None = None  # unsmoothed twin of _energy_norm, see
+                                                     # _derive_energy_norm; None until first derived
 
         # bucket debounce state (Bible-integration Phase 2 -- see PER_STATE_DWELL_S above)
         self._base_committed = EnergyBucket.BREAK  # BREAK/BUILD/DROP only -- see EnergyBucket's docstring
@@ -340,6 +376,7 @@ class Metronome(threading.Thread):
         self._bucket_committed = EnergyBucket.BREAK  # the FULL exposed state (may be PEAK/OUTRO overlay)
         self._bucket_candidate: EnergyBucket | None = None
         self._bucket_candidate_since: float | None = None
+        self._bucket_candidate_bar: int | None = None  # bar the candidate first appeared in -> drop_start_bar
         self._last_drop_or_peak_t: float | None = None  # for OUTRO promotion, see OUTRO_LOOKBACK_S
         self._manual_bucket_override: EnergyBucket | None = None  # Phase 2 hook, unused until Phase 5's
                                                                     # DJ-trigger buttons -- see request_manual_bucket()
@@ -359,6 +396,7 @@ class Metronome(threading.Thread):
         # captured once per real DROP commitment, held static (see DROP_INTENSITY_FLOOR/CEIL
         # above and engines/reactive.py) -- how loud THIS hit actually was, not a fixed constant
         self.drop_hit_intensity = DROP_INTENSITY_FLOOR
+        self.drop_start_bar: int | None = None  # see ShowSnapshot.drop_start_bar
 
         # real audio (docs/14) — kept separate from _midi's fields; see
         # AudioLevelMessage's docstring for why band_low_abs stays un-normalized
@@ -552,11 +590,15 @@ class Metronome(threading.Thread):
         unscaled — adaptive rescaling doesn't mean anything for that path."""
         if not self._is_audio_fresh(now):
             self._energy_norm = self._energy
+            self._energy_norm_inst = self._energy
             return
 
         dt = (now - self._last_norm_tick_t) if self._last_norm_tick_t is not None else 0.0
         self._last_norm_tick_t = now
-        coeff = 1 - math.exp(-dt / ENERGY_NORM_SMOOTH_TAU_S) if dt > 0 else 0.0
+        # Asymmetric: a rise is followed on the faster ENERGY_NORM_ATTACK_TAU_S,
+        # a fall on the slower ENERGY_NORM_SMOOTH_TAU_S (see ATTACK's comment).
+        tau = ENERGY_NORM_ATTACK_TAU_S if self._energy > self._energy_smooth else ENERGY_NORM_SMOOTH_TAU_S
+        coeff = 1 - math.exp(-dt / tau) if dt > 0 else 0.0
         self._energy_smooth += coeff * (self._energy - self._energy_smooth)
 
         if (self._last_energy_sample_t is None
@@ -575,10 +617,15 @@ class Metronome(threading.Thread):
         if (len(self._energy_history) < ENERGY_NORM_MIN_SAMPLES
                 or self._energy_ceiling < ENERGY_NORM_MIN_CEILING):
             self._energy_norm = 0.0  # not enough history yet, or genuinely silent recently
+            self._energy_norm_inst = 0.0
             return
 
         span = max(self._energy_ceiling - self._energy_floor, ENERGY_NORM_MIN_SPAN)
         self._energy_norm = max(0.0, min(1.0, (self._energy_smooth - self._energy_floor) / span))
+        # The same rescaling on the UNSMOOTHED per-tick energy -- "is the
+        # sound still there right now" -- used only to confirm an upward
+        # bucket move (see _derive_bucket), never to classify directly.
+        self._energy_norm_inst = max(0.0, min(1.0, (self._energy - self._energy_floor) / span))
 
     def request_manual_bucket(self, bucket: EnergyBucket) -> None:
         """Bible-integration Phase 2 hook: a future DJ-triggered cue ("the
@@ -603,6 +650,12 @@ class Metronome(threading.Thread):
         span = 1.0 - BUILD_MAX
         progress = max(0.0, min(1.0, (self._energy_norm - BUILD_MAX) / span)) if span > 0 else 1.0
         self.drop_hit_intensity = DROP_INTENSITY_FLOOR + (DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR) * progress
+        # Phrase origin for anything counting bars from the drop: the bar
+        # the DROP candidate first appeared in, not this (later) commit bar
+        # -- see ShowSnapshot.drop_start_bar. A manual override has no
+        # candidate history, so it falls back to the current bar.
+        self.drop_start_bar = self._bucket_candidate_bar if self._bucket_candidate_bar is not None else self._bar
+        self._bucket_candidate_bar = None
         self._base_committed = EnergyBucket.DROP
         self._base_committed_since = now
 
@@ -631,14 +684,17 @@ class Metronome(threading.Thread):
         raw = bucket_for_energy_with_hysteresis(self._energy_norm, self._base_committed)
 
         # Beat-quantized DROP release (Bible-integration Phase 3, D1 in
-        # docs/bible_integration/SPEC_DEVIATIONS.md): a confirmed DROP
-        # doesn't commit the instant its dwell timer clears -- it waits for
-        # the next real downbeat, so the hit always lands on a clean beat
-        # boundary rather than wherever the confirming tick happened to
-        # fall. Cancelled if energy backs off before a downbeat arrives --
-        # this is a short wait (at most one bar), not a real prediction, so
-        # there's nothing to "keep believing" if the sound itself changes
-        # its mind first.
+        # docs/bible_integration/SPEC_DEVIATIONS.md) -- RETIRED for the
+        # energy classifier, 2026-09-15 (recordings/session-20260915-121503):
+        # "wait for the next downbeat so the hit lands on a clean boundary"
+        # assumed confirmation could arrive BEFORE the hit. Measured: the
+        # audible hit (low band 0.5 -> 15 in one tick, on a downbeat) came a
+        # full bar before the commit on both drops -- smoothing + dwell alone
+        # is ~3-4 beats -- so the wait added up to another whole bar, and the
+        # `drop_pending` blackout bridge landed INSIDE the drop's first bar.
+        # A reactive classifier is always late; quantizing forward only makes
+        # it later. The machinery stays for a future predictive cue (a manual
+        # "drop is coming" or a riser detector), where it would be correct.
         if self._pending_drop_release:
             if raw != EnergyBucket.DROP:
                 self._pending_drop_release = False  # energy backed off before the downbeat arrived
@@ -672,20 +728,40 @@ class Metronome(threading.Thread):
                 else:
                     floor_ok = now - self._base_committed_since >= PER_STATE_DWELL_S[self._base_committed]
                     confirm_s = EXIT_CONFIRM_DWELL_S
+                    if (not floor_ok and self._base_committed == EnergyBucket.DROP
+                            and raw == EnergyBucket.BREAK):
+                        # Sustained-cut exit (2026-09-15, same capture): the
+                        # music dropped out mid-drop and the 8-bar DROP dwell
+                        # floor held full drop lighting over ~8s of quiet.
+                        # A BREAK-range reading that persists a couple of
+                        # bars is a real breakdown, not a one-bar fill --
+                        # let it through on its own longer confirmation.
+                        floor_ok = True
+                        confirm_s = CUT_EXIT_CONFIRM_S
                 if not floor_ok:
                     self._bucket_candidate = None
                     self._bucket_candidate_since = None
                 elif raw != self._bucket_candidate:
                     self._bucket_candidate = raw
                     self._bucket_candidate_since = now
+                    self._bucket_candidate_bar = self._bar  # where the sound first supported this
                 elif now - self._bucket_candidate_since >= confirm_s:
-                    if raw == EnergyBucket.DROP:
+                    if direction_up and self._energy_norm_inst is not None and (
+                        _BUCKET_ORDER.index(bucket_for_energy_with_hysteresis(self._energy_norm_inst, self._base_committed))
+                        < _BUCKET_ORDER.index(raw)
+                    ):
+                        # The smoothed signal says "up" but the sound RIGHT
+                        # NOW doesn't (2026-09-15, replaying recordings/
+                        # session-20260915-121503 with the faster attack):
+                        # one isolated cue-tap hit (raw 0.51 for ~0.5s in
+                        # silence) rode the slow release into a 9s BUILD.
+                        # A real section keeps its instantaneous level up;
+                        # keep the candidate and re-check next tick.
+                        pass
+                    elif raw == EnergyBucket.DROP:
                         self._bucket_candidate = None
                         self._bucket_candidate_since = None
-                        if self._beat_in_bar == 1:
-                            self._commit_drop(now)  # already on a downbeat -- no wait needed
-                        else:
-                            self._pending_drop_release = True  # confirmed -- wait for the next downbeat
+                        self._commit_drop(now)  # immediately -- see the retired quantization note above
                     else:
                         self._base_committed = raw
                         self._base_committed_since = now
@@ -848,6 +924,7 @@ class Metronome(threading.Thread):
             bucket=self._bucket_committed.value,
             drop_cycle=self.drop_cycle,
             drop_hit_intensity=self.drop_hit_intensity,
+            drop_start_bar=self.drop_start_bar,
             transition_likely=self.transition_likely,
             drop_pending=self._pending_drop_release,
             drop_marker=self._drop_marker_pulse,
