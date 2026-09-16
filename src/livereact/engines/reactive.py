@@ -66,6 +66,13 @@ from .envelope import NORMALIZE_TAU_S, BandEnvelope
 SYNTH_FLOOR = 0.02
 SYNTH_CEILING = 0.95
 SYNTH_GAIN = 0.236
+# Break breath (Josh, 2026-09-16, after the second laser run: breaks read
+# "very stagnant... it can just look like it's breathing to the synths or
+# stabs"): in BREAK/OUTRO -- and only when Synth Sync isn't already owning
+# the wash -- the same normalized mid-band envelope is ADDED to the bucket
+# model's slow breathing level at this depth. Subtle by design: a pad swell
+# or a stab lifts the wash by at most this much on top of the 15-35% breath.
+BREAK_SYNTH_DEPTH = 0.15
 
 # STROBE_THRESHOLD (a fixed energy_norm > 0.85 gate, RETIRED 2026-09-14) used
 # to be the sole gate on the reactive strobe, in ANY bucket. Two real problems
@@ -235,23 +242,29 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
 # peak needs the burst rules (<= 1.5s, then a gap) and there is no way to
 # know which 1.5s of a build is the last. If the top still reads weak, the
 # lever is flash brightness (STROBE_FLASH_DMX), Josh's own cap.
-BUILD_STROBE_START = 0.5
-BUILD_STROBE_RAMP_BARS = 6.0
-BUILD_STROBE_RAMP_EXPONENT = 2.0  # Josh, fifth live test: "the increase should be
-                                  # less linear and more exponential" -- progress
-                                  # is squared, so rate and flash brightness sit
-                                  # near the start for the first bars and do most
-                                  # of their climbing in the last two.
+BUILD_STROBE_START = 0.4          # 1.6 Hz at build entry -- a slow pulse, not yet a strobe
+BUILD_STROBE_RAMP_BARS = 8.0      # the Bible's own build length; tops out AT the drop of an 8-bar build
+BUILD_STROBE_RAMP_EXPONENT = 3.0  # cubic ease-in: the first half of the build barely moves off the
+                                  # start rate, the last two bars do the climbing
+# Retuned again after the second live laser run (2026-09-15 night,
+# recordings/session-20260915-212918, an 8-bar/16 s build): the previous
+# 0.5 / 6 bars / squared shape hit 4 Hz five seconds before the drop --
+# Josh: "the strobing went into effect way too early... by the time it
+# dropped, the strobing was already done." Now the strobe idles as a slow
+# pulse for the first half of a build and only becomes a strobe in the last
+# bars; the roll accent (STROBE_ROLL_FLASH_DMX, below) supplies the intense
+# finish on top when a roll/riser is detected. A 4-bar build only reaches
+# ~1.9 Hz on this ramp -- a known cost of anchoring the shape to 8 bars.
 
-# The build strobe ends on the HIT, not on the commit (same test, Josh: "the
-# strobing continued after the beat drop"): the classifier's confirmation
-# dwell (~2 beats) plus smoothing put the DROP commit 2 beats to 1 bar after
-# the audible hit, so the strobe ran into the drop. `snap.drop_candidate`
-# is true from the tick the level crosses the DROP threshold -- the hit has
-# already sounded -- so BUILD's strobe stops there and the wash holds at the
-# top of its ramp until the cut. Across all four 2026-09-15 captures every
-# candidate episode was a real hit (two 0.2-0.3s false starts, both within
-# a bar of the real one).
+# The build strobe ends on the COMMIT (the hard cut into the drop look), not
+# on the candidate flag. History: 2026-09-15 test 4 (session-140630) had the
+# commit trailing the audible hit by ~2 beats, so the strobe was cut on
+# `drop_candidate` and Josh saw it stop on the hit. The second laser run the
+# same night (session-212918) went the other way: the candidate fired on the
+# riser's crescendo 0.8 s before the commit and Josh heard the strobe stop
+# BEFORE the drop. The commit is the one event the wash cut, the look cut and
+# the strobe end now share, so whichever way a song's lead falls the drop
+# reads as a single cut, not a strobe that dies and then a cut.
 
 # build_snare_accent's roll accent (rebuilt 2026-09-15 night, second live
 # run -- see core/snare_trigger.py for why the onset-counting version never
@@ -261,7 +274,7 @@ BUILD_STROBE_RAMP_EXPONENT = 2.0  # Josh, fifth live test: "the increase should 
 # the end of a build are already AT 4 Hz, so a same-rate accent was
 # invisible. No burst gate on this path: 4 Hz is the sustained-safe line
 # (SAFE-01), so a roll that lasts several bars is legal as-is; the accent
-# ends with the roll, the build, or on the hit (drop_candidate).
+# ends with the roll or the build (the commit into the drop).
 STROBE_ROLL_FLASH_DMX = 255
 
 # Color: the phrase-frozen palette entry on the snapshot (engines/palette.py,
@@ -557,6 +570,9 @@ class ReactiveLayerEngine:
         strobe = self._snare_accent_strobe_rate(snap)
         self.synth_level = self._synth_env.update(snap.audio_band_mid_abs, snap.audio_fresh)
         self.synth_sync_active = bool(self.manual is not None and self.manual.synth_sync and snap.audio_fresh)
+        if (not self.synth_sync_active and snap.audio_fresh
+                and EnergyBucket(snap.bucket) in (EnergyBucket.BREAK, EnergyBucket.OUTRO)):
+            wash_level = min(1.0, wash_level + BREAK_SYNTH_DEPTH * self.synth_level)  # see BREAK_SYNTH_DEPTH
         if self.synth_sync_active:
             # The synth owns the wash: envelope-driven brightness, no strobe
             # (a 0 here also resets the strobe clock). No real audio -> the
@@ -613,7 +629,7 @@ class ReactiveLayerEngine:
         ambient burst is DROP/PEAK-only, so the two can never chain."""
         self.snare_roll_active = self._roll.update(snap)
         self.roll_ratio = self._roll.ratio
-        roll_rate = STROBE_MAX if (self.snare_roll_active and not snap.drop_candidate) else 0.0
+        roll_rate = STROBE_MAX if self.snare_roll_active else 0.0  # ends with the roll or on the commit
         ambient_rate = self._strobe_rate(snap)  # BUILD: sets strobe_flash_dmx to the ramp's byte...
         if roll_rate > 0:
             self.strobe_flash_dmx = STROBE_ROLL_FLASH_DMX  # ...which the roll accent overrides
@@ -675,8 +691,6 @@ class ReactiveLayerEngine:
         BUILD_RAMP_BARS), from BUILD_STROBE_START of STROBE_MAX up to
         STROBE_MAX. Not burst-gated -- see BUILD_STROBE_START's comment for
         the sustained-rate safety argument and the floor's reason."""
-        if snap.drop_candidate:
-            return 0.0  # the hit has landed; see the comment above BUILD_STROBE_START
         pos = musical_bar_position(snap)
         entry = self._build_entry_pos if self._build_entry_pos is not None else pos
         progress = max(0.0, min(1.0, (pos - entry) / BUILD_STROBE_RAMP_BARS))

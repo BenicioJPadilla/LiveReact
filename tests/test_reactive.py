@@ -110,24 +110,25 @@ def test_build_strobe_is_continuous_and_gets_faster_across_the_build():
     eng = ReactiveLayerEngine(clock)
     eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
     seen = []
-    for b in (0, 2, 4, 6):
+    for b in (0, 2, 4, 6, 8):
         clock.advance(3.75)  # two bars of real time -- far past STROBE_MAX_BURST_S
         eng.tick(_snap(bar=b, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
         seen.append(eng.strobe_level)
     assert seen[0] == pytest.approx(BUILD_STROBE_START * STROBE_MAX)  # starts at the floor, not 0
     assert all(a < b for a, b in zip(seen, seen[1:]))               # monotonically faster
+    assert seen[2] < BUILD_STROBE_START * STROBE_MAX * 1.3           # half-way: still barely off the start (cubic ease-in)
     assert seen[-1] == pytest.approx(STROBE_MAX)                     # reaches the ceiling by BUILD_STROBE_RAMP_BARS
     assert all(v > 0 for v in seen)                                  # never gated dark
     clock.advance(3.75)
-    eng.tick(_snap(bar=8, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    eng.tick(_snap(bar=10, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
     assert eng.strobe_level == pytest.approx(STROBE_MAX)             # and holds there
 
 
-def test_build_strobe_ends_on_the_hit_not_the_commit():
-    """session-20260915-140630, Josh: "the strobing continued after the
-    beat drop." The classifier's DROP candidate flag is up from the tick
-    the hit crosses the threshold; the build strobe stops right there and
-    resumes only if the candidate is withdrawn."""
+def test_build_strobe_runs_through_the_candidate_and_ends_on_the_commit():
+    """session-20260915-212918, Josh: the strobe "ended before the drop" --
+    the candidate flag fired on the riser's crescendo 0.8 s early. The
+    strobe now runs until the bucket actually flips to DROP (the same tick
+    the wash and the look hard-cut)."""
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
@@ -136,13 +137,11 @@ def test_build_strobe_ends_on_the_hit_not_the_commit():
     eng.tick(_snap(bar=0, beat_in_bar=2, beat_phase=0.0, bucket="build"), rig)
     assert eng.strobe_level > 0
     clock.advance(0.5)
-    c = eng.tick(_snap(bar=0, beat_in_bar=3, beat_phase=0.0, bucket="build", drop_candidate=True), rig)
-    assert eng.strobe_level == 0 and not eng.strobe_on
-    par = rig.fixture("par_l")
-    assert c.values[par.offset] > 0  # wash holds lit (its ramp level), not dark
+    eng.tick(_snap(bar=0, beat_in_bar=3, beat_phase=0.0, bucket="build", drop_candidate=True), rig)
+    assert eng.strobe_level > 0  # still strobing through the candidate window
     clock.advance(0.5)
-    eng.tick(_snap(bar=0, beat_in_bar=4, beat_phase=0.0, bucket="build"), rig)  # candidate withdrawn
-    assert eng.strobe_level > 0
+    eng.tick(_snap(bar=0, beat_in_bar=4, beat_phase=0.0, bucket="drop"), rig)  # the commit
+    assert eng.strobe_level == 0 and not eng.strobe_on
 
 
 def test_drop_tail_strobe_is_the_ceiling_regardless_of_hit_intensity():
@@ -194,7 +193,7 @@ def test_build_flash_brightness_climbs_to_the_cap_and_drop_tail_uses_the_cap():
     eng.tick(_snap(bar=3, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
     assert STROBE_FLASH_START_DMX < eng.strobe_flash_dmx < STROBE_FLASH_DMX
     clock.advance(3.75)
-    eng.tick(_snap(bar=6, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    eng.tick(_snap(bar=8, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)  # BUILD_STROBE_RAMP_BARS
     assert eng.strobe_flash_dmx == STROBE_FLASH_DMX
     eng2 = ReactiveLayerEngine(FakeClock())
     _enter_drop(eng2, rig)
@@ -412,17 +411,17 @@ def test_a_roll_rise_in_a_build_pushes_the_strobe_to_max_and_the_flash_to_full()
     assert eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
 
 
-def test_the_roll_accent_ends_on_the_hit():
+def test_the_roll_accent_runs_through_the_candidate_and_ends_on_the_commit():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
     _run_build(eng, rig, clock, high=0.12, seconds=3.0)
     _run_build(eng, rig, clock, high=0.45, seconds=1.0)
     assert eng.snare_roll_active
-    eng.tick(_build_snap(0.45, drop_candidate=True), rig)  # the hit has sounded
-    assert eng.strobe_level == 0.0
-    eng.tick(_build_snap(0.45, bucket="drop"), rig)
-    assert not eng.snare_roll_active
+    eng.tick(_build_snap(0.45, drop_candidate=True), rig)  # the candidate is up, the roll is still going
+    assert eng.strobe_level > 0 and eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
+    eng.tick(_build_snap(0.45, bucket="drop"), rig)         # the commit
+    assert not eng.snare_roll_active and eng.strobe_level == 0.0
 
 
 def test_the_same_rise_outside_a_build_is_not_an_accent():
@@ -790,3 +789,34 @@ def test_synth_sync_can_be_toggled_mid_set():
     manual.synth_sync = False
     eng.tick(_mid_snap(1.0), rig)
     assert not eng.synth_sync_active
+
+
+# --- break breath (Josh, 2026-09-16): a low-depth synth envelope on the break wash
+
+from livereact.engines.reactive import BREAK_SYNTH_DEPTH  # noqa: E402
+
+
+def test_a_break_breathes_to_the_mids_by_at_most_the_depth():
+    rig = load_rig()
+    eng, _ = _synth_engine(on=False)
+    plain = ReactiveLayerEngine(FakeClock())
+    kw = dict(bucket="break", energy=0.2, energy_norm=0.2)
+    _settle_mid(eng, rig, level=1.0, **kw)
+    _settle_mid(plain, rig, level=1.0, **kw)
+    base = plain.tick(_mid_snap(1.0, **kw), rig) and plain.wash_level
+    eng.tick(_mid_snap(6.0, **kw), rig)  # a pad swell / stab in the mids
+    assert base < eng.wash_level <= base + BREAK_SYNTH_DEPTH + 1e-6
+
+
+def test_the_break_breath_is_not_applied_in_a_drop_or_under_synth_sync():
+    rig = load_rig()
+    eng, manual = _synth_engine(on=False)
+    plain = ReactiveLayerEngine(FakeClock())
+    _settle_mid(eng, rig, level=1.0)
+    _settle_mid(plain, rig, level=1.0)
+    eng.tick(_mid_snap(6.0), rig)     # bucket="drop" by default
+    plain.tick(_mid_snap(6.0), rig)
+    assert eng.wash_level == plain.wash_level
+    manual.synth_sync = True
+    eng.tick(_mid_snap(6.0, bucket="break"), rig)
+    assert eng.synth_sync_active       # Synth Sync owns the wash outright, no extra breath on top

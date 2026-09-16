@@ -27,8 +27,34 @@ from .base import EnergyBucket, Scene, paint_spots, paint_wash, scene_color, spo
 
 # --- breakdown / low energy (lasers OFF, strobe OFF) -----------------------
 
+# Josh, 2026-09-16 (after the second live laser run): "Break Low Wash...
+# very stagnant, no movement at all." Two things were true: the head WAS
+# drifting (Reactive's pan sine) but the break looks lit it at 0.12-0.25
+# intent, which fixtures/profiles.py's gamma+floor dimmer curve maps to DMX
+# 31 -- the fixture's own floor, effectively dark -- so nothing could be
+# seen moving. The core break looks now light the head at a level that
+# actually clears the curve, and give it one shared slow drift: a pan sweep
+# over 8 bars (mirrored L/R) with a slower tilt sway over 16 bars.
+BREAK_SPOT_LEVEL = 0.45   # -> DMX ~44 after the gamma curve; visibly lit, still a break
+BREAK_DRIFT_PAN_BARS = 8.0
+BREAK_DRIFT_PAN_AMP = 0.20
+BREAK_DRIFT_TILT_BARS = 16.0
+BREAK_DRIFT_TILT_AMP = 0.10
+
+
+def break_drift(c: Contribution, rig: Rig, snap: ShowSnapshot, tilt_center: float) -> None:
+    """Slow, mirrored pan sweep + slower tilt sway for the break looks."""
+    pos = musical_bar_position(snap)
+    pan_phase = pos * (2 * math.pi / BREAK_DRIFT_PAN_BARS)
+    tilt_phase = pos * (2 * math.pi / BREAK_DRIFT_TILT_BARS)
+    for fx in rig.by_role("spot"):
+        mirror = 1.0 if fx.side == "left" else -1.0
+        fx.set_position(c, 0.5 + BREAK_DRIFT_PAN_AMP * math.sin(pan_phase) * mirror,
+                        tilt_center + BREAK_DRIFT_TILT_AMP * math.sin(tilt_phase))
+
+
 class DeepWashBreathe(Scene):
-    """Whole room one deep saturated color; MHs dim, tilted up.
+    """Whole room one deep saturated color; MHs lit low, tilted up, drifting.
 
     NOTE (2026-09-02, docs/14 §5): the wash no longer "breathes" — wash
     intensity is now owned exclusively by the Reactive layer's beat pulse
@@ -49,9 +75,8 @@ class DeepWashBreathe(Scene):
         c = Contribution()
         r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, r, g, b, 0.12 * intensity)
-        for fx in rig.by_role("spot"):
-            fx.set_position(c, 0.5, 0.85)  # tilted up
+        paint_spots(c, rig, r, g, b, BREAK_SPOT_LEVEL * intensity)
+        break_drift(c, rig, snap, tilt_center=0.80)  # tilted up, drifting
         return c
 
 
@@ -384,7 +409,8 @@ class BreakLowWash(Scene):
         c = Contribution()
         r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
-        paint_spots(c, rig, r, g, b, 0.25 * intensity)  # dim ambient presence -- not the focal point of a break
+        paint_spots(c, rig, r, g, b, BREAK_SPOT_LEVEL * intensity)
+        break_drift(c, rig, snap, tilt_center=0.55)
         return c
 
 
