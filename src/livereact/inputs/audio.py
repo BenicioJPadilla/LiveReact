@@ -27,8 +27,8 @@ wired in here (tools/simulations/audio_pipeline_sim_v2.py):
     kick-to-quiet-gap. Don't derive one signal from the other.
   - band_mid_abs / band_high_abs (2026-09-14, build_snare_accent): the same
     un-normalized-magnitude idea, extended to the other two bands — the
-    snare/hi-hat onset detector (core/snare_trigger.py, which reads their
-    sum) needs this for the identical reason the laser's kick detector
+    snare-roll detector (core/snare_trigger.py, high band) and Synth Sync
+    (engines/reactive.py, mid band) need this for the identical reason the laser's kick detector
     needed band_low_abs: the normalized band_mid/band_high fractions
     saturate near-constant during a groove for the same structural reason
     band_low does, so they're unsuitable for onset detection even though

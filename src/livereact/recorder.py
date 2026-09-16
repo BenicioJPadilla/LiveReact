@@ -156,8 +156,8 @@ class SessionRecorder(threading.Thread):
             "drop_hit_intensity": round(snap.drop_hit_intensity, 4),
             "drop_pending": snap.drop_pending,
             "audio_fresh": snap.audio_fresh,
-            "band_low": round(snap.audio_band_low_abs, 4),   # the SnareOnsetDetector /
-            "band_mid": round(snap.audio_band_mid_abs, 4),   # kick-follow inputs, so a
+            "band_low": round(snap.audio_band_low_abs, 4),   # the laser / synth / roll
+            "band_mid": round(snap.audio_band_mid_abs, 4),   # detector inputs, so a
             "band_high": round(snap.audio_band_high_abs, 4), # session can be replayed offline
             "palette": snap.palette,            # phrase-frozen palette entries (engines/palette.py)
             "palette_spot": snap.palette_spot,
@@ -174,8 +174,8 @@ class SessionRecorder(threading.Thread):
             # stay 0 -- `strobe_level` (the rate) and `strobe_on` (this
             # tick's flash phase) are the truth about strobing.
             record["strobe_on"] = self.reactive_engine.strobe_on
-            record["snare_onset"] = self.reactive_engine.snare_onset_active
-            record["snare_roll_active"] = self.reactive_engine.snare_roll_active
+            record["snare_roll_active"] = self.reactive_engine.snare_roll_active  # core/snare_trigger.py RollRiseDetector
+            record["roll_ratio"] = round(self.reactive_engine.roll_ratio, 3)      # its live high-band fast/slow ratio
             record["synth_sync"] = self.reactive_engine.synth_sync_active  # operator Synth Sync mode on (and audio fresh)
             record["synth_level"] = round(self.reactive_engine.synth_level, 3)  # the mid-band envelope driving the wash
         if self.phrase_engine is not None:

@@ -209,19 +209,13 @@ class BuildSnareAccent(Scene):
     kick_follow:false, justification: the snare roll is the one place
     transient-following reads as intentional. Flashes obey §13."
 
-    Depended on new audio-transient work (build_snare_accent, this session,
-    2026-09-14): `core/snare_trigger.py`'s `SnareOnsetDetector` (Step 1,
-    verified by `tools/simulations/snare_onset_sim.py`) and
-    `SnareRollDetector` (Step 2, verified by `tools/simulations/
-    snare_roll_sim.py`), BUILD-gated and simulation-confirmed to catch a
-    real accelerating roll while never false-firing on an ordinary steady
-    backbeat. The actual accent flashes themselves are produced by
-    `ReactiveLayerEngine._snare_accent_strobe_rate` (Step 3; since
-    2026-09-15 the roll path has its own `_BurstGate` -- STROBE_MAX_BURST_S
-    cap, ROLL_STROBE_MIN_SPACING_S gap -- separate from the ambient DROP/
-    PEAK path's, so §13's burst/gap rule still holds per source while a
-    DROP-side burst can no longer silence the build's accent) --
-    a separate DMX channel from color/dimmer, written every tick. Same
+    Detection: `core/snare_trigger.py`'s `RollRiseDetector` (rebuilt
+    2026-09-15 night from a real capture -- a sustained rise of the high
+    band during a BUILD, since a real 16th-note roll is faster than any
+    per-hit onset detector's own averaging window). The accent itself is
+    produced by `ReactiveLayerEngine._snare_accent_strobe_rate`: the
+    strobe rate goes to STROBE_MAX and the flash byte to
+    STROBE_ROLL_FLASH_DMX for as long as the rise lasts. Same
     restraint as `DropStrobeStab`/`PeakStrobeBlackout`: this class supplies
     color/context only, never touches the strobe channel itself.
 
@@ -1118,7 +1112,7 @@ ALL_SCENES: list[type[Scene]] = [
     # Gap fix, 2026-09-13 -- peak_strobe_blackout, missed by all 7 waves:
     PeakStrobeBlackout,
     # build_snare_accent, 2026-09-14 -- depended on new snare-roll subdivision
-    # detection (core/snare_trigger.py), built out this session (Steps 0-3):
+    # detection (core/snare_trigger.py's RollRiseDetector):
     BuildSnareAccent,
 ]
 

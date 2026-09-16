@@ -6,24 +6,25 @@ the intensity of the wub or the stab"), replacing `core/laser_trigger.py`'s
 one-beat kick-onset flash, which had fired 21 invisible times in one session
 and zero visible times ever. What changed, and why:
 
-WHEN it is on -- the whole DROP/PEAK stay, once the drop has proven itself:
-  - bucket is PEAK (the metronome's escalation of a drop that sustained past
-    its 8-bar dwell -- "intense" by construction), or
-  - bucket is DROP and `snap.drop_hit_intensity >= LASER_MIN_HIT_INTENSITY`
-    (the hit was loud enough on its own to earn the laser from the first
-    tick). Measured on every 2026-09-15 capture: a track's first drop
-    captured 1.0, its second 0.92-0.94 (judged against a ceiling the first
-    drop already raised), and every one escalated to PEAK ~15 s in. So at
-    the 0.95 threshold a first drop gets the laser on the hit, a second
-    drop gets it once it has held for a phrase -- "after more intense
-    drops," with the drop's own persistence as the second vote.
-  This deliberately supersedes LIGHTING_BIBLE.md §8.5's "punctuation"
-  numbers (<=10% of set time, >=2 phrases apart, one-beat moments): the
-  correction pass retagged those `[NOT FOUND]` (no sourced figure exists),
-  and Josh chose a sustained pattern through the intense part of the drop.
-  "Drops and peaks only" -- the one supported part of §8.5 -- still holds.
-  LASER-12's fail-closed rule holds too: no fresh audio or no fresh PDL
-  means off, immediately, never a held value.
+WHEN it is on -- brief FLASHES on low-band transients (kicks/wubs), only
+  while the drop has proven itself (second live run, 2026-09-15 night,
+  Josh: "it should be more of like a quick on and off thing, triggered by
+  a sound" -- the sustained version built earlier that evening ran ~60 s
+  per drop and read as "just being there"):
+  - gate: bucket is PEAK, or DROP with `snap.drop_hit_intensity >=
+    LASER_MIN_HIT_INTENSITY` (measured on the 2026-09-15 captures: first
+    drops 1.0, second drops 0.88-0.94 -> those get it with the PEAK
+    escalation);
+  - trigger: `audio_band_low_abs` above FLASH_RATIO x its own rolling
+    average (the 2026-09-01 simulation-verified kick detector: 80-87%
+    recall, 94-98% precision at ratio 1.8), at most once per
+    FLASH_REFRACTORY_BEATS, each flash FLASH_BEATS long. On the second live
+    run's drop that ratio was cleared on ~3.5% of samples -- a flash every
+    couple of seconds, not every kick.
+  Bible §8.5's "punctuation, not continuous texture" is back in spirit;
+  its <=10%/>=2-phrase numbers stay retired (correction C6: `[NOT FOUND]`).
+  LASER-12's fail-closed rule holds: no fresh audio or no fresh PDL means
+  off, immediately, and the flash window closes.
 
 WHAT it shows -- `Laser.set_dotted_line_sweep`, the one hardware-verified
   pattern (2026-09-06: flattened line, dotted outline, horizontal sweep).
@@ -70,6 +71,14 @@ from ..scenes.base import EnergyBucket
 # docstring for the measured values this was set against.
 LASER_MIN_HIT_INTENSITY = 0.95
 
+# Flash trigger on the low band (see the module docstring's WHEN section).
+FLASH_RATIO = 1.8
+FLASH_AVG_ALPHA = 0.05          # per-tick EMA of the low band, as in the verified detector
+FLASH_BEATS = 0.5               # how long one flash stays on
+FLASH_REFRACTORY_BEATS = 1.0    # at most one flash per beat
+FLASH_WARMUP_S = 1.0            # the rolling average starts at 0: never fire on the cold-start step
+FLASH_MIN_ENERGY = 1e-6
+
 # CH7 sweep = LASER_SWEEP_BASE + (1 - LASER_SWEEP_BASE) * wub. First live run
 # (2026-09-15 night, recordings/session-20260915-211607): with the sweep
 # driven by the raw envelope alone it sat at 0.06 (CH7 ~136, the bottom of
@@ -113,17 +122,25 @@ def laser_wanted(snap: ShowSnapshot) -> bool:
 
 
 class LaserEngine:
-    """Stateful (the wub envelope); tick once per ShowEngine frame."""
+    """Stateful (flash trigger + wub envelope); tick once per ShowEngine frame."""
 
     # Above Phrase (50): whatever look is up, this layer owns the laser
     # channels (LTP by priority in merge/merge.py). Below Transition (100),
     # which never touches them anyway.
     priority = 60
 
-    def __init__(self, clock: Clock) -> None:
+    def __init__(self, clock: Clock, flash_beats: float = FLASH_BEATS,
+                 refractory_beats: float = FLASH_REFRACTORY_BEATS, ratio: float = FLASH_RATIO) -> None:
         self.clock = clock
+        self.flash_beats = flash_beats
+        self.refractory_beats = refractory_beats
+        self.ratio = ratio
         self._wub = BandEnvelope(clock, normalize_tau_s=NORMALIZE_TAU_S)
-        self.active = False          # exposed for the console/recorder/finalize gate
+        self._avg = 0.0
+        self._fresh_since: float | None = None
+        self._flash_until = 0.0
+        self._last_fire_t = -1e9
+        self.active = False          # exposed for the console/recorder/finalize gate: a flash is open
         self.wub = 0.0               # this tick's normalized 0..1 wub envelope
         self.sweep = 0.0             # this tick's 0..1 CH7 sweep intensity (base + wub), what is sent
         self.color = Laser.COLOR_WHITE
@@ -134,11 +151,31 @@ class LaserEngine:
 
     def tick(self, snap: ShowSnapshot, rig: Rig) -> Contribution:
         c = Contribution()
+        now = self.clock.monotonic()
         self.wub = self._wub.update(snap.audio_band_low_abs, snap.audio_fresh)
         self.sweep = LASER_SWEEP_BASE + (1.0 - LASER_SWEEP_BASE) * self.wub
         self.color = laser_color_for_palette(snap.palette)
         # LASER-12: any signal loss -> off now, never a held value.
-        self.active = bool(snap.audio_fresh and snap.pdl_fresh and laser_wanted(snap))
+        if not (snap.audio_fresh and snap.pdl_fresh):
+            self._avg = 0.0  # a stale reading must not shape detection on reconnect
+            self._fresh_since = None
+            self._flash_until = now
+            self.active = False
+            return c
+        if self._fresh_since is None:
+            self._fresh_since = now
+        raw = float(snap.audio_band_low_abs)
+        self._avg += FLASH_AVG_ALPHA * (raw - self._avg)
+        if not laser_wanted(snap):
+            self._flash_until = now  # leaving DROP/PEAK closes an open flash
+        else:
+            beat = 60.0 / snap.bpm if snap.bpm > 0 else 0.5
+            warmed = (now - self._fresh_since) >= FLASH_WARMUP_S
+            if (warmed and raw > max(self._avg * self.ratio, FLASH_MIN_ENERGY)
+                    and (now - self._last_fire_t) >= self.refractory_beats * beat):
+                self._last_fire_t = now
+                self._flash_until = now + self.flash_beats * beat
+        self.active = bool(now < self._flash_until)
         if not self.active:
             return c  # untouched channels stay at the boot zeros; finalize zeroes them too
         for fx in rig.by_role("laser"):

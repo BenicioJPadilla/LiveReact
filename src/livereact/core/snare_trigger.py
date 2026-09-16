@@ -1,197 +1,135 @@
-"""Snare/hi-hat onset detection (`SnareOnsetDetector`, Step 1) and roll/
-subdivision classification on top of it (`SnareRollDetector`, Step 2) --
-build_snare_accent's two detection steps, see the plan doc's Question 7
-and [[livereact-project]] memory for the full multi-step scope these are
-part of. Deliberately two separate, composable classes (the caller wires
-one's output into the other) rather than one combined class, so each
-stays independently testable -- SnareOnsetDetector doesn't need to know
-what a "bucket" or "roll" is, and SnareRollDetector doesn't need to know
-anything about audio at all, only a boolean and a bucket string.
+"""Snare-roll detection for `build_snare_accent` (LIGHTING_BIBLE.md §5:
+"accent flashes locked to detected snare subdivision... the snare roll is
+the one place transient-following reads as intentional").
 
-VERIFIED BY SIMULATION before being wired in here (tools/simulations/
-snare_onset_sim.py, a synthetic groove with 42 known backbeat snare hits
-AND 86 hi-hats sharing the SAME high band the snare's own "hiss" lives
-in): the laser's old kick-onset detector's tuned ratio (`TRIGGER_RATIO=1.8`,
-retired 2026-09-15 with engines/laser.py) is NOT safe to reuse blindly here just because the
-algorithm shape is the same -- at 1.8 this produced only 47.7% precision
-on the synthetic track, with roughly half the false positives landing
-exactly on a hi-hat, not noise (a hi-hat is real high-band energy, not a
-detection artifact -- it needs a genuinely higher bar to separate from a
-snare, not a bug fix). Raising the ratio to 2.6 cleanly separates a real
-snare hit from routine hi-hat content: 95.5% precision, 100% recall on the
-same synthetic track, 1 residual hihat-adjacent false positive out of 44
-fires -- disclosed, not zero, but a real, measured order-of-magnitude
-improvement, not a bigger number picked by feel. `MIN_ENERGY_FLOOR` was
-swept 0.5-2.0 with no measurable effect once the rolling average has
-warmed up -- kept only as a cold-start safety net, not itself load-bearing;
-`REFRACTORY_S`/`ROLLING_AVG_ALPHA`/`WARMUP_S` were carried over from the
-kick detector's own already-verified values, not independently re-swept
-here (a real, disclosed scope limit -- revisit if Step 2's roll detection
-ever needs tighter timing than these afford).
+REBUILT 2026-09-15 night from the second live run (recordings/session-
+20260915-212918). The original two-step design (a per-hit onset detector on
+mid+high, ratio 2.6 over a 0.33 s rolling average, feeding an interval-
+tightening classifier) was verified on a synthetic groove and never fired on
+a real roll: in a dense build the mid+high sum sits elevated the whole time,
+and a 16th-note roll (~8 hits/s at 128 BPM) is FASTER than the 0.33 s
+average it was compared against -- every hit just looked like "more of the
+same" (measured: ratio p90 1.21, max 1.60 across the whole build; the
+detector needed 2.6). Zero onsets in the build, so the accent structurally
+could not fire on real material.
 
-`SnareOnsetDetector` (Step 1) is deliberately thin -- a plain "did an
-onset happen right now" boolean, no knowledge of BUILD-bucket gating, roll
-acceleration, or the Bible's own laser-specific duty-cycle/spacing rules
-(§8.5's `MIN_SPACING_S`/`MAX_DUTY` are a musical-restraint policy for a
-completely different fixture, not something a raw onset detector should
-own).
+What a real roll DOES look like in the recording: the high band's level
+steps from ~0.13 to 0.3-0.5 at 92.1 s and stays there for the last 3.6 s
+of the build, right into the drop -- a sustained RISE, not a train of
+separable spikes. So this detector tracks exactly that: a fast level of the
+high band against a slow baseline of what the build sounded like before,
+armed when the level clears ON_RATIO x baseline, then held (baseline
+frozen) until the level falls back under OFF_RATIO x that frozen baseline,
+the build ends, or MAX_HOLD_S passes. BUILD-only, per the Bible's own tag.
 
-`SnareRollDetector` (Step 2, below) consumes that boolean plus the current
-bucket and classifies whether a genuine ACCELERATING roll is in progress --
-see its own class docstring for how, and `tools/simulations/
-snare_roll_sim.py` for the verification (a steady backbeat never reads as
-a roll despite being multiple onsets in a row; a real accelerating pattern
-is correctly flagged partway through and correctly expires once the hits
-stop; the BUILD-only gate holds even against the same accelerating pattern
-in a different bucket).
-
-Neither class touches the actual strobe channel. The eventual delivery
-step (reusing `ReactiveLayerEngine`'s existing `_strobe_burst_gate` via a
-`max()`'d combined rate, per the safety-integration note in the plan doc --
-NOT a second independent strobe path) is separate, not-yet-built work.
+Still band-amplitude, still not instrument identification: a riser synth
+or a hat build-up that lifts the high band the same way will read as a
+roll too. For the accent's purpose (something is escalating fast into the
+drop) that's acceptable and disclosed, not hidden.
 """
 
 from __future__ import annotations
 
+import math
+
 from ..clock import Clock
 from .show_state import ShowSnapshot
 
-TRIGGER_RATIO = 2.6       # verified by simulation -- see module docstring; deliberately NOT the kick detector's 1.8
-REFRACTORY_S = 0.15       # carried over from the kick detector's own verified value, not independently swept
-ROLLING_AVG_ALPHA = 0.05  # same carry-over
-MIN_ENERGY_FLOOR = 1.0    # swept 0.5-2.0 in simulation with no measurable effect -- cold-start safety net only
-WARMUP_S = 1.0            # same cold-start rationale as the kick detector's own WARMUP_S
+FAST_TAU_S = 0.10      # the "now" level: a couple of roll hits
+SLOW_TAU_S = 3.0       # the "before" level: a bar or two of the build so far
+ON_RATIO = 2.0         # measured 2026-09-15: pre-roll 0.12 -> roll 0.3-0.5 (2.5-4x)
+OFF_RATIO = 1.3        # against the FROZEN baseline, so the hold survives the roll's own dips (min 0.16 vs 0.12 base)
+LEVEL_FLOOR = 0.05     # below this the high band is noise; never arm off a ratio against it
+MAX_HOLD_S = 8.0       # a "roll" longer than this is a texture, not an accent
+WARMUP_S = 1.0         # the fast/slow levels start at 0 -- don't arm off the cold-start step
+# Two guards from replaying all five 2026-09-15 captures: without them the
+# detector flicked on for 0.1-0.3 s at every build's first second (the
+# section change is itself a rise against the break's baseline) and on
+# scattered hats mid-build. A build's own level becomes the reference (the
+# slow baseline snaps to the current level on BUILD entry) and nothing arms
+# for BUILD_SETTLE_S; and the rise must HOLD for ARM_S before it counts --
+# a 16th-note roll into a drop lasts bars, a stray hat lasts a tick.
+BUILD_SETTLE_S = 1.5
+ARM_S = 0.4
 
 
-class SnareOnsetDetector:
-    """Stateful: call ``update(snap)`` once per tick. Returns whether a
-    snare/hi-hat-band onset just occurred -- a raw signal, not yet gated to
-    BUILD or shaped into a roll (see module docstring)."""
+class RollRiseDetector:
+    """Stateful; call ``update(snap)`` once per tick. Returns True while a
+    roll-like rise in the high band is in progress during a BUILD."""
 
-    def __init__(self, clock: Clock, ratio: float = TRIGGER_RATIO,
-                 refractory_s: float = REFRACTORY_S) -> None:
+    def __init__(self, clock: Clock, on_ratio: float = ON_RATIO, off_ratio: float = OFF_RATIO,
+                 max_hold_s: float = MAX_HOLD_S, arm_s: float = ARM_S,
+                 build_settle_s: float = BUILD_SETTLE_S) -> None:
         self.clock = clock
-        self.ratio = ratio
-        self.refractory_s = refractory_s
-        self._rolling_avg = 0.0
-        self._last_fire_t = -999.0
-        self._fresh_since: float | None = None  # when audio most recently became fresh
-        self.active = False  # exposed for the console/telemetry
+        self.on_ratio = on_ratio
+        self.off_ratio = off_ratio
+        self.max_hold_s = max_hold_s
+        self.arm_s = arm_s
+        self.build_settle_s = build_settle_s
+        self._fast = 0.0
+        self._slow = 0.0
+        self._frozen = 0.0
+        self._last_t: float | None = None
+        self._fresh_since: float | None = None
+        self._build_since: float | None = None   # when the current BUILD began
+        self._rise_since: float | None = None    # when the level first cleared on_ratio (arming)
+        self._since: float | None = None
+        self.active = False
+        self.ratio = 0.0  # exposed for the recorder: fast / (frozen or slow) baseline this tick
 
     def update(self, snap: ShowSnapshot) -> bool:
         now = self.clock.monotonic()
+        dt = (now - self._last_t) if self._last_t is not None else 1 / 60
+        self._last_t = now
         if not snap.audio_fresh:
-            self._rolling_avg = 0.0  # don't let stale readings pollute detection on reconnect
-            self._fresh_since = None
+            self._fast = self._slow = self._frozen = 0.0
+            self._fresh_since = self._build_since = self._rise_since = self._since = None
             self.active = False
-            return self.active
+            self.ratio = 0.0
+            return False
+        raw = float(snap.audio_band_high_abs)
         if self._fresh_since is None:
             self._fresh_since = now
-        warmed_up = (now - self._fresh_since) >= WARMUP_S
+            self._fast = self._slow = raw  # start converged, not from 0
+        self._fast += (1 - math.exp(-dt / FAST_TAU_S)) * (raw - self._fast)
 
-        energy = snap.audio_band_mid_abs + snap.audio_band_high_abs
-        self._rolling_avg += ROLLING_AVG_ALPHA * (energy - self._rolling_avg)
-
-        fired = (
-            warmed_up
-            and energy > max(self._rolling_avg * self.ratio, MIN_ENERGY_FLOOR)
-            and (now - self._last_fire_t) > self.refractory_s
-        )
-        if fired:
-            self._last_fire_t = now
-        self.active = fired
-        return self.active
-
-
-# History/tighten-ratio/max-age below are verified by simulation
-# (tools/simulations/snare_roll_sim.py, 2026-09-14): a scripted steady
-# 2-beat backbeat pattern (a real, ordinary house/techno rhythm --
-# multiple onsets in a row, same as a roll superficially looks) never
-# reads as a roll at these settings, while a genuine accelerating pattern
-# (quarter -> eighth -> sixteenth notes, the real shape a roll takes into
-# a drop) is correctly flagged partway through and correctly turns back
-# off once the hits stop. HISTORY/TIGHTEN_RATIO are not independently
-# swept against a wide parameter grid the way SnareOnsetDetector's ratio
-# was -- a real, disclosed scope limit for this step (the steady-vs-
-# accelerating distinction is qualitatively binary here: 4 consecutive
-# tightening intervals never occurs by chance in a steady pattern, so
-# precise tuning matters less than for the continuous energy-ratio case).
-#
-# 2026-09-15 hardening, from the first real capture (recordings/session-
-# 20260915-114303): the strobe channel lit at the EXACT tick BUILD committed
-# on both tracks played -- 3s and 11s before their drops, on intro/break
-# content -- and the ambient path is provably 0 at a BUILD entry, so this was
-# the roll path. Two causes, both fixed here: (1) `_onset_times` survived
-# across buckets, so hats/claps from the preceding BREAK were already a
-# "history" the instant BUILD started -- history is now cleared whenever the
-# bucket isn't BUILD, so a roll has to be earned inside the build; (2) the
-# overall-window test alone (latest interval <= 0.7 x earliest, 3 intervals)
-# is trivially satisfied by an ordinary quarter-then-two-eighths hat figure --
-# now the window is longer AND every step must be non-increasing (a plateau
-# is fine, a widening gap resets the pattern), which the simulation's own
-# adversary set never produces but a textbook roll always does.
-ROLL_HISTORY = 6           # onset times tracked -> a 5-interval window
-ROLL_TIGHTEN_RATIO = 0.7   # the window's LATEST interval must be at most this fraction of its EARLIEST
-ROLL_PLATEAU_TOLERANCE = 0.15  # each interval may exceed the one before it by at most this
-                               # fraction (timing jitter / a plateau), otherwise it isn't a roll
-ROLL_MAX_AGE_S = 0.5       # a roll "expires" (active->False) if no qualifying onset in this long
-
-
-class SnareRollDetector:
-    """Consumes Step 1's raw per-tick onset boolean (SnareOnsetDetector's
-    own `update()` return value) and classifies whether a genuine
-    ACCELERATING roll is in progress -- not just "multiple hits happened,"
-    which an ordinary steady backbeat also produces. Deliberately decoupled
-    from SnareOnsetDetector (composed by the caller, not owned internally)
-    so each piece stays independently testable, same reasoning as keeping
-    Step 1 "deliberately thin" in the first place.
-
-    LIGHTING_BIBLE.md's own `[BUILD]` tag for `build_snare_accent` is
-    enforced HERE, not in the onset detector -- a roll is only meaningful
-    during a build, and gating it at this layer keeps `SnareOnsetDetector`
-    itself bucket-agnostic (it doesn't need to know what a "bucket" is at
-    all)."""
-
-    def __init__(self, clock: Clock, history: int = ROLL_HISTORY,
-                 tighten_ratio: float = ROLL_TIGHTEN_RATIO) -> None:
-        self.clock = clock
-        self.history = history
-        self.tighten_ratio = tighten_ratio
-        self._onset_times: list[float] = []
-        self.active = False
-
-    def update(self, onset_fired: bool, bucket: str, max_age_s: float = ROLL_MAX_AGE_S) -> bool:
-        now = self.clock.monotonic()
-        if bucket != "build":
-            # History must be EARNED inside the build (2026-09-15, see the
-            # constants' comment above) -- onsets from the preceding section
-            # can't pre-load a "roll" that unmasks the instant BUILD commits.
-            self._onset_times = []
+        if snap.bucket != "build":
+            # Keep the slow baseline tracking outside a build; never active.
+            self._slow += (1 - math.exp(-dt / SLOW_TAU_S)) * (raw - self._slow)
             self.active = False
+            self._build_since = self._rise_since = self._since = None
+            self.ratio = self._fast / max(self._slow, LEVEL_FLOOR)
             return False
-        if onset_fired:
-            self._onset_times.append(now)
-            self._onset_times = self._onset_times[-self.history:]
 
-        fresh_enough = bool(self._onset_times) and (now - self._onset_times[-1]) <= max_age_s
-        self.active = fresh_enough and self._is_accelerating()
-        return self.active
-
-    def _is_accelerating(self) -> bool:
-        if len(self._onset_times) < self.history:
-            return False
-        intervals = [b - a for a, b in zip(self._onset_times, self._onset_times[1:])]
-        # OVERALL trend across the whole window (latest interval vs. the
-        # earliest one in it) -- NOT "every single consecutive pair must
-        # strictly tighten." FOUND BY SIMULATION (2026-09-14): a real roll
-        # naturally plateaus at each subdivision level for a couple of hits
-        # before dropping to the next (quarter, quarter, eighth, eighth,
-        # sixteenth...) -- requiring strict pairwise tightening at every
-        # step rejected a real, textbook roll pattern outright. The window
-        # must still be NON-increasing step to step within a small
-        # tolerance (2026-09-15): a plateau passes, but any gap that opens
-        # back up means the hits aren't accelerating into anything.
-        for earlier, later in zip(intervals, intervals[1:]):
-            if later > earlier * (1.0 + ROLL_PLATEAU_TOLERANCE):
-                return False
-        return intervals[-1] <= intervals[0] * self.tighten_ratio
+        if self._build_since is None:
+            self._build_since = now
+            self._slow = self._fast  # the build's own level is the reference, not the break's
+        if not self.active:
+            if self._rise_since is None:
+                # Not arming: the slow baseline tracks the build.
+                self._slow += (1 - math.exp(-dt / SLOW_TAU_S)) * (raw - self._slow)
+                base = max(self._slow, LEVEL_FLOOR)
+                self.ratio = self._fast / base
+                settled = (now - self._fresh_since) >= WARMUP_S and (now - self._build_since) >= self.build_settle_s
+                if settled and self._fast >= self.on_ratio * base:
+                    self._rise_since = now
+                    self._frozen = base  # freeze here: the rise is judged against the level BEFORE it
+            else:
+                # Arming: the level must stay in the hold band (off_ratio x the
+                # frozen base) for arm_s -- a roll's own dips (measured 0.16 vs
+                # a 0.12 base) must not cancel it, a one-tick hat must.
+                self.ratio = self._fast / self._frozen
+                if self._fast < self.off_ratio * self._frozen:
+                    self._rise_since = None
+                elif now - self._rise_since >= self.arm_s:
+                    self.active = True
+                    self._since = now
+                    self._rise_since = None
+        else:
+            self.ratio = self._fast / self._frozen
+            too_long = self._since is not None and (now - self._since) >= self.max_hold_s
+            if self._fast < self.off_ratio * self._frozen or too_long:
+                self.active = False
+                self._since = None
+                self._slow = self._fast  # a second roll must rise again from where this one left off
+        return bool(self.active)

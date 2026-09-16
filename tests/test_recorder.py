@@ -154,7 +154,8 @@ def test_recorder_captures_strobe_and_snare_state_directly(tmp_path):
     assert row["audio_fresh"] is True
     assert (row["band_low"], row["band_mid"], row["band_high"]) == (4.0, 2.5, 1.25)
     assert row["strobe_level"] == reactive.strobe_level
-    assert row["snare_onset"] is False
+    assert row["snare_roll_active"] is False
+    assert row["roll_ratio"] == round(reactive.roll_ratio, 3)
     assert row["snare_roll_active"] is False
     assert row["strobe_on"] is False
     assert (row["palette"], row["palette_spot"]) == ("cold_steel", "blood_red")

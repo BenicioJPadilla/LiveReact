@@ -379,124 +379,60 @@ def test_strobe_ending_naturally_also_earns_the_minimum_spacing():
     assert eng.strobe_level > 0  # allowed to strobe again
 
 
-def test_roll_accent_has_its_own_gate_so_an_ambient_gap_cannot_silence_it():
-    """2026-09-15: with one shared gate, any burst imposed the full 8s gap
-    on the roll path too -- on the real capture that covered most of an
-    11s build. The roll's gate is separate: an ambient DROP burst that
-    just ended must not block a roll confirmed in a BUILD right after."""
+# --- build_snare_accent (rebuilt 2026-09-15 night): RollRiseDetector drives
+# the accent -- see core/snare_trigger.py for the real-capture numbers.
+
+from livereact.engines.reactive import STROBE_ROLL_FLASH_DMX  # noqa: E402
+
+
+def _build_snap(high: float, **kw) -> ShowSnapshot:
+    base = dict(audio_fresh=True, bucket="build", energy=0.5, energy_norm=0.5, beat_in_bar=1,
+                beat_phase=0.0, bar=0, audio_band_high_abs=high)
+    base.update(kw)
+    return _snap(**base)
+
+
+def _run_build(eng, rig, clock, high, seconds, dt=0.02, **kw):
+    for _ in range(int(seconds / dt)):
+        eng.tick(_build_snap(high, **kw), rig)
+        clock.advance(dt)
+
+
+def test_a_roll_rise_in_a_build_pushes_the_strobe_to_max_and_the_flash_to_full():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    _enter_drop(eng, rig)
-    eng.tick(_tail(), rig)
-    clock.advance(1.5)
-    eng.tick(_tail(), rig)  # ambient burst cap trips -> ambient gate now owes 8s
-    clock.advance(0.1)
-    _warm_up_snare(eng, clock, rig)  # in BUILD from here on
-    fired = False
-    for interval in (0.45, 0.45, 0.30, 0.30, 0.20, 0.20):
-        clock.advance(interval)
-        eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
-                            audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
-        fired = fired or eng.strobe_level >= round(STROBE_MAX * 255) / 255 - 1e-9
+    _run_build(eng, rig, clock, high=0.12, seconds=3.0)   # early build: ramp well below the ceiling
+    assert not eng.snare_roll_active
+    assert eng.strobe_level < STROBE_MAX - 1e-6
+    assert eng.strobe_flash_dmx < STROBE_ROLL_FLASH_DMX
+    _run_build(eng, rig, clock, high=0.45, seconds=1.0)   # the roll
     assert eng.snare_roll_active
-    assert fired  # well inside the ambient gate's 8s gap, and still visible
+    assert abs(eng.strobe_level - round(STROBE_MAX * 255) / 255) < 1e-6 or eng.strobe_level == STROBE_MAX
+    assert eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
 
 
-# --- build_snare_accent delivery (2026-09-14): _snare_accent_strobe_rate
-# combines this same energy-correlated strobe path with a second, roll-
-# triggered one (core/snare_trigger.py's SnareOnsetDetector/SnareRollDetector,
-# Steps 0-2, each verified independently by simulation) via max(), BEFORE the
-# single _strobe_burst_gate call above -- see reactive.py's own method
-# docstring for why that ordering matters. Energy is kept at 0.001 (was 0.3
-# under the old fixed energy_norm>0.85 threshold, which 0.3 safely sat below
-# regardless of bucket) throughout these tests specifically so any strobe
-# output observed can only be coming from the roll path, not the ambient
-# energy-correlated one -- 2026-09-14's bucket-gated redesign makes even
-# BUILD/DROP's own ambient strobe nonzero at any energy above ~0.002, so 0.3
-# would now bleed into these "roll path only" assertions.
-
-def _warm_up_snare(eng: ReactiveLayerEngine, clock: FakeClock, rig) -> None:
-    """Run the engine past SnareOnsetDetector's own WARMUP_S on a steady,
-    non-spiking signal -- same rationale as test_snare_trigger.py's own
-    _warm_up (a cold rolling average reads as a false spike otherwise)."""
-    for _ in range(60):  # 60 * 0.02s = 1.2s, safely past WARMUP_S=1.0
-        eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
-                        audio_fresh=True, audio_band_mid_abs=1.0, audio_band_high_abs=1.0), rig)
-        clock.advance(0.02)
-
-
-def test_a_real_accelerating_roll_engages_the_strobe_channel_via_the_roll_path():
+def test_the_roll_accent_ends_on_the_hit():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    _warm_up_snare(eng, clock, rig)
-
-    fired_strobe = False
-    # ROLL_HISTORY=6 -- needs 6 onset times (5 gaps) before _is_accelerating
-    # even evaluates. The first spike here just seeds history; the five
-    # gaps that follow are the actual roll shape being tested (non-
-    # increasing, plateaus allowed; overall tightening 0.20 <= 0.45*0.7).
-    clock.advance(0.5)
-    eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
-                    audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
-    for interval in (0.45, 0.45, 0.30, 0.30, 0.20):
-        clock.advance(interval)
-        eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
-                            audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
-        # BUILD's own sustained strobe sits well below the ceiling this early
-        # in the ramp (BUILD_STROBE_START); only the roll reaches STROBE_MAX.
-        if eng.strobe_level >= round(STROBE_MAX * 255) / 255 - 1e-9:
-            fired_strobe = True
-    assert eng.snare_roll_active  # the roll is confirmed active by the last hit
-    assert fired_strobe  # and it actually reached the real strobe channel, not just the flag
-
-
-def test_a_steady_non_accelerating_onset_pattern_never_engages_the_strobe_channel():
-    """The actual adversary this whole feature exists to reject (same one
-    SnareRollDetector's own unit test targets): repeated onsets at a
-    constant, non-tightening spacing -- an ordinary backbeat, not a roll --
-    must never reach the strobe channel via this path."""
-    clock = FakeClock()
-    rig = load_rig()
-    eng = ReactiveLayerEngine(clock)
-    _warm_up_snare(eng, clock, rig)
-
-    reached_roll_level = False
-    for _ in range(6):  # constant spacing, well over onset refractory -- never tightens
-        clock.advance(0.4)
-        eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="build",
-                            audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
-        # BUILD has its own slow sustained strobe (BUILD_STROBE_START); a
-        # roll would jump the channel to the STROBE_MAX ceiling instead.
-        if eng.strobe_level >= round(STROBE_MAX * 255) / 255 - 1e-9:
-            reached_roll_level = True
+    _run_build(eng, rig, clock, high=0.12, seconds=3.0)
+    _run_build(eng, rig, clock, high=0.45, seconds=1.0)
+    assert eng.snare_roll_active
+    eng.tick(_build_snap(0.45, drop_candidate=True), rig)  # the hit has sounded
+    assert eng.strobe_level == 0.0
+    eng.tick(_build_snap(0.45, bucket="drop"), rig)
     assert not eng.snare_roll_active
-    assert not reached_roll_level
 
 
-def test_the_same_accelerating_roll_is_ignored_outside_the_build_bucket():
-    """LIGHTING_BIBLE.md's own [BUILD] tag, enforced end-to-end here, not
-    just at SnareRollDetector's own unit-test layer."""
+def test_the_same_rise_outside_a_build_is_not_an_accent():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    _warm_up_snare(eng, clock, rig)
-
-    fired_strobe = False
-    for interval in (0.45, 0.45, 0.30, 0.30, 0.20):
-        clock.advance(interval)
-        # drop_hit_intensity pinned to DROP_INTENSITY_FLOOR (0.85) and the
-        # snapshot kept off a phrase tail (bar 0, beat 1) -- so DROP's own
-        # ambient _strobe_rate path can't bleed into this "roll path only"
-        # assertion.
-        eng.tick(_snap(energy=0.001, beat_phase=0.0, bucket="drop",  # NOT build
-                            drop_hit_intensity=0.85,
-                            audio_fresh=True, audio_band_mid_abs=20.0, audio_band_high_abs=20.0), rig)
-        if eng.strobe_level > 0:
-            fired_strobe = True
+    _run_build(eng, rig, clock, high=0.12, seconds=3.0, bucket="break")
+    _run_build(eng, rig, clock, high=0.45, seconds=1.0, bucket="break")
     assert not eng.snare_roll_active
-    assert not fired_strobe
+    assert eng.strobe_level == 0.0
 
 
 # --- bucket-driven wash/par model (LIGHTING_BIBLE.md §5/§9.1, 2026-09-08) ---

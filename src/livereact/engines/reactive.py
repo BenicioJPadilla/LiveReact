@@ -32,7 +32,7 @@ from ..fixtures.rig import Rig
 from ..merge.merge import Contribution, ManualParams
 from ..scenes.base import EnergyBucket
 from ..scenes.catalog import BREAK_MAX
-from ..core.snare_trigger import SnareOnsetDetector, SnareRollDetector
+from ..core.snare_trigger import RollRiseDetector
 from ..scenes.base import scene_color, spot_color
 from .envelope import NORMALIZE_TAU_S, BandEnvelope
 
@@ -253,19 +253,16 @@ BUILD_STROBE_RAMP_EXPONENT = 2.0  # Josh, fifth live test: "the increase should 
 # candidate episode was a real hit (two 0.2-0.3s false starts, both within
 # a bar of the real one).
 
-# build_snare_accent's roll-triggered strobe gets its OWN burst gate (2026-09-15,
-# same capture): sharing one gate with the ambient path meant any burst -- the
-# roll firing at a BUILD entry edge, or the ambient BUILD ramp -- imposed the
-# full STROBE_MIN_SPACING_S on the roll too, so for 8 of every ~9.5s NO strobe
-# could fire at all; on the real track that gap covered most of the actual
-# build (197-205s of an 11s BUILD). The two sources are bucket-exclusive (roll
-# = BUILD only via SnareRollDetector; ambient = DROP/PEAK only, see
-# _strobe_rate) so separate gates can't chain bursts closer than either
-# gate's own spacing within one bucket. (BUILD's own sustained strobe --
-# BUILD_STROBE_START above -- is not burst-gated at all, and the roll accent
-# simply rides on top of it via max().)
-ROLL_STROBE_MIN_SPACING_S = 2.0  # a roll can span several bars; let the accent
-                                 # re-fire within it, just not chain back-to-back.
+# build_snare_accent's roll accent (rebuilt 2026-09-15 night, second live
+# run -- see core/snare_trigger.py for why the onset-counting version never
+# fired on a real roll). While RollRiseDetector says a roll is rising into
+# the drop, the strobe rate goes to STROBE_MAX and the flash byte to
+# STROBE_ROLL_FLASH_DMX -- brighter than the build's own flashes, which by
+# the end of a build are already AT 4 Hz, so a same-rate accent was
+# invisible. No burst gate on this path: 4 Hz is the sustained-safe line
+# (SAFE-01), so a roll that lasts several bars is legal as-is; the accent
+# ends with the roll, the build, or on the hit (drop_candidate).
+STROBE_ROLL_FLASH_DMX = 255
 
 # Color: the phrase-frozen palette entry on the snapshot (engines/palette.py,
 # picked by core/metronome.py). This engine used to keep its own 16-bar
@@ -431,9 +428,8 @@ class _BurstGate:
     same minimum spacing before a new one is allowed to start, so a sustained
     loud section can't chain moments back-to-back with only a token gap.
 
-    One instance per strobe SOURCE (2026-09-15, see ROLL_STROBE_MIN_SPACING_S)
-    -- the ambient DROP/PEAK path and build_snare_accent's roll path each own
-    their own moment/gap state instead of sharing one.
+    Used by the ambient DROP/PEAK phrase-tail path only (2026-09-15 night:
+    the roll accent rides the sustained-safe 4 Hz line and has no gate).
 
     Byte-quantized FIRST (2026-09-14, found while re-testing after
     _strobe_rate's bucket-gated redesign): a genuinely nonzero-but-sub-half-
@@ -513,7 +509,6 @@ class ReactiveLayerEngine:
     def __init__(self, clock: Clock, manual: ManualParams | None = None) -> None:
         self.clock = clock
         self._ambient_gate = _BurstGate(clock, STROBE_MAX_BURST_S, STROBE_MIN_SPACING_S)
-        self._roll_gate = _BurstGate(clock, STROBE_MAX_BURST_S, ROLL_STROBE_MIN_SPACING_S)
         self.strobe_level = 0.0     # exposed for the recorder: last post-gate 0..STROBE_MAX rate
         self._strobe_clock = _StrobeClock(clock)  # ONE clock for par + wash bar, see STROBE_TOGGLE_MAX_HZ
         self.strobe_on = False      # exposed for the recorder/visualizer: this tick's flash phase
@@ -530,16 +525,11 @@ class ReactiveLayerEngine:
                                             # active blend," which also correctly makes the
                                             # very first tick ever a direct assignment (any
                                             # real monotonic clock reads > 0.0)
-        # build_snare_accent delivery (2026-09-14) -- Steps 0-2's detectors,
-        # owned and driven HERE (not a separate top-level engine like
-        # the laser layer) so the roll-triggered rate shares one strobe
-        # output with the ambient path (_snare_accent_strobe_rate). Since
-        # 2026-09-15 each source has its own _BurstGate -- see
-        # ROLL_STROBE_MIN_SPACING_S for why the shared gate was retired.
-        self._snare_onset = SnareOnsetDetector(clock)
-        self._snare_roll = SnareRollDetector(clock)
+        # build_snare_accent: the roll-rise detector (core/snare_trigger.py),
+        # owned here so the accent shares the one strobe clock/output.
+        self._roll = RollRiseDetector(clock)
         self.snare_roll_active = False  # exposed for the console/tests/recorder
-        self.snare_onset_active = False  # exposed for the recorder: this tick's raw onset
+        self.roll_ratio = 0.0            # exposed for the recorder: the detector's live ratio
         # Synth Sync (see SYNTH_* above). `manual` is optional so every
         # caller/test that constructs a bare engine keeps the feature off.
         self.manual = manual
@@ -616,31 +606,17 @@ class ReactiveLayerEngine:
 
     # ------------------------------------------------------------------ helpers
     def _snare_accent_strobe_rate(self, snap: ShowSnapshot) -> float:
-        """The single strobe value for this tick: the ambient, phrase-aligned
-        DROP/PEAK rate (`_strobe_rate`) and build_snare_accent's roll-
-        triggered rate, EACH through its own burst gate, combined via max().
-
-        2026-09-14 had both rates share ONE gate (max() before a single
-        gate call) so they couldn't chain bursts closer than
-        STROBE_MIN_SPACING_S. The first real capture showed the cost: the
-        roll's own burst (or the old BUILD ramp's) imposed the full 8s gap
-        on everything, so the accent structurally couldn't show at the end
-        of a build (see ROLL_STROBE_MIN_SPACING_S's comment above). The two
-        sources are bucket-exclusive -- roll = BUILD only (SnareRollDetector
-        enforces the Bible's [BUILD] tag), ambient = DROP/PEAK only -- so
-        separate gates can't produce back-to-back bursts within one bucket
-        either; a BUILD->DROP seam is the only place they could abut, and the
-        ambient path can't fire until the drop's first phrase tail anyway.
-
-        The roll-triggered rate is capped at STROBE_MAX, same ceiling as
-        the ambient path -- this is an ACCENT on the existing strobe
-        channel, not a second, higher-authority strobe path with its own
-        safety ceiling."""
-        onset = self._snare_onset.update(snap)
-        self.snare_onset_active = onset
-        self.snare_roll_active = self._snare_roll.update(onset, snap.bucket)
+        """The single strobe value for this tick: the ambient path (BUILD's
+        sustained ramp, or the DROP/PEAK phrase-tail burst through its gate)
+        max()'d with build_snare_accent's roll accent (STROBE_ROLL_FLASH_DMX,
+        see that constant). The roll is BUILD-only (RollRiseDetector) and the
+        ambient burst is DROP/PEAK-only, so the two can never chain."""
+        self.snare_roll_active = self._roll.update(snap)
+        self.roll_ratio = self._roll.ratio
         roll_rate = STROBE_MAX if (self.snare_roll_active and not snap.drop_candidate) else 0.0
-        ambient_rate = self._strobe_rate(snap)
+        ambient_rate = self._strobe_rate(snap)  # BUILD: sets strobe_flash_dmx to the ramp's byte...
+        if roll_rate > 0:
+            self.strobe_flash_dmx = STROBE_ROLL_FLASH_DMX  # ...which the roll accent overrides
         if EnergyBucket(snap.bucket) == EnergyBucket.BUILD:
             # The build strobe is a SUSTAINED slow-to-medium rate, not a
             # burst (see BUILD_STROBE_START) -- it bypasses the burst gate,
@@ -650,8 +626,7 @@ class ReactiveLayerEngine:
             ambient = ambient_rate
         else:
             ambient = self._ambient_gate.apply(ambient_rate)
-        roll = self._roll_gate.apply(roll_rate)
-        return max(ambient, roll)
+        return max(ambient, roll_rate)
 
     def _strobe_rate(self, snap: ShowSnapshot) -> float:
         """Ambient strobe rate, DROP/PEAK only, and only during the last

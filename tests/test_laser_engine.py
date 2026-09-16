@@ -30,6 +30,14 @@ def _snap(**kw) -> ShowSnapshot:
     return ShowSnapshot(**base)
 
 
+def _fire(eng, rig, clock, spike=25.0, **kw):
+    """Warm the trigger on a steady low band, then send one spike -> a flash opens."""
+    for _ in range(70):
+        eng.tick(_snap(audio_band_low_abs=5.0, **kw), rig)
+        clock.advance(0.02)
+    return eng.tick(_snap(audio_band_low_abs=spike, **kw), rig)
+
+
 def _laser_channels(c, rig):
     laser = rig.fixture("laser_l")
     return [c.values[laser.offset + i] for i in range(12)], any(c.touched[laser.offset + i] for i in range(12))
@@ -54,15 +62,78 @@ def test_never_outside_drop_or_peak():
         assert not laser_wanted(_snap(bucket=bucket, drop_hit_intensity=1.0)), bucket
 
 
-def test_signal_loss_forces_off_even_mid_drop():
+def test_signal_loss_forces_off_even_mid_flash():
     """LASER-12: any signal loss -> off, never a held value."""
     rig = load_rig()
-    eng = LaserEngine(FakeClock())
-    eng.tick(_snap(), rig)
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    _fire(eng, rig, clock)
     assert eng.active
     eng.tick(_snap(audio_fresh=False), rig)
     assert not eng.active
+    _fire(eng, rig, clock)
+    assert eng.active
     eng.tick(_snap(pdl_fresh=False), rig)
+    assert not eng.active
+
+
+# --- the flash trigger ------------------------------------------------------------
+
+def test_a_low_band_spike_in_a_drop_opens_a_half_beat_flash_then_closes():
+    rig = load_rig()
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    _fire(eng, rig, clock)  # bpm 128 -> beat 0.469 s, flash 0.234 s
+    assert eng.active
+    clock.advance(0.15)
+    eng.tick(_snap(audio_band_low_abs=5.0), rig)
+    assert eng.active                       # still inside the flash
+    clock.advance(0.15)
+    eng.tick(_snap(audio_band_low_abs=5.0), rig)
+    assert not eng.active                   # closed on its own
+
+
+def test_at_most_one_flash_per_beat():
+    rig = load_rig()
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    _fire(eng, rig, clock)
+    clock.advance(0.3)                      # past the flash, inside the 1-beat refractory
+    eng.tick(_snap(audio_band_low_abs=25.0), rig)
+    assert not eng.active
+    clock.advance(0.3)                      # past the refractory
+    eng.tick(_snap(audio_band_low_abs=25.0), rig)
+    assert eng.active
+
+
+def test_a_steady_bassline_never_flashes():
+    rig = load_rig()
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    fired = False
+    for _ in range(200):
+        eng.tick(_snap(audio_band_low_abs=8.0), rig)
+        clock.advance(0.02)
+        fired = fired or eng.active
+    assert not fired
+
+
+def test_the_same_spike_outside_drop_or_peak_never_flashes():
+    rig = load_rig()
+    for bucket in ("break", "build", "outro"):
+        clock = FakeClock()
+        eng = LaserEngine(clock)
+        _fire(eng, rig, clock, bucket=bucket)
+        assert not eng.active, bucket
+
+
+def test_leaving_the_drop_closes_an_open_flash():
+    rig = load_rig()
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    _fire(eng, rig, clock)
+    assert eng.active
+    eng.tick(_snap(audio_band_low_abs=25.0, bucket="break"), rig)
     assert not eng.active
 
 
@@ -70,8 +141,9 @@ def test_signal_loss_forces_off_even_mid_drop():
 
 def test_writes_the_verified_dotted_line_sweep_when_on():
     rig = load_rig()
-    eng = LaserEngine(FakeClock())
-    c = eng.tick(_snap(), rig)
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    c = _fire(eng, rig, clock)
     values, touched = _laser_channels(c, rig)
     assert touched
     assert values[0] == Laser.MANUAL_PATTERN_MODE       # CH1 manual
@@ -84,8 +156,9 @@ def test_writes_the_verified_dotted_line_sweep_when_on():
 
 def test_writes_nothing_when_off():
     rig = load_rig()
-    eng = LaserEngine(FakeClock())
-    c = eng.tick(_snap(bucket="build"), rig)
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    c = _fire(eng, rig, clock, bucket="build")
     _, touched = _laser_channels(c, rig)
     assert not touched and not eng.active
 
@@ -97,8 +170,9 @@ def test_color_is_the_palette_entry_snapped_to_a_macro():
     assert laser_color_for_palette("neutral_wash") == Laser.COLOR_WHITE
     assert laser_color_for_palette("something_new") == Laser.COLOR_WHITE
     rig = load_rig()
-    eng = LaserEngine(FakeClock())
-    c = eng.tick(_snap(palette="cold_steel"), rig)
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    c = _fire(eng, rig, clock, palette="cold_steel")
     values, _ = _laser_channels(c, rig)
     assert values[11] == Laser.COLOR_BLUE
 
@@ -118,11 +192,15 @@ def test_fan_idles_at_the_base_speed_on_a_steady_bassline():
     rig = load_rig()
     eng = LaserEngine(clock)
     _settle(eng, rig, clock, level=8.0)
-    c = eng.tick(_snap(audio_band_low_abs=8.0), rig)
-    values, _ = _laser_channels(c, rig)
+    eng.tick(_snap(audio_band_low_abs=8.0), rig)
     assert eng.wub <= 0.05
     assert abs(eng.sweep - LASER_SWEEP_BASE) < 0.05
-    assert abs(values[6] - (Laser.SWEEP_SPEED_MIN + LASER_SWEEP_BASE * 127)) <= 4
+    # the byte that would go out at that speed:
+    laser = rig.fixture("laser_l")
+    from livereact.merge.merge import Contribution
+    probe = Contribution()
+    laser.set_dotted_line_sweep(probe, color=eng.color, sweep_intensity=eng.sweep)
+    assert abs(probe.values[laser.offset + 6] - (Laser.SWEEP_SPEED_MIN + LASER_SWEEP_BASE * 127)) <= 4
 
 
 def test_a_wub_above_the_bassline_speeds_the_sweep_up_then_it_relaxes():
@@ -130,9 +208,10 @@ def test_a_wub_above_the_bassline_speeds_the_sweep_up_then_it_relaxes():
     rig = load_rig()
     eng = LaserEngine(clock)
     _settle(eng, rig, clock, level=8.0)
-    c = eng.tick(_snap(audio_band_low_abs=24.0), rig)  # a wub: 3x the bassline
+    c = eng.tick(_snap(audio_band_low_abs=24.0), rig)  # a wub: 3x the bassline -> also a flash
     values, _ = _laser_channels(c, rig)
     fast = eng.sweep
+    assert eng.active
     assert fast > LASER_SWEEP_BASE + 0.3
     assert values[6] > Laser.SWEEP_SPEED_MIN + round(LASER_SWEEP_BASE * 127) + 30
     clock.advance(0.15)
@@ -161,11 +240,15 @@ def test_active_is_a_plain_python_bool_even_from_numpy_inputs():
     leaking out of the hit-intensity comparison."""
     import numpy as np
     rig = load_rig()
-    eng = LaserEngine(FakeClock())
-    eng.tick(_snap(drop_hit_intensity=np.float64(0.97)), rig)
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    _fire(eng, rig, clock, drop_hit_intensity=np.float64(0.97))
     assert type(eng.active) is bool and eng.active
-    eng.tick(_snap(drop_hit_intensity=np.float64(0.90)), rig)
-    assert type(eng.active) is bool and not eng.active
+    assert type(laser_wanted(_snap(drop_hit_intensity=np.float64(0.90)))) is bool
+    clock2 = FakeClock()
+    eng2 = LaserEngine(clock2)
+    _fire(eng2, rig, clock2, drop_hit_intensity=np.float64(0.90))
+    assert type(eng2.active) is bool and not eng2.active
 
 
 # --- end to end through the real ShowEngine + finalize --------------------------------
@@ -181,6 +264,11 @@ def _show(snap: ShowSnapshot, testing: bool):
     laser = LaserEngine(clock)
     eng = ShowEngine(state, rig, DmxFrameBuffer(), [ReactiveLayerEngine(clock), laser],
                      ManualParams(laser_enable=True), clock, threading.Event(), laser_engine=laser)
+    for _ in range(70):  # warm the trigger on a steady low band, then spike it
+        state.publish(snap.replace(audio_band_low_abs=5.0))
+        eng.tick()
+        clock.advance(0.02)
+    state.publish(snap.replace(audio_band_low_abs=25.0))
     frame = eng.tick()
     return frame[rig.fixture("laser_l").offset], laser
 
@@ -211,7 +299,7 @@ def test_show_engine_without_a_laser_engine_keeps_the_gate_closed():
         fx.safety_test_mode = True
     clock = FakeClock()
     state = ShowState()
-    state.publish(_snap())
+    state.publish(_snap(audio_band_low_abs=25.0))
     eng = ShowEngine(state, rig, DmxFrameBuffer(), [ReactiveLayerEngine(clock)],
                      ManualParams(laser_enable=True), clock, threading.Event())
     frame = eng.tick()
