@@ -54,6 +54,16 @@ folder back to Claude for analysis.
 """
 
 
+def _json_default(value):
+    """numpy scalars (bool_/float64/int64) aren't JSON-serializable by default;
+    .item() gives the plain Python equivalent. Anything else is a real bug --
+    let it raise so it shows up in errors.log."""
+    item = getattr(value, "item", None)
+    if callable(item):
+        return item()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def create_session_dir(base: str = "recordings", now: datetime.datetime | None = None) -> str:
     stamp = (now or datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
     path = os.path.join(base, f"session-{stamp}")
@@ -189,7 +199,7 @@ class SessionRecorder(threading.Thread):
                 record[f"{key}_active"] = vs.active
                 record[f"{key}_strobe"] = round(vs.strobe, 3)
         assert self._fh is not None
-        self._fh.write(json.dumps(record) + "\n")
+        self._fh.write(json.dumps(record, default=_json_default) + "\n")
         self.samples += 1
 
     def run(self) -> None:  # pragma: no cover - thin wrapper around tick()

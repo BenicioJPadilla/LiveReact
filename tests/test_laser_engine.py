@@ -11,6 +11,7 @@ from livereact.core.show_engine import ShowEngine
 from livereact.core.show_state import ShowSnapshot, ShowState
 from livereact.engines.laser import (
     LASER_MIN_HIT_INTENSITY,
+    LASER_SWEEP_BASE,
     LaserEngine,
     laser_color_for_palette,
     laser_wanted,
@@ -78,6 +79,7 @@ def test_writes_the_verified_dotted_line_sweep_when_on():
     assert values[8] == Laser.SCALE_STATIC              # CH9 MUST stay 0
     assert values[10] == Laser.SCAN_DOTS                # CH11 dotted outline
     assert Laser.SWEEP_SPEED_MIN <= values[6] <= Laser.SWEEP_SPEED_MAX  # CH7 in the sweep band
+    assert values[6] >= Laser.SWEEP_SPEED_MIN + round(LASER_SWEEP_BASE * 127) - 1  # never below the idle fan speed
 
 
 def test_writes_nothing_when_off():
@@ -109,15 +111,18 @@ def _settle(eng, rig, clock, level, ticks=300, dt=0.02):
         clock.advance(dt)
 
 
-def test_sweep_sits_at_the_slowest_speed_on_a_steady_bassline():
+def test_fan_idles_at_the_base_speed_on_a_steady_bassline():
+    """First live run: with no base the fan crawled at CH7 ~136 -- Josh:
+    'it should be more of like a fan.' It now idles mid-band."""
     clock = FakeClock()
     rig = load_rig()
     eng = LaserEngine(clock)
     _settle(eng, rig, clock, level=8.0)
     c = eng.tick(_snap(audio_band_low_abs=8.0), rig)
     values, _ = _laser_channels(c, rig)
-    assert eng.sweep <= 0.02
-    assert values[6] == Laser.SWEEP_SPEED_MIN  # still sweeping, just at the bottom of the band
+    assert eng.wub <= 0.05
+    assert abs(eng.sweep - LASER_SWEEP_BASE) < 0.05
+    assert abs(values[6] - (Laser.SWEEP_SPEED_MIN + LASER_SWEEP_BASE * 127)) <= 4
 
 
 def test_a_wub_above_the_bassline_speeds_the_sweep_up_then_it_relaxes():
@@ -128,24 +133,39 @@ def test_a_wub_above_the_bassline_speeds_the_sweep_up_then_it_relaxes():
     c = eng.tick(_snap(audio_band_low_abs=24.0), rig)  # a wub: 3x the bassline
     values, _ = _laser_channels(c, rig)
     fast = eng.sweep
-    assert fast > 0.3
-    assert values[6] > Laser.SWEEP_SPEED_MIN + 30
+    assert fast > LASER_SWEEP_BASE + 0.3
+    assert values[6] > Laser.SWEEP_SPEED_MIN + round(LASER_SWEEP_BASE * 127) + 30
     clock.advance(0.15)
     eng.tick(_snap(audio_band_low_abs=8.0), rig)
-    assert eng.sweep < fast  # releasing back toward the floor
+    assert eng.sweep < fast  # releasing back toward the idle speed
 
 
-def test_sweep_tracks_wub_intensity_monotonically():
+def test_a_smaller_wub_after_a_bigger_one_reads_proportionally():
+    """Self-normalized: the biggest recent wub is full speed, a smaller one
+    that follows it is a fraction of that, not a fixed-gain absolute."""
     clock = FakeClock()
     rig = load_rig()
     eng = LaserEngine(clock)
     _settle(eng, rig, clock, level=8.0)
-    eng.tick(_snap(audio_band_low_abs=14.0), rig)
-    small = eng.sweep
-    eng2 = LaserEngine(FakeClock())
-    _settle(eng2, rig, FakeClock(), level=8.0)
-    eng2.tick(_snap(audio_band_low_abs=30.0), rig)
-    assert eng2.sweep > small
+    eng.tick(_snap(audio_band_low_abs=40.0), rig)  # a big wub sets the peak
+    big = eng.wub
+    for _ in range(20):  # release, ~0.4 s
+        clock.advance(0.02)
+        eng.tick(_snap(audio_band_low_abs=8.0), rig)
+    eng.tick(_snap(audio_band_low_abs=16.0), rig)  # a smaller wub
+    assert 0.0 < eng.wub < big
+
+
+def test_active_is_a_plain_python_bool_even_from_numpy_inputs():
+    """The recorder lost 162 samples on the first live run to a numpy bool
+    leaking out of the hit-intensity comparison."""
+    import numpy as np
+    rig = load_rig()
+    eng = LaserEngine(FakeClock())
+    eng.tick(_snap(drop_hit_intensity=np.float64(0.97)), rig)
+    assert type(eng.active) is bool and eng.active
+    eng.tick(_snap(drop_hit_intensity=np.float64(0.90)), rig)
+    assert type(eng.active) is bool and not eng.active
 
 
 # --- end to end through the real ShowEngine + finalize --------------------------------

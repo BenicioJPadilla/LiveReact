@@ -38,8 +38,10 @@ HOW it moves -- CH7 sweep speed follows a "wub" envelope: the low band's
   a SPEED rather than an on/off decision -- the fragility that retired it
   as a brightness driver (a few ms of timing wobble flipping lit/dark)
   doesn't apply to a continuous speed value that only ever modulates an
-  already-running sweep. Between wubs the sweep sits at the fixture's
-  slowest confirmed speed (CH7=128), never stops.
+  already-running sweep. Between wubs the fan idles at LASER_SWEEP_BASE
+  (mid-band speed, the one Josh liked on 2026-09-06), never stops; the
+  envelope is self-normalized so the loudest recent wub reads full on any
+  song (see LASER_SWEEP_BASE's comment for the first live run's numbers).
 
 COLOR -- the phrase-frozen palette entry (`snap.palette`), snapped to the
   nearest CH12 macro, so the laser matches the wash instead of re-picking
@@ -56,7 +58,7 @@ from __future__ import annotations
 
 from ..clock import Clock
 from ..core.show_state import ShowSnapshot
-from .envelope import BandEnvelope
+from .envelope import NORMALIZE_TAU_S, BandEnvelope
 from ..fixtures.profiles import Laser
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
@@ -68,8 +70,15 @@ from ..scenes.base import EnergyBucket
 # docstring for the measured values this was set against.
 LASER_MIN_HIT_INTENSITY = 0.95
 
-# Wub/stab envelope on `audio_band_low_abs`: engines/envelope.py's
-# BandEnvelope with its calibrated defaults (see that module).
+# CH7 sweep = LASER_SWEEP_BASE + (1 - LASER_SWEEP_BASE) * wub. First live run
+# (2026-09-15 night, recordings/session-20260915-211607): with the sweep
+# driven by the raw envelope alone it sat at 0.06 (CH7 ~136, the bottom of
+# the 128-255 speed band) -- Josh: "static, slowly moving to the right and
+# left, very slow... it should be more of like a fan." The speed he liked on
+# 2026-09-06 was CH7 ~190-215 (sweep_intensity = energy ~0.5-0.7), so the
+# fan now idles there and the wub envelope -- self-normalized, see
+# engines/envelope.py's NORMALIZE_* -- adds speed on top.
+LASER_SWEEP_BASE = 0.5
 
 # engines/palette.py names -> Laser.COLOR_* macros (fixtures/profiles.py).
 PALETTE_TO_LASER: dict[str, int] = {
@@ -97,7 +106,10 @@ def laser_wanted(snap: ShowSnapshot) -> bool:
     bucket = EnergyBucket(snap.bucket)
     if bucket == EnergyBucket.PEAK:
         return True
-    return bucket == EnergyBucket.DROP and snap.drop_hit_intensity >= LASER_MIN_HIT_INTENSITY
+    # bool(): drop_hit_intensity can arrive as a numpy float64 (inputs/audio.py
+    # smoothing) and a numpy bool is not JSON-serializable -- the recorder
+    # dropped 162 samples on this exact comparison during the first live run.
+    return bool(bucket == EnergyBucket.DROP and snap.drop_hit_intensity >= LASER_MIN_HIT_INTENSITY)
 
 
 class LaserEngine:
@@ -110,9 +122,10 @@ class LaserEngine:
 
     def __init__(self, clock: Clock) -> None:
         self.clock = clock
-        self._wub = BandEnvelope(clock)
+        self._wub = BandEnvelope(clock, normalize_tau_s=NORMALIZE_TAU_S)
         self.active = False          # exposed for the console/recorder/finalize gate
-        self.sweep = 0.0             # this tick's 0..1 sweep-speed intensity
+        self.wub = 0.0               # this tick's normalized 0..1 wub envelope
+        self.sweep = 0.0             # this tick's 0..1 CH7 sweep intensity (base + wub), what is sent
         self.color = Laser.COLOR_WHITE
 
     @property
@@ -121,10 +134,11 @@ class LaserEngine:
 
     def tick(self, snap: ShowSnapshot, rig: Rig) -> Contribution:
         c = Contribution()
-        self.sweep = self._wub.update(snap.audio_band_low_abs, snap.audio_fresh)
+        self.wub = self._wub.update(snap.audio_band_low_abs, snap.audio_fresh)
+        self.sweep = LASER_SWEEP_BASE + (1.0 - LASER_SWEEP_BASE) * self.wub
         self.color = laser_color_for_palette(snap.palette)
         # LASER-12: any signal loss -> off now, never a held value.
-        self.active = snap.audio_fresh and snap.pdl_fresh and laser_wanted(snap)
+        self.active = bool(snap.audio_fresh and snap.pdl_fresh and laser_wanted(snap))
         if not self.active:
             return c  # untouched channels stay at the boot zeros; finalize zeroes them too
         for fx in rig.by_role("laser"):

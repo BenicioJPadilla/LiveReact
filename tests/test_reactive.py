@@ -784,7 +784,7 @@ def test_synth_sync_sits_at_the_floor_on_a_steady_mid_band():
     _settle_mid(eng, rig, level=1.0)
     eng.tick(_mid_snap(1.0), rig)
     assert eng.synth_sync_active
-    assert abs(eng.wash_level - SYNTH_FLOOR) < 0.02
+    assert abs(eng.wash_level - SYNTH_FLOOR) < 0.05  # normalized envelope idles just above the floor
 
 
 def test_synth_sync_a_stab_lifts_the_wash_toward_the_ceiling():

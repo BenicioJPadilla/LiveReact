@@ -190,8 +190,13 @@ class AudioAnalyzer(InputSource):
         import numpy as np
 
         dt_block = BLOCK / self._sr
-        attack = 1 - np.exp(-dt_block / ATTACK_S)
-        release = 1 - np.exp(-dt_block / RELEASE_S)
+        # Plain Python floats, deliberately: a numpy float64 here turned
+        # `_rms_smooth`, hence snap.energy and everything derived from it,
+        # into numpy scalars, and a comparison on one of those produced a
+        # numpy bool that the recorder's json.dumps rejected (162 samples
+        # lost in recordings/session-20260915-211607).
+        attack = float(1 - np.exp(-dt_block / ATTACK_S))
+        release = float(1 - np.exp(-dt_block / RELEASE_S))
         while not self.stop_event.is_set():
             try:
                 block = self._ring.get(timeout=0.5)
@@ -218,7 +223,7 @@ class AudioAnalyzer(InputSource):
 
         self.queue.put(AudioLevelMessage(
             timestamp=now,
-            rms=min(1.0, self._rms_smooth * ENERGY_GAIN),
+            rms=float(min(1.0, self._rms_smooth * ENERGY_GAIN)),
             band_low=m_low / total,
             band_mid=m_mid / total,
             band_high=m_high / total,

@@ -34,7 +34,7 @@ from ..scenes.base import EnergyBucket
 from ..scenes.catalog import BREAK_MAX
 from ..core.snare_trigger import SnareOnsetDetector, SnareRollDetector
 from ..scenes.base import scene_color, spot_color
-from .envelope import BandEnvelope
+from .envelope import NORMALIZE_TAU_S, BandEnvelope
 
 # Synth Sync (Josh, 2026-09-15): "in a lot of UKG songs the most prominent
 # noise is the synths or the stabs... a feature on the UI I could click and
@@ -59,8 +59,10 @@ from .envelope import BandEnvelope
 # Floor/ceiling are the contrast range Josh confirmed live on 2026-09-03 for
 # the kick follower ("tighten it a tad, less strobe-like" -> a bigger floor
 # was tried and read as MORE delayed: contrast is what makes timing look
-# crisp). Gain is BandEnvelope's calibrated default; `SYNTH_GAIN` is the
-# lever if the first bench run reads flat or pinned.
+# crisp). The envelope is self-normalized (engines/envelope.py's
+# NORMALIZE_*): the loudest recent stab reads as full brightness on any
+# song; `SYNTH_GAIN` is unused on that path and kept only for a plain-gain
+# fallback.
 SYNTH_FLOOR = 0.02
 SYNTH_CEILING = 0.95
 SYNTH_GAIN = 0.236
@@ -541,7 +543,7 @@ class ReactiveLayerEngine:
         # Synth Sync (see SYNTH_* above). `manual` is optional so every
         # caller/test that constructs a bare engine keeps the feature off.
         self.manual = manual
-        self._synth_env = BandEnvelope(clock, gain=SYNTH_GAIN)
+        self._synth_env = BandEnvelope(clock, gain=SYNTH_GAIN, normalize_tau_s=NORMALIZE_TAU_S)  # self-normalized, see envelope.py
         self.synth_sync_active = False  # exposed for the console/recorder: on AND audio fresh this tick
         self.synth_level = 0.0          # exposed for the recorder: the mid-band envelope, 0..1
 

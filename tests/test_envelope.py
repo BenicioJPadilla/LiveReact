@@ -53,3 +53,32 @@ def test_gain_scales_the_output():
     _settle(lo, a, 8.0)
     _settle(hi, b, 8.0)
     assert hi.update(16.0) > lo.update(16.0)
+
+
+def test_normalized_mode_reads_the_loudest_recent_transient_as_full():
+    """2026-09-15 night: a fixed gain left a sustained-bass song's wubs at
+    ~0.06. Normalized, the biggest recent excess is 1.0 whatever its size."""
+    clock = FakeClock()
+    env = BandEnvelope(clock, normalize_tau_s=4.0)
+    _settle(env, clock, 8.0)
+    assert env.update(12.0) > 0.9   # a modest (50%) wub reads full when it's the biggest around
+    clock.advance(0.02)
+    env.update(8.0)
+    clock.advance(0.02)
+    assert env.update(9.0) < 0.9    # a smaller one right after reads as a fraction
+
+
+def test_cold_start_spike_does_not_poison_the_peak_tracker():
+    """The baseline starts at 0, so the first ticks of any signal look like a
+    huge transient. That must neither show (WARMUP_S) nor set the peak."""
+    clock = FakeClock()
+    env = BandEnvelope(clock, normalize_tau_s=4.0)
+    assert env.update(8.0) == 0.0  # first tick: warming up, nothing reported
+    _settle(env, clock, 8.0)
+    assert env.update(16.0) > 0.9  # a real 2x wub after settling reads full, not a fraction of the spike
+
+
+def test_normalized_output_is_a_python_float():
+    clock = FakeClock()
+    env = BandEnvelope(clock, normalize_tau_s=4.0)
+    assert type(env.update(1.0)) is float

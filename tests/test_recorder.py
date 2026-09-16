@@ -181,3 +181,12 @@ def test_notes_template_not_overwritten(tmp_path):
     (tmp_path / "NOTES.md").write_text("my notes")
     write_notes_template(d)
     assert (tmp_path / "NOTES.md").read_text() == "my notes"  # preserved
+
+
+def test_recorder_serializes_numpy_scalars_instead_of_dropping_the_sample(tmp_path):
+    """2026-09-15 night: a numpy bool in `laser_on` cost 162 samples."""
+    import numpy as np
+    from livereact.recorder import _json_default
+    assert _json_default(np.bool_(True)) is True
+    assert _json_default(np.float64(0.5)) == 0.5
+    assert json.dumps({"a": np.bool_(False), "b": np.int64(3)}, default=_json_default) == '{"a": false, "b": 3}'
