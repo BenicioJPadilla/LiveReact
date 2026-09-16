@@ -460,13 +460,24 @@ class Laser(Fixture):
         for ch in range(1, self.channel_count + 1):
             self._set(buf, ch, 0)  # everything off; CH1=0 is LASER OFF
 
-    def set_dotted_line_sweep(self, buf: Buffer, color: int, sweep_intensity: float) -> None:
+    def set_dotted_line_sweep(self, buf: Buffer, color: int, sweep_intensity: float,
+                              lit: bool = True) -> None:
         """The one fully-verified pattern (2026-09-06): a flattened line, its
         outline turned to dots, sweeping horizontally at a speed driven by
         real audio intensity (0..1) — "translate the audio directly," same
         principle as wash/par. `color` should be one of the COLOR_* constants.
-        Only meaningful inside a drop scene / while the laser is armed."""
-        self._set(buf, 1, self.MANUAL_PATTERN_MODE)
+        Only meaningful inside a drop scene / while the laser is armed.
+
+        ``lit=False`` PRIMES the pattern: every shape/speed/color channel is
+        written but CH1 stays 0 (OFF, the documented 0-41 band), so the unit
+        already holds the dotted line when CH1 later goes to manual. Added
+        2026-09-16 after the third live laser run: 0.24 s flashes that came
+        up from an all-zero universe showed the unit's default CIRCLE (with
+        dots), not the line -- the 2026-09-06 verification had only ever
+        been sustained. Whether priming fixes that is itself unverified;
+        the 1-bar sweep length is the fallback if the unit simply needs
+        settle time after CH1 turns on."""
+        self._set(buf, 1, self.MANUAL_PATTERN_MODE if lit else 0)
         self._set(buf, 2, self.PATTERN_A1_DOTTED_LINE)
         self._set(buf, 3, self.PATTERN_A2_DEFAULT)
         self._set(buf, 7, self._sweep_speed(sweep_intensity))
@@ -511,10 +522,17 @@ class Laser(Fixture):
         Deliberately a SEPARATE method rather than folded into apply_safety,
         so the already-verified-on-hardware safety-critical arm/disarm path
         stays untouched. (Was `apply_laser_gate`, fed by the retired one-beat
-        kick-onset flash, until 2026-09-15.)"""
+        kick-onset flash, until 2026-09-15.)
+
+        Since 2026-09-16 the gate forces ONLY CH1 (mode) to 0 -- the unit's
+        documented OFF band -- and leaves the pattern channels as written,
+        so the laser layer can keep the dotted line primed between sweeps
+        (see set_dotted_line_sweep's ``lit``). Off is still off: CH1 in
+        0-41 is the same state boot_defaults and apply_safety rely on. The
+        all-channels zeroing stays where it matters most, in apply_safety
+        (disarmed / unsafe geometry)."""
         if not laser_on:
-            for i in range(self.offset, self.offset + self.channel_count):
-                uni[i] = 0
+            uni[self.offset] = 0
 
     def visual_state(self, uni: bytes) -> VisualState:
         mode = uni[self.offset + 0]

@@ -223,8 +223,8 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
 # strobe had been retired entirely (the burst-gated bar-ramp version fired
 # one ~1s burst then went dark for 8s -- one of the "random strobe" moments).
 # This is the un-gated version of that ramp: a SUSTAINED rate that starts at
-# BUILD_STROBE_START of STROBE_MAX at build entry and climbs linearly to
-# STROBE_MAX over BUILD_STROBE_RAMP_BARS. Safety: §13's burst/gap rule is
+# BUILD_STROBE_START of STROBE_MAX at build entry and climbs in two stages
+# to STROBE_MAX by BUILD_STROBE_STAGE2_BARS. Safety: §13's burst/gap rule is
 # for strobe BURSTS; a sustained rate is governed by
 # SAFETY_STROBE_SUSTAINED_MAX_HZ (4 Hz), which the software toggle meets
 # EXACTLY on both fixtures (its Hz is computed from this rate, capped at
@@ -243,9 +243,22 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
 # know which 1.5s of a build is the last. If the top still reads weak, the
 # lever is flash brightness (STROBE_FLASH_DMX), Josh's own cap.
 BUILD_STROBE_START = 0.4          # 1.6 Hz at build entry -- a slow pulse, not yet a strobe
-BUILD_STROBE_RAMP_BARS = 8.0      # the Bible's own build length; tops out AT the drop of an 8-bar build
-BUILD_STROBE_RAMP_EXPONENT = 3.0  # cubic ease-in: the first half of the build barely moves off the
-                                  # start rate, the last two bars do the climbing
+BUILD_STROBE_MID = 0.7            # 2.8 Hz at BUILD_STROBE_STAGE1_BARS: where an 8-bar build ends
+BUILD_STROBE_STAGE1_BARS = 8.0    # the Bible's own build length
+BUILD_STROBE_STAGE2_BARS = 16.0   # the other common build length; 4 Hz lands here
+BUILD_STROBE_STAGE1_EXPONENT = 2.0  # ease-in over stage 1: the first half barely moves off the start
+# Two-stage ramp (2026-09-16, third live run, recordings/session-20260916-
+# 110050, a 15-bar build): the previous single 8-bar ramp reached 4 Hz at
+# bar 8 and then sat there for six more bars -- Josh: "started a little
+# early." A build in 4/4 dance music is 8 or 16 bars, and nothing in the
+# audio says which in advance (this one's energy_norm actually FELL through
+# its second half -- a filter pulling the low end out -- so an energy-driven
+# ramp is not an option either). So the ramp hedges: stage 1 climbs from
+# START to MID over 8 bars (an 8-bar build ends at 2.8 Hz, the roll accent
+# adds the 255 flashes on top when a roll/riser is there), stage 2 climbs
+# from MID to 4 Hz over bars 8-16 (a 16-bar build ends at the ceiling), and
+# past 16 bars it holds. Not tuned to one song: the shape is bar-count
+# only, the same on every track. A 4-bar build only reaches ~1.9 Hz.
 # Retuned again after the second live laser run (2026-09-15 night,
 # recordings/session-20260915-212918, an 8-bar/16 s build): the previous
 # 0.5 / 6 bars / squared shape hit 4 Hz five seconds before the drop --
@@ -686,17 +699,24 @@ class ReactiveLayerEngine:
     def _build_strobe_rate(self, snap: ShowSnapshot) -> float:
         """Continuous BUILD strobe that gets faster across the build (Josh,
         2026-09-15 after the second live test: "the strobe should be
-        strobing throughout the build up and... slowly get faster"). Rides
-        the same bar-position ramp as the wash level (0 at entry -> 1 over
-        BUILD_RAMP_BARS), from BUILD_STROBE_START of STROBE_MAX up to
-        STROBE_MAX. Not burst-gated -- see BUILD_STROBE_START's comment for
-        the sustained-rate safety argument and the floor's reason."""
+        strobing throughout the build up and... slowly get faster"). Bar
+        position from build entry, two stages: BUILD_STROBE_START -> _MID
+        over the first BUILD_STROBE_STAGE1_BARS, _MID -> STROBE_MAX over
+        bars STAGE1..STAGE2, held after (see the constants' comment for the
+        8-vs-16-bar reasoning). Not burst-gated -- see BUILD_STROBE_START's
+        comment for the sustained-rate safety argument and the floor."""
         pos = musical_bar_position(snap)
         entry = self._build_entry_pos if self._build_entry_pos is not None else pos
-        progress = max(0.0, min(1.0, (pos - entry) / BUILD_STROBE_RAMP_BARS))
-        progress = progress ** BUILD_STROBE_RAMP_EXPONENT  # ease-in: most of the rise in the last bars
+        bars_in = max(0.0, pos - entry)
+        if bars_in < BUILD_STROBE_STAGE1_BARS:
+            p = (bars_in / BUILD_STROBE_STAGE1_BARS) ** BUILD_STROBE_STAGE1_EXPONENT
+            rate01 = BUILD_STROBE_START + (BUILD_STROBE_MID - BUILD_STROBE_START) * p
+        else:
+            p = min(1.0, (bars_in - BUILD_STROBE_STAGE1_BARS) / (BUILD_STROBE_STAGE2_BARS - BUILD_STROBE_STAGE1_BARS))
+            rate01 = BUILD_STROBE_MID + (1.0 - BUILD_STROBE_MID) * p
+        progress = (rate01 - BUILD_STROBE_START) / (1.0 - BUILD_STROBE_START)  # the flash byte tracks the rate
         self.strobe_flash_dmx = round(STROBE_FLASH_START_DMX + (STROBE_FLASH_DMX - STROBE_FLASH_START_DMX) * progress)
-        return STROBE_MAX * (BUILD_STROBE_START + (1.0 - BUILD_STROBE_START) * progress)
+        return STROBE_MAX * rate01
 
     def _musical_position(self, snap: ShowSnapshot) -> float:
         """Continuous position in beats, for smooth tempo-locked movement."""

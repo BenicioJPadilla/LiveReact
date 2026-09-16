@@ -8,7 +8,7 @@ from livereact.merge.merge import ManualParams
 
 def test_save_then_load_round_trips(tmp_path):
     path = str(tmp_path / "config.json")
-    m = ManualParams(master_brightness=0.7, strobe_cap=0.3, warm_cool_bias=-0.5, laser_enable=True)
+    m = ManualParams(master_brightness=0.7, strobe_cap=0.3, warm_cool_bias=-0.5)
     config.save_from(m, path)
 
     loaded = ManualParams()
@@ -16,7 +16,23 @@ def test_save_then_load_round_trips(tmp_path):
     assert loaded.master_brightness == 0.7
     assert loaded.strobe_cap == 0.3
     assert loaded.warm_cool_bias == -0.5
-    assert loaded.laser_enable is True
+
+
+def test_laser_arming_is_never_persisted(tmp_path):
+    """2026-09-16: a saved laser_enable=True armed the laser at every launch
+    (third live run: it fired on every track). Arming is per run, per track,
+    by hand -- and a stale key left in an older config.json is ignored."""
+    import json
+    path = str(tmp_path / "config.json")
+    config.save_from(ManualParams(laser_enable=True), path)
+    loaded = ManualParams()
+    config.load_into(loaded, path)
+    assert loaded.laser_enable is False
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"laser_enable": True, "master_brightness": 0.5}, fh)
+    stale = ManualParams()
+    config.load_into(stale, path)
+    assert stale.laser_enable is False and stale.master_brightness == 0.5
 
 
 def test_load_missing_file_keeps_defaults(tmp_path):
@@ -41,14 +57,14 @@ def test_loading_a_non_default_value_warns_loudly(tmp_path, caplog):
     non-default had loaded. Loading a non-default value must warn."""
     import logging
     path = str(tmp_path / "config.json")
-    config.save_from(ManualParams(warm_cool_bias=1.0, laser_enable=True), path)
+    config.save_from(ManualParams(warm_cool_bias=1.0, strobe_cap=0.5), path)
     loaded = ManualParams()
     with caplog.at_level(logging.WARNING):
         config.load_into(loaded, path)
     warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
     assert any("NON-DEFAULT" in w for w in warnings)
     assert any("warm_cool_bias=1.0" in w for w in warnings)
-    assert any("laser_enable=True" in w for w in warnings)
+    assert any("strobe_cap=0.5" in w for w in warnings)
 
 
 def test_loading_all_default_values_does_not_warn(tmp_path, caplog):

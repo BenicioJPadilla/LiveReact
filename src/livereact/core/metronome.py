@@ -841,14 +841,25 @@ class Metronome(threading.Thread):
                 else:
                     floor_ok = now - self._base_committed_since >= PER_STATE_DWELL_S[self._base_committed]
                     confirm_s = EXIT_CONFIRM_DWELL_S
-                    if (not floor_ok and self._base_committed == EnergyBucket.DROP
-                            and raw == EnergyBucket.BREAK):
+                    if self._base_committed == EnergyBucket.DROP and raw == EnergyBucket.BREAK:
                         # Sustained-cut exit (2026-09-15, same capture): the
                         # music dropped out mid-drop and the 8-bar DROP dwell
                         # floor held full drop lighting over ~8s of quiet.
                         # A BREAK-range reading that persists a couple of
                         # bars is a real breakdown, not a one-bar fill --
                         # let it through on its own longer confirmation.
+                        #
+                        # ... and ONLY on that longer confirmation, floor or
+                        # no floor (2026-09-16, recordings/session-20260916-
+                        # 110050): past the DROP dwell the ordinary 4-beat
+                        # exit applied, and a one-beat silence gap between a
+                        # track's first and second drop (drums out for one
+                        # bar, then straight back in) committed BREAK -- the
+                        # break look showed for a bar of full-energy music
+                        # and the drop re-cut a bar late. A one-bar gap is
+                        # a fill in every genre this runs on; a breakdown
+                        # is two bars or more. Cost: a real breakdown's
+                        # break look lands ~1 bar later than before.
                         floor_ok = True
                         confirm_s = CUT_EXIT_CONFIRM_S
                 if not floor_ok:

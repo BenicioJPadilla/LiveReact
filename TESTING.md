@@ -297,7 +297,9 @@ python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json
 
 > **Laser on the bench:** add `--testing` when the laser is in a confirmed-safe spot with no
 > crowd. Josh's rig declares the laser at 0.91 m (below the 3 m rule), so without `--testing`
-> the software forces it off every run. The laser only lights in DROP/PEAK anyway
+> the software forces it off every run. Arming is per track: the laser is DISARMED at every
+> launch (not saved in config.json any more), press **L** (or tick "Arm lasers") for the tune
+> you want it on. Once armed it sweeps once per 8-bar block in PEAK only, one bar per sweep
 > (`engines/laser.py`), and never at a show with this flag.
 
 Play a track on the XDJ-XZ.
@@ -346,7 +348,7 @@ Play a set: a track, a build, a drop, then mix into another track.
 **Expected:**
 - lights pulse on the beat, color follows the EQ
 - scenes rotate every ~16 bars
-- a drop brings lasers (once armed in the console, and only with `--testing` on this rig) + bigger movement
+- a drop's PEAK (8 bars in) brings one laser fan sweep per 8-bar block (once armed with **L**, and only with `--testing` on this rig) + bigger movement
 - press **S** (or tick "Synth Sync") on a garage track: the par + wash bar stop following the
   bucket model and pulse with the synth stabs instead; strobes pause while it's on. Press S again
   to hand the wash back to the automation. Off at every startup.
@@ -369,7 +371,7 @@ misbehaving) in `NOTES.md`.
 | "No DJ-Link device seen" | Static IP `169.254.50.50/16`, Link on, firewall UDP 50000–50002 |
 | Beat not locking | `state.jsonl` — is `bpm` right and `pdl_fresh` true? Else network/PDL issue |
 | MIDI does nothing | `--midi-monitor` — do controls show up? Enable Utility→MIDI on the XZ |
-| Lasers won't light | Arm them in the console; only drop scenes use them |
+| Lasers won't light | Arm them (**L**) — disarmed at every launch; they only sweep on 8-bar boundaries in PEAK, with `--testing` on this rig |
 
 ---
 

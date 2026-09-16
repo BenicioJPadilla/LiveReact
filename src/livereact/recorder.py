@@ -182,7 +182,8 @@ class SessionRecorder(threading.Thread):
             record["scene"] = self.phrase_engine._current.name
             record["scene_uses_lasers"] = self.phrase_engine._current.uses_lasers
         if self.laser_engine is not None:
-            record["laser_on"] = self.laser_engine.active        # engines/laser.py: DROP/PEAK gate open
+            record["laser_on"] = self.laser_engine.active        # engines/laser.py: a block sweep is lit
+            record["laser_primed"] = self.laser_engine.primed    # PEAK gate open, pattern held with CH1 off
             record["laser_sweep"] = round(self.laser_engine.sweep, 3)  # the wub envelope driving CH7
         if self.silence_detector is not None:
             record["silence_active"] = self.silence_detector.active

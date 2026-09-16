@@ -263,7 +263,8 @@ def test_laser_flash_gate_zeros_the_laser_independently_of_scene_and_arm():
     armed = ManualParams(laser_enable=True)
 
     not_flashing = render_universe([c], rig, armed, laser_on=False)
-    assert all(not_flashing[laser.offset + i] == 0 for i in range(12))
+    assert not_flashing[laser.offset] == 0                            # CH1 = 0: the unit's OFF band
+    assert not_flashing[laser.offset + 1] == Laser.PATTERN_A1_DOTTED_LINE  # pattern stays primed (2026-09-16)
 
     flashing = render_universe([c], rig, armed, laser_on=True)
     assert flashing[laser.offset] != 0

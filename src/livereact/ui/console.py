@@ -194,7 +194,10 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.s_bright = _slider(0, 100, int(m.master_brightness * 100))
         self.s_strobe = _slider(0, 100, int(m.strobe_cap * 100))
         self.s_warm = _slider(-100, 100, int(m.warm_cool_bias * 100))
-        self.cb_laser = QtWidgets.QCheckBox("Arm lasers")
+        # Arming is per run, per track (2026-09-16): never persisted, off at
+        # every launch -- Josh picks the tunes that get the laser, since the
+        # software can't (see engines/laser.py). L toggles it.
+        self.cb_laser = QtWidgets.QCheckBox("Arm lasers (L) — off at launch, arm per track")
         self.cb_laser.setChecked(m.laser_enable)
         # Synth Sync (Josh, 2026-09-15): wash follows the synths/stabs (the mid
         # band) and strobes pause -- see engines/reactive.py's SYNTH_* block.
@@ -255,6 +258,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         sc(QtCore.Qt.Key.Key_Right, self.app.phrase_engine.skip)
         sc("T", self._do_tap)
         sc("S", self.cb_synth.toggle)
+        sc("L", self.cb_laser.toggle)
         sc(QtCore.Qt.Key.Key_Space, self._strobe_burst)
 
     # ------------------------------------------------------------------ actions
@@ -311,8 +315,11 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             self.l_auto_blackout.setText("")
 
         if self.app.laser_engine.active:
-            self.l_laser_flash.setText("● LASER ON")
+            self.l_laser_flash.setText("● LASER SWEEP")
             self.l_laser_flash.setStyleSheet(_DOT_OK)
+        elif self.app.laser_engine.primed:
+            self.l_laser_flash.setText("○ laser primed — next 8-bar block")
+            self.l_laser_flash.setStyleSheet("")
         else:
             self.l_laser_flash.setText("")
 

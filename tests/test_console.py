@@ -93,3 +93,23 @@ def test_synth_sync_checkbox_and_shortcut_drive_manual_params(qapp):
     win.refresh()
     assert "SYNTH SYNC" in win.l_synth.text()
     _ = QtCore  # PySide6 import kept explicit for clarity
+
+
+def test_laser_arming_checkbox_and_shortcut_drive_manual_params(qapp):
+    """2026-09-16: arming is per track by hand (never persisted; demo mode
+    alone pre-arms so its drop scenes can show the laser) -- the checkbox
+    mirrors the manual state and L toggles the same checkbox."""
+    from PySide6 import QtGui
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    assert win.cb_laser.isChecked() == app.manual.laser_enable
+    armed_before = app.manual.laser_enable
+    win.show()
+    for sc in win.findChildren(QtGui.QShortcut):
+        if sc.key() == QtGui.QKeySequence("L"):
+            sc.activated.emit()
+    assert app.manual.laser_enable is (not armed_before)
+    win.cb_laser.toggle()
+    assert app.manual.laser_enable is armed_before

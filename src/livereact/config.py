@@ -17,7 +17,13 @@ log = logging.getLogger(__name__)
 DEFAULT_PATH = "config.json"
 
 # ManualParams fields that persist between runs (momentary states do not).
-_PERSIST = ("master_brightness", "strobe_cap", "warm_cool_bias", "laser_enable")
+# `laser_enable` was persisted until 2026-09-16: a saved True armed the laser
+# at every launch, so it fired on every track of the third live run. Josh
+# wants it reserved for the tunes he picks, and the software cannot tell
+# those apart (see engines/laser.py) -- so arming is a per-run, per-track
+# operator act (console checkbox / L), never carried over. A stale key in
+# an old config.json is simply ignored.
+_PERSIST = ("master_brightness", "strobe_cap", "warm_cool_bias")
 
 
 def load_into(manual, path: str = DEFAULT_PATH) -> bool:

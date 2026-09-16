@@ -21,6 +21,7 @@ from livereact.core.messages import (
     TransitionMessage,
 )
 from livereact.core.metronome import (
+    CUT_EXIT_CONFIRM_S,
     EXIT_CONFIRM_DWELL_S,
     FAST_ENTRY_DWELL_S,
     Metronome,
@@ -425,7 +426,7 @@ def test_legal_transition_matrix_rejects_drop_falling_back_to_build():
     m._energy_norm = 0.1  # BREAK-range -- DROP -> BREAK IS legal
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # DROP's own floor must clear before any exit
     m._derive_bucket(clock.monotonic())
-    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    clock.advance(CUT_EXIT_CONFIRM_S + 0.1)  # DROP -> BREAK always takes the 2-bar confirmation (2026-09-16)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.BREAK
 
@@ -457,7 +458,7 @@ def test_break_promotes_to_outro_after_a_recent_drop_then_reverts():
     m._energy_norm = 0.1  # fall legally to BREAK
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # DROP's own floor must clear before any exit
     m._derive_bucket(clock.monotonic())
-    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    clock.advance(CUT_EXIT_CONFIRM_S + 0.1)  # DROP -> BREAK always takes the 2-bar confirmation (2026-09-16)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.BREAK
     # Sustained-dwell requirement (2026-09-13, found via the first real
@@ -490,7 +491,7 @@ def test_a_fast_recovering_break_never_gets_promoted_to_outro_at_all():
     m._energy_norm = 0.1  # fall to BREAK
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])
     m._derive_bucket(clock.monotonic())
-    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    clock.advance(CUT_EXIT_CONFIRM_S + 0.1)  # DROP -> BREAK always takes the 2-bar confirmation (2026-09-16)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.BREAK
     assert m._bucket_committed == EnergyBucket.BREAK  # not OUTRO, correctly
@@ -521,7 +522,7 @@ def test_outro_does_not_illegally_block_a_real_second_build():
     m._energy_norm = 0.1
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # DROP's own floor must clear before any exit
     m._derive_bucket(clock.monotonic())
-    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    clock.advance(CUT_EXIT_CONFIRM_S + 0.1)  # DROP -> BREAK always takes the 2-bar confirmation (2026-09-16)
     m._derive_bucket(clock.monotonic())
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.BREAK])  # BREAK's own sustained-dwell floor (2026-09-13 fix)
     m._derive_bucket(clock.monotonic())
@@ -858,3 +859,36 @@ def test_palette_boundary_cannot_repick_a_color_that_just_landed():
     m._bar += PALETTE_PHRASE_BARS // 2  # the break's own first phrase boundary
     m._derive_palette()
     assert m.palette != first_break
+
+
+def test_a_one_bar_gap_past_the_drop_floor_does_not_exit_the_drop():
+    """2026-09-16, recordings/session-20260916-110050: drums out for one bar
+    between a track's first and second drop, then straight back in. Past
+    the DROP dwell floor the ordinary 4-beat exit fired and BREAK showed
+    for a bar of full-energy music. A DROP -> BREAK exit now always needs
+    CUT_EXIT_CONFIRM_S (two bars) of BREAK-range reading, floor or not."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+    clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP] + 1.0)  # well past the floor
+    m._derive_bucket(clock.monotonic())
+
+    m._energy_norm = 0.05  # the gap
+    m._derive_bucket(clock.monotonic())
+    clock.advance(EXIT_CONFIRM_DWELL_S + 0.5)  # longer than the old 4-beat exit, shorter than 2 bars
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP  # a one-bar gap is a fill
+
+    m._energy_norm = 0.9  # drums back in
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP  # no re-commit needed, no bar-late cut
+
+    m._energy_norm = 0.05  # a real breakdown
+    m._derive_bucket(clock.monotonic())
+    clock.advance(CUT_EXIT_CONFIRM_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BREAK
