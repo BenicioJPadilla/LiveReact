@@ -163,7 +163,7 @@ STROBE_TOGGLE_MAX_HZ = SAFETY_STROBE_SUSTAINED_MAX_HZ  # 4.0 -- rate01 == STROBE
 # without touching the 4 Hz line. DROP/PEAK tail bursts flash at the cap.
 # Same bytes on the par -- not independently confirmed on that fixture.
 STROBE_FLASH_DMX = WashBar.STROBE_BRIGHTNESS_CAP_DMX  # 180
-STROBE_FLASH_START_DMX = 140
+STROBE_FLASH_START_DMX = 160
 
 # Burst-duration limit (LIGHTING_BIBLE.md §13, 2026-09-08 audit): "assert
 # strobe_burst_duration <= 1.5s then a mandatory gap." Previously the reactive
@@ -242,8 +242,8 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
 # peak needs the burst rules (<= 1.5s, then a gap) and there is no way to
 # know which 1.5s of a build is the last. If the top still reads weak, the
 # lever is flash brightness (STROBE_FLASH_DMX), Josh's own cap.
-BUILD_STROBE_START = 0.4          # 1.6 Hz at build entry -- a slow pulse, not yet a strobe
-BUILD_STROBE_MID = 0.7            # 2.8 Hz at BUILD_STROBE_STAGE1_BARS: where an 8-bar build ends
+BUILD_STROBE_START = 0.5          # 2 Hz at build entry -- a pulse, not yet a strobe
+BUILD_STROBE_MID = 0.85           # 3.4 Hz at BUILD_STROBE_STAGE1_BARS: where an 8-bar build ends
 BUILD_STROBE_STAGE1_BARS = 8.0    # the Bible's own build length
 BUILD_STROBE_STAGE2_BARS = 16.0   # the other common build length; 4 Hz lands here
 BUILD_STROBE_STAGE1_EXPONENT = 2.0  # ease-in over stage 1: the first half barely moves off the start
@@ -258,7 +258,11 @@ BUILD_STROBE_STAGE1_EXPONENT = 2.0  # ease-in over stage 1: the first half barel
 # adds the 255 flashes on top when a roll/riser is there), stage 2 climbs
 # from MID to 4 Hz over bars 8-16 (a 16-bar build ends at the ceiling), and
 # past 16 bars it holds. Not tuned to one song: the shape is bar-count
-# only, the same on every track. A 4-bar build only reaches ~1.9 Hz.
+# only, the same on every track. A 4-bar build only reaches ~2.4 Hz.
+# Raised 0.4/0.7 -> 0.5/0.85 and the flash byte's start 140 -> 160 after the
+# fifth live run (2026-09-16, recordings/session-20260916-114402, a cued
+# ~9-bar build that topped out at 3.1 Hz) -- Josh: "starts really slow and
+# doesn't really get that strobe-y... raise the bar."
 # Retuned again after the second live laser run (2026-09-15 night,
 # recordings/session-20260915-212918, an 8-bar/16 s build): the previous
 # 0.5 / 6 bars / squared shape hit 4 Hz five seconds before the drop --

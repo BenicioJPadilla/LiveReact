@@ -944,3 +944,74 @@ def test_build_cue_second_press_cancels_and_the_hold_times_out():
     clock.advance(EXIT_CONFIRM_DWELL_S + PER_STATE_DWELL_S[EnergyBucket.BUILD] + 0.5)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.BREAK
+
+
+def _build_with_kickless_bars(clock, low=1.5, inst=0.2):
+    """A committed BUILD whose low band sits at `low` and whose instantaneous
+    level reads well under DROP."""
+    from livereact.core.metronome import DROP_HIT_LOW_TAU_S
+    m = _metronome(clock)
+    m._energy_norm = 0.5
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BUILD
+    m._low_avg = low
+    for _ in range(int(3 * DROP_HIT_LOW_TAU_S / 0.05)):
+        clock.advance(0.05)
+        m._low_recent.append((clock.monotonic(), low))
+        m._inst_recent.append((clock.monotonic(), inst))
+        m._derive_bucket(clock.monotonic())
+    return m
+
+
+def _feed(m, clock, low, inst, seconds, dt=0.05):
+    from livereact.core.metronome import DROP_HIT_LOW_HOLD_S, INST_PEAK_HOLD_S
+    for _ in range(int(seconds / dt)):
+        clock.advance(dt)
+        now = clock.monotonic()
+        m._low_recent.append((now, low)); m._inst_recent.append((now, inst))
+        while now - m._low_recent[0][0] > DROP_HIT_LOW_HOLD_S: m._low_recent.popleft()
+        while now - m._inst_recent[0][0] > INST_PEAK_HOLD_S: m._inst_recent.popleft()
+        m._derive_bucket(now)
+
+
+def test_the_kick_coming_back_commits_the_drop_within_a_beat():
+    """Fifth live run: low band 1.3 -> 18.6 on the downbeat, smoothed
+    energy_norm still 0.11; the commit came a full bar later. Now: one beat."""
+    from livereact.core.metronome import DROP_HIT_CONFIRM_S
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    m._bar = 116
+    t_hit = clock.monotonic()
+    _feed(m, clock, low=18.0, inst=0.95, seconds=DROP_HIT_CONFIRM_S + 0.15)
+    assert m._base_committed == EnergyBucket.DROP
+    assert clock.monotonic() - t_hit < FAST_ENTRY_DWELL_S  # faster than the smoothed path could ever be
+    assert m.drop_start_bar == 116                          # origin = the bar the kick came back in
+    assert m.drop_hit_intensity >= 0.95                     # booked off the instantaneous level, not the lagging smooth
+
+
+def test_a_builds_own_kicks_do_not_trip_the_hit_lead():
+    """The build's kicks ARE its low-band level: instantaneous DROP readings
+    on them (the reason the RMS-only lead is off for first drops) never
+    clear the ratio, so the smoothed path keeps its job."""
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock, low=12.0, inst=0.9)
+    _feed(m, clock, low=14.0, inst=0.95, seconds=2.0)
+    assert m._base_committed == EnergyBucket.BUILD
+
+
+def test_a_riser_with_no_low_band_does_not_trip_the_hit_lead():
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    _feed(m, clock, low=1.5, inst=0.95, seconds=2.0)  # loud but no kick
+    assert m._base_committed == EnergyBucket.BUILD
+
+
+def test_a_single_kick_that_does_not_hold_a_beat_does_not_commit():
+    from livereact.core.metronome import DROP_HIT_CONFIRM_S
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    _feed(m, clock, low=18.0, inst=0.95, seconds=DROP_HIT_CONFIRM_S * 0.4)
+    _feed(m, clock, low=1.5, inst=0.2, seconds=1.0)  # gone again
+    assert m._base_committed == EnergyBucket.BUILD

@@ -275,6 +275,27 @@ EXIT_CONFIRM_DWELL_S = 4.0 * 60.0 / NOMINAL_BPM  # ~1.88s at 128 BPM
 # quantization note in _derive_bucket anticipated.
 BUILD_CUE_HOLD_BARS = 32.0
 BUILD_CUE_HOLD_S = BUILD_CUE_HOLD_BARS * SECONDS_PER_BAR
+
+# The HIT lead out of a BUILD (2026-09-16, fifth live run, recordings/
+# session-20260916-114402): the audible drop -- the kick returning after a
+# kick-less build, low band 1.3 -> 18.6 on the downbeat -- committed a
+# full bar (2.0 s) later: ~1 s for the smoothed energy_norm to climb past
+# the DROP line, then FAST_ENTRY_DWELL_S. Josh: "stops too late... cuts
+# 1.5 seconds late... feels like a bug." The instantaneous lead above
+# (_lead_next_drop) is deliberately off for a track's FIRST drop, because
+# an RMS-only instantaneous reading against a low ceiling calls a build's
+# own kicks "DROP". This lead is stricter and works for any drop: the
+# instantaneous level must read DROP (peak-held) AND the low band must
+# jump to DROP_HIT_LOW_RATIO x its own rolling level during the build,
+# and both must still hold DROP_HIT_CONFIRM_S later (one beat). A build
+# with continuous kicks never clears the ratio (its kicks ARE the level),
+# a riser has no low band, so both stay on the smoothed path unchanged.
+DROP_HIT_LOW_RATIO = 3.0
+DROP_HIT_LOW_FLOOR = 1.0          # abs low-band units; below this a build is kick-less, ratio against the floor
+DROP_HIT_LOW_TAU_S = 2.0          # rolling level of the low band, frozen once a hit is under confirmation
+DROP_HIT_LOW_HOLD_S = 0.3         # peak-hold on the low band: bridges the dip between two kicks, not a whole beat
+DROP_HIT_CONFIRM_S = 60.0 / NOMINAL_BPM  # one beat: the hit must be seen again a beat after it was first seen
+DROP_HIT_GAP_S = 0.6              # a hit that hasn't been re-seen for this long was a one-shot, not the drop
 CUT_EXIT_CONFIRM_S = 2.0 * SECONDS_PER_BAR       # ~3.75s: a BREAK-range reading that
                                                  # persists this long mid-DROP is a
                                                  # real breakdown and may exit early
@@ -429,6 +450,13 @@ class Metronome(threading.Thread):
         self._last_drop_or_peak_t: float | None = None  # for OUTRO promotion, see OUTRO_LOOKBACK_S
         self._manual_bucket_override: EnergyBucket | None = None  # see request_manual_bucket() / cue_build()
         self._build_cue_until: float | None = None  # while set, a cued BUILD can't fall to BREAK -- see cue_build()
+        # hit lead state (see DROP_HIT_LOW_RATIO)
+        self._low_avg = 0.0
+        self._low_recent: deque[tuple[float, float]] = deque()  # (t, band_low_abs) over INST_PEAK_HOLD_S
+        self._hit_since: float | None = None
+        self._hit_last_seen: float | None = None
+        self._hit_bar: int | None = None
+        self._hit_ref = 0.0
         self._pending_drop_release = False  # Phase 3: confirmed DROP, waiting for the next downbeat
         self.transition_likely = False  # Phase 3 heuristic, see TYPICAL_EXTENDED_PEAK_S above
 
@@ -656,6 +684,14 @@ class Metronome(threading.Thread):
         tau = ENERGY_NORM_ATTACK_TAU_S if self._energy > self._energy_smooth else ENERGY_NORM_SMOOTH_TAU_S
         coeff = 1 - math.exp(-dt / tau) if dt > 0 else 0.0
         self._energy_smooth += coeff * (self._energy - self._energy_smooth)
+        # Low band rolling level + short peak-hold for the hit lead (see
+        # DROP_HIT_LOW_RATIO); the level freezes while a hit is confirming.
+        low = float(self._audio_band_low_abs)
+        if self._hit_since is None and dt > 0:
+            self._low_avg += (1 - math.exp(-dt / DROP_HIT_LOW_TAU_S)) * (low - self._low_avg)
+        self._low_recent.append((now, low))
+        while self._low_recent and now - self._low_recent[0][0] > DROP_HIT_LOW_HOLD_S:
+            self._low_recent.popleft()
 
         if (self._last_energy_sample_t is None
                 or now - self._last_energy_sample_t >= ENERGY_NORM_SAMPLE_INTERVAL_S):
@@ -715,7 +751,7 @@ class Metronome(threading.Thread):
         self._build_cue_until = self.clock.monotonic() + BUILD_CUE_HOLD_S
         self.request_manual_bucket(EnergyBucket.BUILD)
 
-    def _commit_drop(self, now: float) -> None:
+    def _commit_drop(self, now: float, level: float | None = None, raw_energy: float | None = None) -> None:
         """Actually commit to DROP -- called either immediately (already on
         a downbeat when confirmed) or once a pending beat-quantized release
         arrives (see _pending_drop_release in _derive_bucket). Captures how
@@ -724,10 +760,16 @@ class Metronome(threading.Thread):
         chased continuously; scaled within [DROP_INTENSITY_FLOOR,
         DROP_INTENSITY_CEIL] against energy_norm's real range at the moment
         of commitment."""
+        # `level` / `raw_energy`: the hit lead (DROP_HIT_LOW_RATIO) commits a
+        # beat after the kick, before the smoothed values have caught up --
+        # it passes the peak-held instantaneous level and the louder of the
+        # smoothed/instantaneous raw energy, so a real 1.0 hit isn't booked
+        # as a 0.85 (which would also keep the laser off it).
+        level = self._energy_norm if level is None else level
         span = 1.0 - BUILD_MAX
-        progress = max(0.0, min(1.0, (self._energy_norm - BUILD_MAX) / span)) if span > 0 else 1.0
+        progress = max(0.0, min(1.0, (level - BUILD_MAX) / span)) if span > 0 else 1.0
         self.drop_hit_intensity = DROP_INTENSITY_FLOOR + (DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR) * progress
-        self._drop_commit_energy = self._energy_smooth  # raw level of this drop -- see _lead_next_drop
+        self._drop_commit_energy = self._energy_smooth if raw_energy is None else raw_energy  # see _lead_next_drop
         # Phrase origin for anything counting bars from the drop: the bar
         # the DROP candidate first appeared in, not this (later) commit bar
         # -- see ShowSnapshot.drop_start_bar. A manual override has no
@@ -810,6 +852,37 @@ class Metronome(threading.Thread):
             peak = self._inst_peak()
             if peak is not None and bucket_for_energy_with_hysteresis(peak, self._base_committed) == EnergyBucket.DROP:
                 raw = EnergyBucket.DROP
+        # The hit lead (see DROP_HIT_LOW_RATIO): any BUILD, first drop
+        # included -- the kick coming back on top of an instantaneous DROP
+        # reading, held one beat, commits without waiting for the smoothed
+        # level or the entry dwell.
+        if self._base_committed == EnergyBucket.BUILD:  # whatever raw says: this path is the faster one
+            peak = self._inst_peak()
+            low_peak = max((v for _, v in self._low_recent), default=0.0)
+            ref = self._hit_ref if self._hit_since is not None else max(self._low_avg, DROP_HIT_LOW_FLOOR)
+            hit = (peak is not None
+                   and bucket_for_energy_with_hysteresis(peak, self._base_committed) == EnergyBucket.DROP
+                   and low_peak >= DROP_HIT_LOW_RATIO * ref)
+            if self._hit_since is not None and now - self._hit_last_seen > DROP_HIT_GAP_S:
+                self._hit_since = None  # a one-shot: never re-seen
+            if not hit:
+                pass  # the dip between two kicks: keep waiting for the next one
+            elif self._hit_since is None:
+                self._hit_since = self._hit_last_seen = now
+                self._hit_bar = self._bar
+                self._hit_ref = ref
+            elif now - self._hit_since < DROP_HIT_CONFIRM_S:
+                self._hit_last_seen = now
+            else:
+                self._hit_since = None
+                self._bucket_candidate = None
+                self._bucket_candidate_since = None
+                self._bucket_candidate_bar = self._hit_bar  # phrase origin = the bar the kick came back in
+                self._commit_drop(now, level=peak, raw_energy=max(self._energy_smooth, self._energy))
+                self._apply_bucket_overlay(now)
+                return
+        else:
+            self._hit_since = None
         # A DROP/PEAK breakdown exits on the sound RIGHT NOW (2026-09-15,
         # recordings/session-20260915-140630): the music dropped out at
         # 158.6s but the smoothed value (3s release tau, which exists to
