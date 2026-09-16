@@ -34,7 +34,7 @@ HOW it moves -- CH7 sweep speed follows a "wub" envelope: the low band's
   excess over its own slow baseline, fast attack / slower release. This is
   the 2026-09-03 pass-2 kick/bass follower (baseline-excess isolates a
   transient from the sustained bassline under it; constants were
-  calibrated then against a real capture, see `WUB_*` below) re-applied to
+  calibrated then against a real capture, see engines/envelope.py) re-applied to
   a SPEED rather than an on/off decision -- the fragility that retired it
   as a brightness driver (a few ms of timing wobble flipping lit/dark)
   doesn't apply to a continuous speed value that only ever modulates an
@@ -54,10 +54,9 @@ writes.
 
 from __future__ import annotations
 
-import math
-
 from ..clock import Clock
 from ..core.show_state import ShowSnapshot
+from .envelope import BandEnvelope
 from ..fixtures.profiles import Laser
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
@@ -69,15 +68,8 @@ from ..scenes.base import EnergyBucket
 # docstring for the measured values this was set against.
 LASER_MIN_HIT_INTENSITY = 0.95
 
-# Wub/stab envelope on `audio_band_low_abs`. Baseline-excess constants are
-# the 2026-09-03 calibration (real 60 s capture: excess p10=2.09, p50=3.28,
-# p90=4.23 -> gain set so p90 lands near 1.0); attack/release are
-# inputs/audio.py's own VU-style pair, so the sweep can follow a 2-8 Hz wub.
-WUB_BASELINE_TAU_S = 1.2   # slow: several beats, so one wub can't drag the baseline up
-WUB_BASELINE_FLOOR = 0.05  # keeps the ratio sane during real digital silence
-WUB_ATTACK_S = 0.015
-WUB_RELEASE_S = 0.18
-WUB_GAIN = 0.236
+# Wub/stab envelope on `audio_band_low_abs`: engines/envelope.py's
+# BandEnvelope with its calibrated defaults (see that module).
 
 # engines/palette.py names -> Laser.COLOR_* macros (fixtures/profiles.py).
 PALETTE_TO_LASER: dict[str, int] = {
@@ -118,9 +110,7 @@ class LaserEngine:
 
     def __init__(self, clock: Clock) -> None:
         self.clock = clock
-        self._baseline = 0.0
-        self._env = 0.0
-        self._last_t: float | None = None
+        self._wub = BandEnvelope(clock)
         self.active = False          # exposed for the console/recorder/finalize gate
         self.sweep = 0.0             # this tick's 0..1 sweep-speed intensity
         self.color = Laser.COLOR_WHITE
@@ -131,7 +121,7 @@ class LaserEngine:
 
     def tick(self, snap: ShowSnapshot, rig: Rig) -> Contribution:
         c = Contribution()
-        self.sweep = self._wub_envelope(snap)
+        self.sweep = self._wub.update(snap.audio_band_low_abs, snap.audio_fresh)
         self.color = laser_color_for_palette(snap.palette)
         # LASER-12: any signal loss -> off now, never a held value.
         self.active = snap.audio_fresh and snap.pdl_fresh and laser_wanted(snap)
@@ -140,18 +130,3 @@ class LaserEngine:
         for fx in rig.by_role("laser"):
             fx.set_dotted_line_sweep(c, color=self.color, sweep_intensity=self.sweep)
         return c
-
-    def _wub_envelope(self, snap: ShowSnapshot) -> float:
-        now = self.clock.monotonic()
-        dt = (now - self._last_t) if self._last_t is not None else 1 / 60
-        self._last_t = now
-        if not snap.audio_fresh:
-            self._baseline = 0.0
-            self._env = 0.0  # a stale reading must not shape the first frames after reconnect
-            return 0.0
-        raw = snap.audio_band_low_abs
-        self._baseline += (1 - math.exp(-dt / WUB_BASELINE_TAU_S)) * (raw - self._baseline)
-        excess = max(0.0, raw / max(self._baseline, WUB_BASELINE_FLOOR) - 1.0)
-        coeff = 1 - math.exp(-dt / (WUB_ATTACK_S if excess > self._env else WUB_RELEASE_S))
-        self._env += coeff * (excess - self._env)
-        return max(0.0, min(1.0, self._env * WUB_GAIN))

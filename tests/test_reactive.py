@@ -751,3 +751,106 @@ def test_outro_fades_down_from_bar_position_not_audio():
 
     assert start == 0.40           # OUTRO_HIGH, at entry
     assert abs(full - 0.15) < 1e-9  # OUTRO_LOW, after a full fade (OUTRO_FADE_BARS=16)
+
+
+# --- Synth Sync (Josh, 2026-09-15): wash follows the mid band, strobes pause ---
+# See engines/reactive.py's SYNTH_* block.
+
+from livereact.engines.reactive import SYNTH_CEILING, SYNTH_FLOOR  # noqa: E402
+from livereact.merge.merge import ManualParams  # noqa: E402
+
+
+def _synth_engine(on: bool = True):
+    manual = ManualParams(synth_sync=on)
+    return ReactiveLayerEngine(FakeClock(), manual=manual), manual
+
+
+def _mid_snap(mid: float, **kw) -> ShowSnapshot:
+    base = dict(audio_fresh=True, audio_band_mid_abs=mid, energy=0.9, bucket="drop",
+                drop_hit_intensity=1.0, beat_in_bar=1, beat_phase=0.0, bar=0)
+    base.update(kw)
+    return _snap(**base)
+
+
+def _settle_mid(eng, rig, level=1.0, ticks=300, dt=0.02, **kw):
+    for _ in range(ticks):
+        eng.tick(_mid_snap(level, **kw), rig)
+        eng.clock.advance(dt)
+
+
+def test_synth_sync_sits_at_the_floor_on_a_steady_mid_band():
+    rig = load_rig()
+    eng, _ = _synth_engine()
+    _settle_mid(eng, rig, level=1.0)
+    eng.tick(_mid_snap(1.0), rig)
+    assert eng.synth_sync_active
+    assert abs(eng.wash_level - SYNTH_FLOOR) < 0.02
+
+
+def test_synth_sync_a_stab_lifts_the_wash_toward_the_ceiling():
+    rig = load_rig()
+    eng, _ = _synth_engine()
+    _settle_mid(eng, rig, level=1.0)
+    c = eng.tick(_mid_snap(6.0), rig)  # a chord stab: 6x the mids' baseline
+    assert eng.wash_level > 0.7  # one attack step at 60 Hz-ish dt lands ~0.75; the ceiling needs a second tick
+    assert eng.wash_level <= SYNTH_CEILING
+    par = rig.fixture("par_l")
+    assert c.values[par.offset] > 120  # the dimmer byte actually moved (gamma curve, see _intensity_to8)
+
+
+def test_synth_sync_suppresses_the_build_strobe_and_the_drop_tail_burst():
+    rig = load_rig()
+    eng, _ = _synth_engine()
+    # BUILD: the sustained strobe would otherwise run the whole build
+    eng.tick(_mid_snap(1.0, bucket="build", energy=0.5), rig)
+    assert eng.strobe_level == 0 and not eng.strobe_on
+    # DROP phrase tail (bar 7 of the phrase, beat 3): the ambient burst would fire
+    eng.tick(_mid_snap(1.0, bucket="drop", bar=7, beat_in_bar=3, drop_start_bar=0), rig)
+    assert eng.strobe_level == 0 and not eng.strobe_on
+
+
+def test_synth_sync_off_is_byte_identical_to_an_engine_that_never_had_it():
+    rig = load_rig()
+    with_toggle, manual = _synth_engine(on=False)
+    plain = ReactiveLayerEngine(FakeClock())
+    for mid in (1.0, 4.0, 1.0, 6.0):
+        a = with_toggle.tick(_mid_snap(mid), rig)
+        b = plain.tick(_mid_snap(mid), rig)
+        assert bytes(a.values) == bytes(b.values)
+    assert not with_toggle.synth_sync_active
+
+
+def test_synth_sync_falls_back_to_the_bucket_level_without_real_audio():
+    rig = load_rig()
+    eng, _ = _synth_engine()
+    plain = ReactiveLayerEngine(FakeClock())
+    snap = _mid_snap(4.0, audio_fresh=False)
+    eng.tick(snap, rig)
+    plain.tick(snap, rig)
+    assert not eng.synth_sync_active
+    assert eng.wash_level == plain.wash_level
+
+
+def test_synth_sync_leaves_the_moving_head_alone():
+    rig = load_rig()
+    eng, _ = _synth_engine()
+    plain = ReactiveLayerEngine(FakeClock())
+    _settle_mid(eng, rig, level=1.0)
+    _settle_mid(plain, rig, level=1.0)
+    a = eng.tick(_mid_snap(4.0), rig)
+    b = plain.tick(_mid_snap(4.0), rig)
+    mh = rig.fixture("mh_l")
+    assert a.values[mh.offset + 5] == b.values[mh.offset + 5]  # ch6 dimmer unchanged
+
+
+def test_synth_sync_can_be_toggled_mid_set():
+    rig = load_rig()
+    eng, manual = _synth_engine(on=False)
+    eng.tick(_mid_snap(1.0), rig)
+    assert not eng.synth_sync_active
+    manual.synth_sync = True
+    eng.tick(_mid_snap(1.0), rig)
+    assert eng.synth_sync_active
+    manual.synth_sync = False
+    eng.tick(_mid_snap(1.0), rig)
+    assert not eng.synth_sync_active

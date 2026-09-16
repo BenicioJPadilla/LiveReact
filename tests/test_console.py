@@ -71,3 +71,25 @@ def test_tap_tempo_injects_a_master_beat(qapp):
     clock.advance(0.5)      # 120 BPM spacing
     win._do_tap()           # second tap establishes an interval -> a beat is queued
     assert app.input_queue.qsize() > before
+
+
+def test_synth_sync_checkbox_and_shortcut_drive_manual_params(qapp):
+    from PySide6 import QtCore, QtGui
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    assert app.manual.synth_sync is False
+    win.cb_synth.toggle()
+    assert app.manual.synth_sync is True
+    win.cb_synth.toggle()
+    assert app.manual.synth_sync is False
+    # the S shortcut flips the same checkbox
+    win.show()
+    for sc in win.findChildren(QtGui.QShortcut):
+        if sc.key() == QtGui.QKeySequence("S"):
+            sc.activated.emit()
+    assert app.manual.synth_sync is True
+    win.refresh()
+    assert "SYNTH SYNC" in win.l_synth.text()
+    _ = QtCore  # PySide6 import kept explicit for clarity

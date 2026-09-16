@@ -111,6 +111,8 @@ def test_recorder_captures_engine_and_rig_internals_when_given(tmp_path):
     assert row["scene_uses_lasers"] == phrase._current.uses_lasers
     assert row["laser_on"] == laser.active
     assert row["laser_sweep"] == round(laser.sweep, 3)
+    assert row["synth_sync"] == reactive.synth_sync_active
+    assert row["synth_level"] == round(reactive.synth_level, 3)
     assert row["silence_active"] == silence.active
     # per-fixture DMX-derived fields exist for every real fixture in the rig
     for fx in rig.fixtures:

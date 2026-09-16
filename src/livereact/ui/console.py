@@ -196,6 +196,11 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.s_warm = _slider(-100, 100, int(m.warm_cool_bias * 100))
         self.cb_laser = QtWidgets.QCheckBox("Arm lasers")
         self.cb_laser.setChecked(m.laser_enable)
+        # Synth Sync (Josh, 2026-09-15): wash follows the synths/stabs (the mid
+        # band) and strobes pause -- see engines/reactive.py's SYNTH_* block.
+        self.cb_synth = QtWidgets.QCheckBox("Synth Sync (S) — wash follows the synths")
+        self.cb_synth.setChecked(m.synth_sync)
+        self.l_synth = QtWidgets.QLabel("")
         # engines/laser.py: lit while the laser layer's DROP/PEAK gate is open --
         # armed alone isn't enough to see the laser, and it needs real audio +
         # PDL connected at all.
@@ -205,12 +210,15 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         cl.addRow("Warm ← → Cool", self.s_warm)
         cl.addRow("Lasers", self.cb_laser)
         cl.addRow("", self.l_laser_flash)
+        cl.addRow("Synth", self.cb_synth)
+        cl.addRow("", self.l_synth)
         v.addWidget(ctl)
 
         self.s_bright.valueChanged.connect(lambda x: setattr(m, "master_brightness", x / 100))
         self.s_strobe.valueChanged.connect(lambda x: setattr(m, "strobe_cap", x / 100))
         self.s_warm.valueChanged.connect(lambda x: setattr(m, "warm_cool_bias", x / 100))
         self.cb_laser.toggled.connect(lambda on: setattr(m, "laser_enable", on))
+        self.cb_synth.toggled.connect(lambda on: setattr(m, "synth_sync", on))
 
         # --- hard switches / actions ---
         btns = QtWidgets.QGroupBox("Actions")
@@ -246,6 +254,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         sc("F", self.b_freeze.toggle)
         sc(QtCore.Qt.Key.Key_Right, self.app.phrase_engine.skip)
         sc("T", self._do_tap)
+        sc("S", self.cb_synth.toggle)
         sc(QtCore.Qt.Key.Key_Space, self._strobe_burst)
 
     # ------------------------------------------------------------------ actions
@@ -306,6 +315,15 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             self.l_laser_flash.setStyleSheet(_DOT_OK)
         else:
             self.l_laser_flash.setText("")
+
+        if self.app.reactive_engine.synth_sync_active:
+            self.l_synth.setText("● SYNTH SYNC — wash follows the mids, strobes paused")
+            self.l_synth.setStyleSheet(_DOT_OK)
+        elif self.app.manual.synth_sync:
+            self.l_synth.setText("● SYNTH SYNC armed — waiting for real audio")
+            self.l_synth.setStyleSheet(_DOT_BAD)
+        else:
+            self.l_synth.setText("")
 
 
 def run_console(app, fps: int = 30) -> int:

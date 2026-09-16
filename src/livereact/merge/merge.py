@@ -49,7 +49,13 @@ class Contribution(Buffer):
 
 @dataclass
 class ManualParams:
-    """Operator biases/caps. Defaults = fully automatic, nothing clamped."""
+    """Operator biases/caps. Defaults = fully automatic, nothing clamped.
+
+    `synth_sync` (Josh, 2026-09-15) is the one operator-chosen REACTIVITY
+    mode: while on, the par + wash bar dimmer follows the mid band (synths/
+    stabs -- the prominent sound in UK garage) via engines/reactive.py's
+    Synth Sync path, and automated strobes are suppressed. Per-set, never
+    persisted (config.py's _PERSIST leaves it out) -- off at every start."""
 
     master_brightness: float = 1.0   # 0..1 scales dimmers / par color
     strobe_cap: float = 1.0          # 0..1 max strobe-rate channel value
@@ -58,6 +64,7 @@ class ManualParams:
     strobe_burst: bool = False       # momentary operator strobe (within the cap)
     blackout: bool = False           # hard: zero everything
     freeze: bool = False             # hard: hold last frame (handled by show engine)
+    synth_sync: bool = False         # wash follows the synths/stabs (engines/reactive.py)
 
 
 def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearray:

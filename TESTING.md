@@ -346,7 +346,10 @@ Play a set: a track, a build, a drop, then mix into another track.
 **Expected:**
 - lights pulse on the beat, color follows the EQ
 - scenes rotate every ~16 bars
-- a drop brings lasers (once armed in the console) + bigger movement
+- a drop brings lasers (once armed in the console, and only with `--testing` on this rig) + bigger movement
+- press **S** (or tick "Synth Sync") on a garage track: the par + wash bar stop following the
+  bucket model and pulse with the synth stabs instead; strobes pause while it's on. Press S again
+  to hand the wash back to the automation. Off at every startup.
 - crossfading into the next track is detected (console shows TRANSITION) and the
   show settles into a new look afterward
 - the operator controls (brightness, blackout, freeze, skip) all respond

@@ -29,11 +29,41 @@ from ..core.show_state import ShowSnapshot
 from ..dynamics import musical_bar_position
 from ..fixtures.profiles import Par, WashBar
 from ..fixtures.rig import Rig
-from ..merge.merge import Contribution
+from ..merge.merge import Contribution, ManualParams
 from ..scenes.base import EnergyBucket
 from ..scenes.catalog import BREAK_MAX
 from ..core.snare_trigger import SnareOnsetDetector, SnareRollDetector
 from ..scenes.base import scene_color, spot_color
+from .envelope import BandEnvelope
+
+# Synth Sync (Josh, 2026-09-15): "in a lot of UKG songs the most prominent
+# noise is the synths or the stabs... a feature on the UI I could click and
+# then the par lights or the wash bar literally mimic the synths." While
+# `ManualParams.synth_sync` is on, the wash dimmer follows a BandEnvelope on
+# `audio_band_mid_abs` (250-2000 Hz, inputs/audio.py's MID_HZ -- where UKG
+# chord stabs and synth lines sit) instead of the bucket model, and every
+# automated strobe is suppressed (Josh's call: the synth OWNS the wash; two
+# signals must not fight one dimmer channel). Par + wash bar only; the
+# moving head keeps its own dimmer and color. Checked against real captures
+# before building: inside a drop the mid band swings ~2x more than the low
+# band (p90/p50 2.7 vs 1.3), so there is contrast to show.
+#
+# Deliberately the retired kick-follow's PASS-2 shape (a continuous
+# baseline-excess envelope), not its pass-4 beat-locked window: kicks sit on
+# the grid, so one decision per beat was right for them; garage stabs are
+# syncopated and off-grid, so a beat window would drop exactly the hits
+# this mode exists for. Known limit, told to Josh: amplitude in a band can't
+# separate instruments -- vocal chops and snare body share the mids and
+# will move the lights too.
+#
+# Floor/ceiling are the contrast range Josh confirmed live on 2026-09-03 for
+# the kick follower ("tighten it a tad, less strobe-like" -> a bigger floor
+# was tried and read as MORE delayed: contrast is what makes timing look
+# crisp). Gain is BandEnvelope's calibrated default; `SYNTH_GAIN` is the
+# lever if the first bench run reads flat or pinned.
+SYNTH_FLOOR = 0.02
+SYNTH_CEILING = 0.95
+SYNTH_GAIN = 0.236
 
 # STROBE_THRESHOLD (a fixed energy_norm > 0.85 gate, RETIRED 2026-09-14) used
 # to be the sole gate on the reactive strobe, in ANY bucket. Two real problems
@@ -478,7 +508,7 @@ class _StrobeClock:
 class ReactiveLayerEngine:
     """Always-on beat/energy/color reactivity."""
 
-    def __init__(self, clock: Clock) -> None:
+    def __init__(self, clock: Clock, manual: ManualParams | None = None) -> None:
         self.clock = clock
         self._ambient_gate = _BurstGate(clock, STROBE_MAX_BURST_S, STROBE_MIN_SPACING_S)
         self._roll_gate = _BurstGate(clock, STROBE_MAX_BURST_S, ROLL_STROBE_MIN_SPACING_S)
@@ -492,7 +522,8 @@ class ReactiveLayerEngine:
         self._break_breath = 0.0        # slow low-pass envelope, BREAK's "breathing"
         self._outro_entry_pos: float | None = None  # bar position OUTRO was entered at, for its fade
         self._last_bucket_tick_t: float | None = None    # dt for the breathing envelopes above
-        self.wash_level = 0.0       # exposed for the console/tests: last computed 0..1 wash/par level
+        self.wash_level = 0.0       # exposed for the console/tests/recorder: the 0..1 wash/par level SENT this tick
+        self._bucket_wash = 0.0     # the bucket model's own level (kept warm under Synth Sync, see tick)
         self._wash_transition_until = 0.0  # see WASH_CROSSFADE_TAU_S above -- 0.0 means "no
                                             # active blend," which also correctly makes the
                                             # very first tick ever a direct assignment (any
@@ -507,6 +538,12 @@ class ReactiveLayerEngine:
         self._snare_roll = SnareRollDetector(clock)
         self.snare_roll_active = False  # exposed for the console/tests/recorder
         self.snare_onset_active = False  # exposed for the recorder: this tick's raw onset
+        # Synth Sync (see SYNTH_* above). `manual` is optional so every
+        # caller/test that constructs a bare engine keeps the feature off.
+        self.manual = manual
+        self._synth_env = BandEnvelope(clock, gain=SYNTH_GAIN)
+        self.synth_sync_active = False  # exposed for the console/recorder: on AND audio fresh this tick
+        self.synth_level = 0.0          # exposed for the recorder: the mid-band envelope, 0..1
 
     # LIGHTING_BIBLE.md §2.3's Titan tiers (Bible-integration Phase 4):
     # Safety=255 (not a contribution -- merge/merge.py's finalize() clamp,
@@ -520,9 +557,21 @@ class ReactiveLayerEngine:
     def tick(self, snap: ShowSnapshot, rig: Rig) -> Contribution:
         c = Contribution()
         r, g, b = scene_color(snap)
+        # Both of these run EVERY tick, even under Synth Sync, so their state
+        # (build ramp origin, strobe gates, drop phrase origin) stays warm and
+        # switching the mode off mid-set is seamless.
         wash_level = self._bucket_wash_level(snap)  # also records DROP entry (phrase origin for strobe)
         self.strobe_flash_dmx = STROBE_FLASH_DMX  # _build_strobe_rate lowers it early in a build
         strobe = self._snare_accent_strobe_rate(snap)
+        self.synth_level = self._synth_env.update(snap.audio_band_mid_abs, snap.audio_fresh)
+        self.synth_sync_active = bool(self.manual is not None and self.manual.synth_sync and snap.audio_fresh)
+        if self.synth_sync_active:
+            # The synth owns the wash: envelope-driven brightness, no strobe
+            # (a 0 here also resets the strobe clock). No real audio -> the
+            # normal bucket level above, never dark.
+            wash_level = SYNTH_FLOOR + (SYNTH_CEILING - SYNTH_FLOOR) * self.synth_level
+            strobe = 0.0
+        self.wash_level = wash_level
         self.strobe_level = strobe
 
         # --- washes: bucket-driven brightness (LIGHTING_BIBLE.md §5/§9.1), palette color ---
@@ -744,8 +793,8 @@ class ReactiveLayerEngine:
             target = BREAK_LOW + (BREAK_HIGH - BREAK_LOW) * self._break_breath
 
         if energy_bucket in (EnergyBucket.DROP, EnergyBucket.PEAK) or now >= self._wash_transition_until:
-            self.wash_level = target  # settled, or a deliberately-instant DROP/PEAK cut
+            self._bucket_wash = target  # settled, or a deliberately-instant DROP/PEAK cut
         else:
             crossfade_coeff = 1 - math.exp(-dt / WASH_CROSSFADE_TAU_S)
-            self.wash_level += crossfade_coeff * (target - self.wash_level)
-        return self.wash_level
+            self._bucket_wash += crossfade_coeff * (target - self._bucket_wash)
+        return self._bucket_wash

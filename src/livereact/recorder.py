@@ -166,6 +166,8 @@ class SessionRecorder(threading.Thread):
             record["strobe_on"] = self.reactive_engine.strobe_on
             record["snare_onset"] = self.reactive_engine.snare_onset_active
             record["snare_roll_active"] = self.reactive_engine.snare_roll_active
+            record["synth_sync"] = self.reactive_engine.synth_sync_active  # operator Synth Sync mode on (and audio fresh)
+            record["synth_level"] = round(self.reactive_engine.synth_level, 3)  # the mid-band envelope driving the wash
         if self.phrase_engine is not None:
             record["scene"] = self.phrase_engine._current.name
             record["scene_uses_lasers"] = self.phrase_engine._current.uses_lasers

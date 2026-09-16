@@ -76,3 +76,34 @@ build overruns, gracefully recover from a real unexpected quiet passage)
 is still a real, currently-unaddressed gap, independent of D1's own
 predictive-scheduling substitution. Not scheduled into any phase; flagged
 here rather than left invisible.
+
+---
+
+## D2 — §14 "manual = biases and caps, never an override": Synth Sync is an operator-chosen reactivity mode
+
+**What the Bible asks for.** The console's manual controls are biases and
+caps on a fully automated show (master brightness, strobe cap, color bias,
+laser arm, blackout/freeze). The operator never picks *what reacts to
+what*; the engine does, from the energy-state model.
+
+**Why it's deviated from.** Josh (2026-09-15): in UK garage the prominent
+sound is the synth/chord stab, not the kick, and the bucket model's
+wash behavior (held level in a drop, ramp in a build) reads flat against
+that music. He asked for a UI toggle that makes the par + wash bar "literally
+mimic the synths." No automated classifier can tell "this is a stab-driven
+track" from the audio LiveReact has (see D1: no song-structure data), so
+the human who knows the track makes the call -- the same reasoning as the
+planned DJ drop cue (`Metronome.request_manual_bucket`).
+
+**What LiveReact does instead.** `ManualParams.synth_sync` (console
+checkbox / `S` key, never persisted, off at every start). While on and real
+audio is fresh: the wash dimmer follows a baseline-excess envelope on the
+mid band (`engines/envelope.py`, `engines/reactive.py`'s `SYNTH_*`), and
+every automated strobe is suppressed so two signals never fight one dimmer
+channel. Par + wash bar only; the moving head, color, movement and laser
+are untouched. Known limit: band amplitude can't separate instruments --
+vocal chops and snare body share the mids.
+
+**What would change the answer.** A stab/chord detector that could identify
+the instrument (not just the band) could gate this automatically; nothing
+like that exists here today.
