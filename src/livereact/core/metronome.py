@@ -259,6 +259,22 @@ FAST_ENTRY_DWELL_S = 2.0 * 60.0 / NOMINAL_BPM   # ~0.94s at 128 BPM -- a 1-beat
                                                  # false start the instantaneous
                                                  # re-check exists to block.
 EXIT_CONFIRM_DWELL_S = 4.0 * 60.0 / NOMINAL_BPM  # ~1.88s at 128 BPM
+
+# DJ build cue (2026-09-16, recordings/session-20260916-112651): a UK garage
+# track whose kick-only intro reads LOUDER in RMS than its mid-heavy build,
+# and whose build sits at the same loudness as its breakdown, never showed
+# a BUILD at all -- no strobe ramp, no drop cue. The run before it caught
+# the same build only on a smoothing lag. A loudness classifier cannot see
+# that build (the 2026-09-16 offline check of a "high band rising over
+# bars" rule caught it but started 20 bars early on the other test track
+# and false-started once -- not shippable blind). The person who CAN see
+# it is the DJ: `cue_build()` commits BUILD now and HOLDS it against the
+# energy classifier's exit-to-BREAK for up to BUILD_CUE_HOLD_BARS, or
+# until the drop commits (energy still owns DROP), or a second press
+# cancels. This is the "manual 'drop is coming' cue" the retired beat-
+# quantization note in _derive_bucket anticipated.
+BUILD_CUE_HOLD_BARS = 32.0
+BUILD_CUE_HOLD_S = BUILD_CUE_HOLD_BARS * SECONDS_PER_BAR
 CUT_EXIT_CONFIRM_S = 2.0 * SECONDS_PER_BAR       # ~3.75s: a BREAK-range reading that
                                                  # persists this long mid-DROP is a
                                                  # real breakdown and may exit early
@@ -411,8 +427,8 @@ class Metronome(threading.Thread):
         self._bucket_candidate_since: float | None = None
         self._bucket_candidate_bar: int | None = None  # bar the candidate first appeared in -> drop_start_bar
         self._last_drop_or_peak_t: float | None = None  # for OUTRO promotion, see OUTRO_LOOKBACK_S
-        self._manual_bucket_override: EnergyBucket | None = None  # Phase 2 hook, unused until Phase 5's
-                                                                    # DJ-trigger buttons -- see request_manual_bucket()
+        self._manual_bucket_override: EnergyBucket | None = None  # see request_manual_bucket() / cue_build()
+        self._build_cue_until: float | None = None  # while set, a cued BUILD can't fall to BREAK -- see cue_build()
         self._pending_drop_release = False  # Phase 3: confirmed DROP, waiting for the next downbeat
         self.transition_likely = False  # Phase 3 heuristic, see TYPICAL_EXTENDED_PEAK_S above
 
@@ -678,8 +694,26 @@ class Metronome(threading.Thread):
         the person who actually knows the track beats a guess from energy
         levels alone. Nothing calls this yet (Phase 5's job); the seam just
         needs to exist now so that work doesn't require reopening this
-        file. Consumed once, then cleared."""
+        file. Consumed once, then cleared. (Since 2026-09-16 the console's
+        build cue is the first real caller -- see cue_build.)"""
         self._manual_bucket_override = bucket
+
+    @property
+    def build_cue_active(self) -> bool:
+        return self._build_cue_until is not None
+
+    def cue_build(self) -> None:
+        """The DJ's "the build is happening now" (see BUILD_CUE_HOLD_BARS).
+        Toggle: a first press commits BUILD on the next tick and holds it;
+        a second press while held cancels back to BREAK. Safe to call from
+        the console thread -- plain attribute writes, consumed on the
+        metronome thread like request_manual_bucket."""
+        if self._build_cue_until is not None:
+            self._build_cue_until = None
+            self.request_manual_bucket(EnergyBucket.BREAK)
+            return
+        self._build_cue_until = self.clock.monotonic() + BUILD_CUE_HOLD_S
+        self.request_manual_bucket(EnergyBucket.BUILD)
 
     def _commit_drop(self, now: float) -> None:
         """Actually commit to DROP -- called either immediately (already on
@@ -702,6 +736,7 @@ class Metronome(threading.Thread):
         self._bucket_candidate_bar = None
         self._base_committed = EnergyBucket.DROP
         self._base_committed_since = now
+        self._build_cue_until = None  # the drop the cue was for has landed
 
     def _apply_manual_override(self, bucket: EnergyBucket, now: float) -> None:
         """Commit a manual cue (see request_manual_bucket) so that the NEXT
@@ -792,6 +827,14 @@ class Metronome(threading.Thread):
         if (self._base_committed == EnergyBucket.DROP and self._energy_norm_inst is not None
                 and bucket_for_energy_with_hysteresis(self._energy_norm_inst, self._base_committed) == EnergyBucket.BREAK):
             raw = EnergyBucket.BREAK
+        # A cued BUILD (see cue_build) holds against the energy reading's
+        # exit to BREAK -- the whole point is a build the loudness can't see
+        # -- until the drop commits, the hold runs out, or it's cancelled.
+        if self._build_cue_until is not None:
+            if now >= self._build_cue_until or self._base_committed != EnergyBucket.BUILD:
+                self._build_cue_until = None
+            elif raw == EnergyBucket.BREAK:
+                raw = EnergyBucket.BUILD
 
         # Beat-quantized DROP release (Bible-integration Phase 3, D1 in
         # docs/bible_integration/SPEC_DEVIATIONS.md) -- RETIRED for the
@@ -1108,6 +1151,7 @@ class Metronome(threading.Thread):
             drop_cycle=self.drop_cycle,
             drop_hit_intensity=self.drop_hit_intensity,
             drop_start_bar=self.drop_start_bar,
+            build_cue=self.build_cue_active,
             drop_candidate=self._bucket_candidate == EnergyBucket.DROP,
             palette=self.palette,
             palette_spot=self.palette_spot,

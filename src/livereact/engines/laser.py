@@ -138,6 +138,7 @@ class LaserEngine:
         self._sweep_until = 0.0
         self._entry_bar: int | None = None   # phrase origin fallback when the snapshot has none
         self._last_origin: int | None = None  # the origin _last_block counts from
+        self._gate_was_open = False          # previous tick was inside the gate (entry detection)
         self._last_block: int | None = None  # the block index the current/last sweep fired in --
         # kept across a gate close (a PEAK->DROP->PEAK blip from the overlay's
         # hysteresis must not re-fire the same block), reset when the origin
@@ -155,6 +156,7 @@ class LaserEngine:
     def _close(self, now: float) -> None:
         self._sweep_until = now
         self._entry_bar = None
+        self._gate_was_open = False
         self.active = False
         self.primed = False
 
@@ -175,12 +177,19 @@ class LaserEngine:
             self._last_origin = origin
             self._last_block = None
         bars_in = snap.bar - origin
-        if bars_in >= 0 and bars_in % self.block_bars == 0:
+        if bars_in >= 0:
             block = bars_in // self.block_bars
-            if block != self._last_block:
+            # Fire on the block's first bar -- or on the gate opening (the
+            # PEAK escalation itself) if this block hasn't had its sweep:
+            # fourth live run, the escalation landed one bar past a
+            # boundary and the first sweep waited 8 bars. A blip re-entry
+            # can't re-fire: _last_block survives the gate closing.
+            on_boundary = bars_in % self.block_bars == 0
+            if block != self._last_block and (on_boundary or not self._gate_was_open):
                 self._last_block = block
                 beat = 60.0 / snap.bpm if snap.bpm > 0 else 0.5
                 self._sweep_until = now + self.sweep_bars * 4.0 * beat
+        self._gate_was_open = True
         self.active = bool(now < self._sweep_until)
         self.primed = not self.active
         for fx in rig.by_role("laser"):

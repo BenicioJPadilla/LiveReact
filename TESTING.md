@@ -349,6 +349,10 @@ Play a set: a track, a build, a drop, then mix into another track.
 - lights pulse on the beat, color follows the EQ
 - scenes rotate every ~16 bars
 - a drop's PEAK (8 bars in) brings one laser fan sweep per 8-bar block (once armed with **L**, and only with `--testing` on this rig) + bigger movement
+- press **C** ("Cue build") when a build starts that the lights aren't reacting to: BUILD commits
+  now and holds (strobe ramp, wash ramp) until the drop lands, 32 bars pass, or you press C again.
+  Exists because a kick-only intro reads louder than a mid-heavy build to a loudness classifier
+  (2026-09-16) — the DJ sees the build, the RMS doesn't
 - press **S** (or tick "Synth Sync") on a garage track: the par + wash bar stop following the
   bucket model and pulse with the synth stabs instead; strobes pause while it's on. Press S again
   to hand the wash back to the automation. Off at every startup.

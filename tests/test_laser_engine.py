@@ -99,14 +99,17 @@ def test_a_sweep_lasts_one_bar_then_closes_on_its_own():
     assert not eng.active and eng.primed
 
 
-def test_entering_peak_mid_block_waits_for_the_next_boundary():
-    """PEAK that starts at bar 50 (not a boundary) must not fire on entry."""
+def test_entering_peak_mid_block_fires_the_escalation_then_the_next_boundary():
+    """PEAK that starts at bar 50 (not a boundary): the escalation itself is
+    the block's sweep (fourth live run: the escalation landed a bar past a
+    boundary and the first sweep waited 8 bars), then bar 56 as usual --
+    never anything in between."""
     rig = load_rig()
     clock = FakeClock()
     eng = LaserEngine(clock)
     seen = _run_bars(eng, rig, clock, first_bar=50, n_bars=7)
     lit_bars = sorted({bar for bar, _, on in seen if on})
-    assert lit_bars == [56]
+    assert lit_bars == [50, 56]
 
 
 def test_the_same_block_never_fires_twice():
@@ -190,7 +193,9 @@ def test_between_sweeps_the_pattern_is_primed_with_ch1_off():
     rig = load_rig()
     clock = FakeClock()
     eng = LaserEngine(clock)
-    c = eng.tick(_snap(bar=50), rig)  # mid-block: primed, not lit
+    eng.tick(_snap(bar=48), rig)                  # the block's sweep...
+    clock.advance(LASER_SWEEP_BARS * BAR_S + 0.1)
+    c = eng.tick(_snap(bar=50), rig)              # ...is over: mid-block, primed, not lit
     values, touched = _laser_channels(c, rig)
     assert touched and eng.primed and not eng.active
     assert values[0] == 0
@@ -295,7 +300,9 @@ def test_active_is_a_plain_python_bool_even_from_numpy_inputs():
 
 # --- end to end through the real ShowEngine + finalize --------------------------------
 
-def _show(snap: ShowSnapshot, testing: bool):
+def _show(snap: ShowSnapshot, testing: bool, after_sweep: bool = False):
+    """One ShowEngine tick on `snap`; with after_sweep, first spend bar 48's
+    sweep so `snap` lands between sweeps."""
     rig = load_rig()
     for fx in rig.by_role("laser"):
         fx.mount_height_m = 0.9  # like Josh's real rig: below LASER-09's 3 m
@@ -306,6 +313,11 @@ def _show(snap: ShowSnapshot, testing: bool):
     laser = LaserEngine(clock)
     eng = ShowEngine(state, rig, DmxFrameBuffer(), [ReactiveLayerEngine(clock), laser],
                      ManualParams(laser_enable=True), clock, threading.Event(), laser_engine=laser)
+    if after_sweep:
+        state.publish(snap.replace(bar=48))
+        eng.tick()
+        clock.advance(LASER_SWEEP_BARS * BAR_S + 0.1)
+        state.publish(snap)
     frame = eng.tick()
     off = rig.fixture("laser_l").offset
     return frame[off], frame[off + 1], laser
@@ -318,7 +330,7 @@ def test_end_to_end_the_laser_lights_on_a_peak_block_boundary_under_testing_mode
 
 
 def test_end_to_end_primed_keeps_ch1_off_but_the_pattern_channels_set():
-    ch1, ch2, laser = _show(_snap(bar=50), testing=True)
+    ch1, ch2, laser = _show(_snap(bar=50), testing=True, after_sweep=True)
     assert laser.primed and not laser.active
     assert ch1 == 0 and ch2 == Laser.PATTERN_A1_DOTTED_LINE
 
@@ -348,3 +360,19 @@ def test_show_engine_without_a_laser_engine_keeps_the_gate_closed():
                      ManualParams(laser_enable=True), clock, threading.Event())
     frame = eng.tick()
     assert frame[rig.fixture("laser_l").offset] == 0
+
+
+def test_the_peak_escalation_itself_fires_when_its_block_is_unused():
+    """Fourth live run: PEAK began one bar past a block boundary and the
+    first sweep waited 8 bars. The gate opening now fires the block's
+    sweep; the next boundary still gets its own; a blip re-entry does not."""
+    rig = load_rig()
+    clock = FakeClock()
+    eng = LaserEngine(clock)
+    seen = _run_bars(eng, rig, clock, first_bar=49, n_bars=8)  # enters at 49, boundary at 56
+    lit_bars = sorted({bar for bar, _, on in seen if on})
+    assert lit_bars == [49, 56]
+    eng.tick(_snap(bar=56, bucket="drop"), rig)   # blip out...
+    clock.advance(LASER_SWEEP_BARS * BAR_S + 0.1)
+    eng.tick(_snap(bar=57, bucket="peak"), rig)   # ...and back, mid-block: no extra sweep
+    assert not eng.active and eng.primed

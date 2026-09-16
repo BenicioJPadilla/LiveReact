@@ -113,3 +113,22 @@ def test_laser_arming_checkbox_and_shortcut_drive_manual_params(qapp):
     assert app.manual.laser_enable is (not armed_before)
     win.cb_laser.toggle()
     assert app.manual.laser_enable is armed_before
+
+
+def test_build_cue_button_and_shortcut_reach_the_metronome(qapp):
+    from PySide6 import QtGui
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    assert not app.metronome.build_cue_active
+    win.b_cue.click()
+    assert app.metronome.build_cue_active
+    win.show()
+    for sc in win.findChildren(QtGui.QShortcut):
+        if sc.key() == QtGui.QKeySequence("C"):
+            sc.activated.emit()
+    assert not app.metronome.build_cue_active  # second press cancels
+    app.metronome.cue_build()
+    win.refresh()
+    assert "BUILD CUED" in win.l_cue.text()

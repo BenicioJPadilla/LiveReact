@@ -892,3 +892,55 @@ def test_a_one_bar_gap_past_the_drop_floor_does_not_exit_the_drop():
     clock.advance(CUT_EXIT_CONFIRM_S + 0.1)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.BREAK
+
+
+def test_build_cue_holds_build_against_a_quiet_reading_until_the_drop():
+    """2026-09-16 (recordings/session-20260916-112651): a build the loudness
+    can't see. The DJ's cue commits BUILD and holds it through energy_norm
+    reading 0.0; a real drop still commits from energy; the cue clears."""
+    from livereact.core.metronome import BUILD_CUE_HOLD_S
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.0
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BREAK
+    m.cue_build()
+    assert m.build_cue_active
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == EnergyBucket.BUILD
+    for _ in range(20):  # 20 s of "silence" by the classifier's reading
+        clock.advance(1.0)
+        m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BUILD  # held
+    assert m.tick().build_cue is True or m.build_cue_active  # exposed on the snapshot
+    m._energy_norm = 0.95  # the drop
+    m._energy_norm_inst = 0.95
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+    assert not m.build_cue_active
+    assert clock.monotonic() < BUILD_CUE_HOLD_S
+
+
+def test_build_cue_second_press_cancels_and_the_hold_times_out():
+    from livereact.core.metronome import BUILD_CUE_HOLD_S
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.0
+    m._derive_bucket(clock.monotonic())
+    m.cue_build()
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == EnergyBucket.BUILD
+    m.cue_build()  # cancel
+    assert not m.build_cue_active
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed == EnergyBucket.BREAK
+    m.cue_build()
+    m._derive_bucket(clock.monotonic())
+    clock.advance(BUILD_CUE_HOLD_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert not m.build_cue_active  # timed out: the energy classifier is back in charge
+    clock.advance(EXIT_CONFIRM_DWELL_S + PER_STATE_DWELL_S[EnergyBucket.BUILD] + 0.5)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BREAK

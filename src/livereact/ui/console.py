@@ -231,6 +231,10 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.b_skip = QtWidgets.QPushButton("Skip scene (→)")
         self.b_tap = QtWidgets.QPushButton("Tap tempo (T)")
         self.b_burst = QtWidgets.QPushButton("Strobe burst (Space)")
+        # DJ build cue (2026-09-16, core/metronome.py's cue_build): BUILD now,
+        # held until the drop lands (or 32 bars, or a second press cancels).
+        self.b_cue = QtWidgets.QPushButton("Cue build (C)")
+        self.l_cue = QtWidgets.QLabel("")
         # docs/14 §2: distinguishes the system's auto-blackout (no music detected)
         # from the operator's manual toggle above — they're independent triggers,
         # so the manual button's own checked-state won't reflect the auto one.
@@ -238,7 +242,9 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         bl.addWidget(self.b_black, 0, 0); bl.addWidget(self.b_freeze, 0, 1)
         bl.addWidget(self.b_skip, 1, 0); bl.addWidget(self.b_tap, 1, 1)
         bl.addWidget(self.b_burst, 2, 0, 1, 2)
-        bl.addWidget(self.l_auto_blackout, 3, 0, 1, 2)
+        bl.addWidget(self.b_cue, 3, 0, 1, 2)
+        bl.addWidget(self.l_cue, 4, 0, 1, 2)
+        bl.addWidget(self.l_auto_blackout, 5, 0, 1, 2)
         v.addWidget(btns)
         v.addStretch(1)
 
@@ -247,6 +253,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.b_skip.clicked.connect(self.app.phrase_engine.skip)
         self.b_tap.clicked.connect(self._do_tap)
         self.b_burst.clicked.connect(self._strobe_burst)
+        self.b_cue.clicked.connect(self.app.metronome.cue_build)
         return w
 
     def _install_shortcuts(self) -> None:
@@ -259,6 +266,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         sc("T", self._do_tap)
         sc("S", self.cb_synth.toggle)
         sc("L", self.cb_laser.toggle)
+        sc("C", self.app.metronome.cue_build)
         sc(QtCore.Qt.Key.Key_Space, self._strobe_burst)
 
     # ------------------------------------------------------------------ actions
@@ -322,6 +330,12 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             self.l_laser_flash.setStyleSheet("")
         else:
             self.l_laser_flash.setText("")
+
+        if self.app.metronome.build_cue_active:
+            self.l_cue.setText("● BUILD CUED — held until the drop lands (C again cancels)")
+            self.l_cue.setStyleSheet(_DOT_OK)
+        else:
+            self.l_cue.setText("")
 
         if self.app.reactive_engine.synth_sync_active:
             self.l_synth.setText("● SYNTH SYNC — wash follows the mids, strobes paused")

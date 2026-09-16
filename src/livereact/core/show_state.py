@@ -114,6 +114,9 @@ class ShowSnapshot:
     # song-structure signal here, see LIGHTING_BIBLE.md §9.9) -- just the
     # earliest bar the sound itself supports. None until the first drop.
     drop_start_bar: int | None = None
+    # True while the DJ's build cue is holding BUILD (core/metronome.py
+    # cue_build, 2026-09-16) -- for the recorder/console, no engine reads it.
+    build_cue: bool = False
     # True while the classifier has a DROP candidate under confirmation
     # (core/metronome.py's _derive_bucket: the smoothed level has crossed
     # the DROP threshold and the FAST_ENTRY_DWELL_S clock is running). The

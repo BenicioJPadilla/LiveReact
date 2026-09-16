@@ -155,6 +155,7 @@ class SessionRecorder(threading.Thread):
             # inferred from the par dimmer toggling. Recorded directly now.
             "drop_hit_intensity": round(snap.drop_hit_intensity, 4),
             "drop_pending": snap.drop_pending,
+            "build_cue": snap.build_cue,                    # core/metronome.py cue_build: DJ-held BUILD
             "audio_fresh": snap.audio_fresh,
             "band_low": round(snap.audio_band_low_abs, 4),   # the laser / synth / roll
             "band_mid": round(snap.audio_band_mid_abs, 4),   # detector inputs, so a
