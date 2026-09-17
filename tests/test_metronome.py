@@ -1209,3 +1209,26 @@ def test_a_warm_range_is_handed_to_the_callback_periodically():
     _pump_audio(m, clock, rms=0.3, seconds=RANGE_PERSIST_INTERVAL_S + 15.0)
     assert len(got) >= 1
     assert got[-1][1] == pytest.approx(0.3, abs=0.02)
+
+
+def test_a_lone_kick_that_outlives_the_peak_holds_does_not_commit_but_two_kicks_do():
+    """Run 9 (2026-09-17, 198.0 s): one drop-level kick 15 s before the real
+    drop committed a DROP because the 0.3 s low peak-hold and 0.6 s inst
+    peak-hold kept 'hit' true through the one-beat confirmation. The hit
+    must be a pattern: a second distinct kick (raw low band back over the
+    ratio after falling under it), which a 4/4 drop supplies within the
+    same beat."""
+    from livereact.core.metronome import DROP_HIT_CONFIRM_S
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    _feed(m, clock, low=18.0, inst=0.95, seconds=0.15)   # one kick: raw low up for 150 ms
+    _feed(m, clock, low=1.5, inst=0.95, seconds=0.6)     # raw low gone; peak-holds still say hit
+    assert m._base_committed == EnergyBucket.BUILD
+    clock2 = FakeClock()
+    m2 = _build_with_kickless_bars(clock2)
+    _feed(m2, clock2, low=18.0, inst=0.95, seconds=0.15)  # kick 1
+    _feed(m2, clock2, low=1.5, inst=0.95, seconds=0.30)   # between kicks
+    _feed(m2, clock2, low=18.0, inst=0.95, seconds=0.15)  # kick 2, one beat after kick 1
+    _feed(m2, clock2, low=1.5, inst=0.95, seconds=0.10)
+    assert m2._base_committed == EnergyBucket.DROP
+    assert m2.drop_start_bar is not None

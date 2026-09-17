@@ -336,6 +336,19 @@ DROP_HIT_LOW_FLOOR = 1.0          # abs low-band units; below this a build is ki
 DROP_HIT_LOW_TAU_S = 2.0          # rolling level of the low band, frozen once a hit is under confirmation
 DROP_HIT_LOW_HOLD_S = 0.3         # peak-hold on the low band: bridges the dip between two kicks, not a whole beat
 DROP_HIT_CONFIRM_S = 60.0 / NOMINAL_BPM  # one beat: the hit must be seen again a beat after it was first seen
+DROP_HIT_MIN_KICKS = 2                 # the hit must be a PATTERN: two distinct kicks
+                                       # (rising edges of the raw low band over the
+                                       # ratio) or one held DROP_HIT_SUSTAIN_S. Run 9
+                                       # (2026-09-17, recordings/session-20260917-
+                                       # 152218 at 198.0 s): ONE kick, 15 s before the
+                                       # real drop, committed a DROP -- the 0.3 s low
+                                       # peak-hold and the 0.6 s inst peak-hold both
+                                       # outlast the one-beat confirmation, so a lone
+                                       # hit "re-saw" itself. A 4/4 drop's second kick
+                                       # lands within the same beat, so a real drop
+                                       # still commits at +1 beat.
+DROP_HIT_SUSTAIN_S = 0.4               # a raw low band held over the ratio this long
+                                       # counts as the second kick (an 808/bass drop)
 DROP_HIT_GAP_S = 0.6              # a hit that hasn't been re-seen for this long was a one-shot, not the drop
 CUT_EXIT_CONFIRM_S = 2.0 * SECONDS_PER_BAR       # ~3.75s: a BREAK-range reading that
                                                  # persists this long mid-DROP is a
@@ -515,6 +528,10 @@ class Metronome(threading.Thread):
         self._hit_last_seen: float | None = None
         self._hit_bar: int | None = None
         self._hit_ref = 0.0
+        self._hit_kicks = 0                 # distinct kicks seen since _hit_since (DROP_HIT_MIN_KICKS)
+        self._kick_prev_above = False
+        self._kick_above_since: float | None = None
+        self._kick_sustain_credited = False
         self._pending_drop_release = False  # Phase 3: confirmed DROP, waiting for the next downbeat
         self.transition_likely = False  # Phase 3 heuristic, see TYPICAL_EXTENDED_PEAK_S above
 
@@ -970,6 +987,19 @@ class Metronome(threading.Thread):
             hit = (peak is not None
                    and bucket_for_energy_with_hysteresis(peak, self._base_committed) == EnergyBucket.DROP
                    and low_peak >= DROP_HIT_LOW_RATIO * ref)
+            # Count distinct kicks on the RAW low band (not the peak-hold):
+            # a rising edge over the ratio, or one level held DROP_HIT_SUSTAIN_S.
+            low_now = self._low_recent[-1][1] if self._low_recent else 0.0
+            above = low_now >= DROP_HIT_LOW_RATIO * ref
+            if above and not self._kick_prev_above:
+                self._hit_kicks += 1
+                self._kick_above_since = now
+                self._kick_sustain_credited = False
+            elif (above and not self._kick_sustain_credited and self._kick_above_since is not None
+                  and now - self._kick_above_since >= DROP_HIT_SUSTAIN_S):
+                self._hit_kicks += 1
+                self._kick_sustain_credited = True
+            self._kick_prev_above = above
             if self._hit_since is not None and now - self._hit_last_seen > DROP_HIT_GAP_S:
                 self._hit_since = None  # a one-shot: never re-seen
             if not hit:
@@ -978,7 +1008,11 @@ class Metronome(threading.Thread):
                 self._hit_since = self._hit_last_seen = now
                 self._hit_bar = self._bar
                 self._hit_ref = ref
-            elif now - self._hit_since < DROP_HIT_CONFIRM_S:
+                self._hit_kicks = 1  # this sighting is the first kick
+                self._kick_prev_above = above
+                self._kick_above_since = now if above else None
+                self._kick_sustain_credited = False
+            elif now - self._hit_since < DROP_HIT_CONFIRM_S or self._hit_kicks < DROP_HIT_MIN_KICKS:
                 self._hit_last_seen = now
             else:
                 self._hit_since = None
