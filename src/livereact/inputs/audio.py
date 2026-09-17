@@ -40,6 +40,7 @@ wired in here (tools/simulations/audio_pipeline_sim_v2.py):
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 
@@ -76,6 +77,18 @@ ENERGY_GAIN = 5.0          # RECALIBRATED ON HARDWARE (2026-09-01): the 2026-08-
                            # depends on the mixer's actual gain staging, not just the track, so
                            # this will likely need re-checking again at a different venue/setup
                            # — see tools/simulations or docs/14 §5 for the raw-RMS check script.
+                           # LIVEREACT_AUDIO_GAIN env var overrides it for one launch (2026-09-16:
+                           # the MacBook mic fallback measured p90 raw RMS 0.43 -> gain 1.4).
+ENERGY_GAIN = float(os.environ.get("LIVEREACT_AUDIO_GAIN", ENERGY_GAIN))
+AGC_CEILING = 0.9          # Automatic gain control (2026-09-16 house party, mic fallback): when
+AGC_ATTACK_S = 0.5         # the DJ turns the room up, a fixed gain pins `energy` at 1.0 and the
+AGC_RELEASE_S = 20.0       # strobe/drop logic loses the song. A peak tracker on the smoothed RMS
+                           # (0.5 s attack so one transient can't grab it, 20 s release so it
+                           # recovers after the volume comes back down) trims the effective gain
+                           # so the running peak lands at AGC_CEILING. It only ever REDUCES the
+                           # gain below ENERGY_GAIN -- never boosts -- so silence detection and
+                           # quiet-venue behaviour are exactly as before, and at the XDJ's normal
+                           # line level it's a no-op.
 
 
 class AudioInputError(RuntimeError):
@@ -105,6 +118,10 @@ class AudioAnalyzer(InputSource):
         self._high_mask = None
         self._window = None
         self._rms_smooth = 0.0
+        self._peak_hold = 0.0      # AGC: slow peak of _rms_smooth
+        self._gain_eff = ENERGY_GAIN
+        self._agc_last_log = 0.0
+        self._agc_attack, self._agc_release = self._agc_coeffs()
 
     @property
     def name(self) -> str:
@@ -127,7 +144,12 @@ class AudioAnalyzer(InputSource):
         self._setup_bands(np)
 
         self._ring = queue.SimpleQueue()
-        channel_idx = [c - 1 for c in CHANNELS]  # 0-based, for indexing captured frames
+        # An explicit --audio-device with fewer inputs than the XDJ's (5, 6) --
+        # e.g. the laptop mic as a fallback when the XDJ drops off USB
+        # (2026-09-16 house party) -- uses every channel it has instead.
+        n_in = int(info["max_input_channels"])
+        channels = CHANNELS if n_in >= max(CHANNELS) else tuple(range(1, n_in + 1))
+        channel_idx = [c - 1 for c in channels]  # 0-based, for indexing captured frames
 
         def _callback(indata, frames, time_info, status):
             # REAL-TIME SAFETY: do the absolute minimum here — see module docstring.
@@ -138,7 +160,7 @@ class AudioAnalyzer(InputSource):
 
         self._stream = sd.InputStream(
             device=device,
-            channels=max(CHANNELS),
+            channels=max(channels),
             samplerate=self._sr,
             blocksize=BLOCK,
             dtype="float32",
@@ -148,7 +170,7 @@ class AudioAnalyzer(InputSource):
         self._stream.start()
         log.info(
             "Audio analyzer listening on device %r (%d Hz, channels %s, stream latency %.0fms)",
-            device, self._sr, CHANNELS, self._stream.latency * 1000,
+            device, self._sr, channels, self._stream.latency * 1000,
         )
 
         self._thread = threading.Thread(target=self._run, name="audio-analyzer", daemon=False)
@@ -197,6 +219,7 @@ class AudioAnalyzer(InputSource):
         # lost in recordings/session-20260915-211607).
         attack = float(1 - np.exp(-dt_block / ATTACK_S))
         release = float(1 - np.exp(-dt_block / RELEASE_S))
+        self._agc_attack, self._agc_release = self._agc_coeffs()  # real sample rate now known
         while not self.stop_event.is_set():
             try:
                 block = self._ring.get(timeout=0.5)
@@ -207,6 +230,12 @@ class AudioAnalyzer(InputSource):
             except Exception:  # noqa: BLE001 - never let the analysis thread die on one bad block
                 log.exception("Audio analysis failed on one block")
 
+    def _agc_coeffs(self) -> tuple[float, float]:
+        import math
+        dt_block = BLOCK / self._sr
+        return (float(1 - math.exp(-dt_block / AGC_ATTACK_S)),
+                float(1 - math.exp(-dt_block / AGC_RELEASE_S)))
+
     def _analyze_block(self, block, attack: float, release: float, np) -> None:
         if len(block) != BLOCK:
             return  # a partial block at stream start/stop; skip rather than crash
@@ -214,6 +243,18 @@ class AudioAnalyzer(InputSource):
         rms_raw = float(np.sqrt(np.mean(block ** 2)))
         coeff = attack if rms_raw > self._rms_smooth else release
         self._rms_smooth += coeff * (rms_raw - self._rms_smooth)
+
+        # AGC: trim the gain so the running peak sits at the ceiling (see AGC_* above).
+        pk = self._agc_attack if self._rms_smooth > self._peak_hold else self._agc_release
+        self._peak_hold += pk * (self._rms_smooth - self._peak_hold)
+        if self._peak_hold * ENERGY_GAIN > AGC_CEILING:
+            self._gain_eff = AGC_CEILING / self._peak_hold
+        else:
+            self._gain_eff = ENERGY_GAIN
+        if self._gain_eff < ENERGY_GAIN * 0.8 and now - self._agc_last_log > 10.0:
+            log.info("AGC trimming audio gain %.2f -> %.2f (raw peak %.3f)",
+                     ENERGY_GAIN, self._gain_eff, self._peak_hold)
+            self._agc_last_log = now
 
         spec = np.abs(np.fft.rfft(block * self._window))
         m_low = float(spec[self._low_mask].mean())
@@ -223,7 +264,7 @@ class AudioAnalyzer(InputSource):
 
         self.queue.put(AudioLevelMessage(
             timestamp=now,
-            rms=float(min(1.0, self._rms_smooth * ENERGY_GAIN)),
+            rms=float(min(1.0, self._rms_smooth * self._gain_eff)),
             band_low=m_low / total,
             band_mid=m_mid / total,
             band_high=m_high / total,

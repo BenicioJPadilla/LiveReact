@@ -1,0 +1,7 @@
+{
+  "name": "Josh's rig, wash bar only (2026-09-16 house party)",
+  "description": "Just the OK-103 wash bar at 69 (6CH dimmer/strobe/R/G/B/W, verified on hardware 2026-08-31). Laser, par and moving head left at home for the 2026-09-16 house party. Same address as josh_rig.json so no re-patching; switch back to josh_rig.json for the full rig.",
+  "slots": [
+    {"slot_id": "bar", "fixture_type": "ok103_wash_bar", "dmx_address": 69, "label": "Wash Bar", "role": "wash", "side": "right"}
+  ]
+}
