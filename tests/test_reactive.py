@@ -441,17 +441,20 @@ def test_the_roll_accent_runs_through_the_candidate_and_ends_on_the_commit():
     assert eng.snare_roll_active
     eng.tick(_build_snap(0.45, drop_candidate=True), rig)  # the candidate is up, the roll is still going
     assert eng.strobe_level > 0 and eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
-    eng.tick(_build_snap(0.45, bucket="drop"), rig)         # the commit
-    assert not eng.snare_roll_active and eng.strobe_level == 0.0
+    _run_build(eng, rig, clock, high=0.10, seconds=0.4, bucket="drop")  # the commit; the roll ends as the level falls
+    assert not eng.snare_roll_active
 
 
-def test_the_same_rise_in_a_drop_is_not_an_accent():
+def test_a_roll_in_a_drop_is_an_accent_too():
+    """Josh, 2026-09-17: no bucket may veto the accent (the classifier gets
+    sections wrong). In a drop the roll's max-rate strobe wins the merge."""
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    _run_build(eng, rig, clock, high=0.12, seconds=3.0, bucket="drop", energy_norm=0.9)
-    _run_build(eng, rig, clock, high=0.45, seconds=1.5, bucket="drop", energy_norm=0.9)
-    assert not eng.snare_roll_active
+    _run_build(eng, rig, clock, high=0.4, seconds=3.0, bucket="drop", energy_norm=0.9, audio_high_onset_rate=4.1)
+    _run_build(eng, rig, clock, high=0.4, seconds=1.5, bucket="drop", energy_norm=0.9, audio_high_onset_rate=8.5)
+    assert eng.snare_roll_active
+    assert eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
 
 
 def test_a_roll_in_a_break_is_an_accent_too():

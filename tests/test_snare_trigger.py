@@ -35,7 +35,7 @@ def test_the_recorded_roll_shape_arms_and_holds_into_the_drop():
     assert _run(det, clock, 0.40, 1.2) is True     # arms once the rise has held ARM_S
     assert _run(det, clock, 0.16, 0.2) is True     # a dip inside the roll doesn't drop it (0.16 > 1.3 x 0.12)
     assert _run(det, clock, 0.45, 2.0) is True     # still rolling
-    assert det.update(_snap(0.45, bucket="drop")) is False  # the hit lands: BUILD-only
+    assert det.update(_snap(0.45, bucket="drop")) is True   # the hit lands: the roll holds until the level falls
 
 
 def test_cold_start_step_does_not_arm():
@@ -61,15 +61,14 @@ def test_gives_up_after_max_hold():
     assert _run(det, clock, 0.40, MAX_HOLD_S) is False  # a texture, not an accent
 
 
-def test_never_active_in_a_drop_but_a_break_counts():
-    """2026-09-17 (run 7): a quiet build reads BREAK to the loudness
-    classifier, so BREAK is a legal place for a roll; DROP/PEAK never."""
-    clock = FakeClock()
-    det = RollRiseDetector(clock)
-    _run(det, clock, 0.12, 6.0, bucket="break")
-    assert _run(det, clock, 0.40, 1.2, bucket="break") is True
-    assert _run(det, clock, 0.40, 1.0, bucket="drop") is False
-    assert _run(det, clock, 0.40, 3.0, bucket="peak") is False
+def test_a_roll_is_recognised_in_any_bucket():
+    """Josh, 2026-09-17: the classifier gets sections wrong, and a wrong
+    section must never veto the accent. A roll in BREAK, DROP or PEAK counts."""
+    for bucket in ("break", "drop", "peak"):
+        clock = FakeClock()
+        det = RollRiseDetector(clock)
+        _run(det, clock, 0.12, 6.0, bucket=bucket)
+        assert _run(det, clock, 0.40, 1.2, bucket=bucket) is True, bucket
 
 
 def test_signal_loss_resets():
@@ -145,9 +144,8 @@ def test_density_path_ignores_the_section_settle_and_keeps_its_baseline_across_a
     det = RollRiseDetector(clock)
     _drun(det, clock, 0.4, 4.3, 6.0, bucket="break")   # hats
     _drun(det, clock, 0.4, 8.0, 0.5, bucket="drop")    # the roll starts while the classifier says DROP
-    assert _drun(det, clock, 0.4, 8.0, 1.2, bucket="build") is True  # C press -> BUILD: caught within ARM_S
+    assert _drun(det, clock, 0.4, 8.0, 0.6, bucket="build") is True  # C press -> BUILD: no re-baseline, no settle
     assert det.rate_base < 5.5
-    assert _drun(det, clock, 0.4, 9.0, 2.0, bucket="drop") is False  # never in a drop
 
 
 def test_a_level_roll_still_arms_with_the_rate_at_zero():

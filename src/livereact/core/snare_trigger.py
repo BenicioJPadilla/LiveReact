@@ -78,19 +78,22 @@ ROLL_MIN_RATE = 7.0        # onsets/s: 8th hats are ~4.3/s at 128 BPM (4.7 at 14
 ROLL_DENSITY_RATIO = 1.4   # rate vs the build's baseline rate (2x for 8ths -> 16ths; ~1.4x at the cap)
 ROLL_OFF_RATIO = 1.2       # against the FROZEN baseline rate
 ROLL_OFF_MIN_RATE = 4.5    # never hold on a rate under this
-# Where a roll may be recognised. The Bible tags the accent [BUILD]; run 7
-# (2026-09-17) showed why BREAK must count too: a quiet UKG build (raw 0.10
-# against a 0.09 set floor) read BREAK to the loudness classifier, and the
-# roll -- clean in the data, onset rate 8/s vs 4 for 5.6 s -- was gated out.
-# A 16th-note roll IS a build wherever the loudness classifier thinks it is;
-# DROP/PEAK stay excluded (the accent must never fight the drop look).
-ROLL_BUCKETS = ("build", "break", "outro")
+# NO bucket gate (Josh, 2026-09-17, after runs 7 and 8). The Bible tags the
+# accent [BUILD]; run 7 showed a quiet UKG build reading BREAK to the
+# loudness classifier, run 8 a false DROP sitting on the build -- and each
+# time a clean roll in the data (onset rate 8/s vs 4 for 5 s) was gated out
+# by a bucket the classifier had wrong. His call: "the detector should fire
+# at any point in the song... if the scene is wrong, it's not going to
+# detect a snare roll." The classifier's mistakes must not veto the accent.
+# What survives of the old gate: a bucket CHANGE still re-baselines the
+# LEVEL path (a section change is itself a level step) and holds it for
+# BUILD_SETTLE_S; the density path never waits for a section.
 
 
 class RollRiseDetector:
     """Stateful; call ``update(snap)`` once per tick. Returns True while a
     roll-like rise in the high band -- in level or in onset density -- is in
-    progress during a BUILD."""
+    progress, in any bucket."""
 
     def __init__(self, clock: Clock, on_ratio: float = ON_RATIO, off_ratio: float = OFF_RATIO,
                  max_hold_s: float = MAX_HOLD_S, arm_s: float = ARM_S,
@@ -114,7 +117,8 @@ class RollRiseDetector:
         self._rate_frozen = 0.0
         self._last_t: float | None = None
         self._fresh_since: float | None = None
-        self._build_since: float | None = None   # when the current BUILD began
+        self._build_since: float | None = None   # when the current section (bucket) began
+        self._bucket: str | None = None
         self._rise_since: float | None = None    # when a rise first cleared its threshold (arming)
         self._since: float | None = None
         self.active = False
@@ -127,6 +131,7 @@ class RollRiseDetector:
         self._fast = self._slow = self._frozen = 0.0
         self._rate_slow = self._rate_frozen = 0.0
         self._fresh_since = self._build_since = self._rise_since = self._since = None
+        self._bucket = None
         self.active = False
         self.ratio = self.rate = self.rate_base = 0.0
         self.path = ""
@@ -153,20 +158,15 @@ class RollRiseDetector:
         slow_coeff = 1 - math.exp(-dt / SLOW_TAU_S)
         rate_coeff = 1 - math.exp(-dt / RATE_SLOW_TAU_S)
 
-        if snap.bucket not in ROLL_BUCKETS:
-            # Keep the baselines tracking in a drop; never active there.
-            self._slow += slow_coeff * (raw - self._slow)
-            self._rate_slow += rate_coeff * (rate - self._rate_slow)
-            self.active = False
-            self._build_since = self._rise_since = self._since = None
-            self.ratio = self._fast / max(self._slow, LEVEL_FLOOR)
-            self.rate_base = self._rate_slow
-            self.path = ""
-            return False
+        if snap.bucket != self._bucket:
+            # A section change (any bucket move): the level path re-baselines
+            # on the new section and settles; nothing else resets.
+            self._bucket = snap.bucket
+            self._build_since = None
 
         if self._build_since is None:
             self._build_since = now
-            self._slow = self._fast  # the section's own level is the reference, not the drop's
+            self._slow = self._fast  # the section's own level is the reference, not the last one's
             # NOT the rate baseline (run 8, 2026-09-17, recordings/session-
             # 20260917-151218): Josh pressed C in the middle of a roll, the
             # section change snapped the rate baseline to the roll's own
