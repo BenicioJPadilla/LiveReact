@@ -167,7 +167,11 @@ class RollRiseDetector:
         if self._build_since is None:
             self._build_since = now
             self._slow = self._fast  # the section's own level is the reference, not the drop's
-            self._rate_slow = rate   # same for its hat density
+            # NOT the rate baseline (run 8, 2026-09-17, recordings/session-
+            # 20260917-151218): Josh pressed C in the middle of a roll, the
+            # section change snapped the rate baseline to the roll's own
+            # 7-8/s, and the roll became invisible. Hat density has no
+            # section-change step the way loudness does; it just tracks.
         if not self.active:
             if self._rise_since is None:
                 # Not arming: both baselines track the build.
@@ -176,11 +180,14 @@ class RollRiseDetector:
                 base = max(self._slow, LEVEL_FLOOR)
                 self.ratio = self._fast / base
                 self.rate_base = self._rate_slow
-                settled = (now - self._fresh_since) >= WARMUP_S and (now - self._build_since) >= self.build_settle_s
-                level_on = self._fast >= self.on_ratio * base
-                dense_on = rate >= max(self.min_rate, self.density_ratio * self._rate_slow)
+                warm = (now - self._fresh_since) >= WARMUP_S
+                settled = warm and (now - self._build_since) >= self.build_settle_s
+                # The settle guards the LEVEL path's section-change step; the
+                # density path only needs the warm-up (same run 8 lesson).
+                level_on = settled and self._fast >= self.on_ratio * base
+                dense_on = warm and rate >= max(self.min_rate, self.density_ratio * self._rate_slow)
                 self.path = self._path(level_on, dense_on)
-                if settled and (level_on or dense_on):
+                if level_on or dense_on:
                     self._rise_since = now
                     self._frozen = base  # freeze here: the rise is judged against the level BEFORE it
                     self._rate_frozen = self._rate_slow

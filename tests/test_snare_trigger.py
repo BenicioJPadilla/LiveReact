@@ -137,12 +137,17 @@ def test_density_roll_releases_when_the_rate_falls_back():
     assert _drun(det, clock, 0.4, 4.3, 2.0) is False   # and stays off
 
 
-def test_density_path_respects_the_build_settle_and_bucket_gate():
+def test_density_path_ignores_the_section_settle_and_keeps_its_baseline_across_a_c_press():
+    """Run 8 (2026-09-17): C pressed mid-roll. The rate baseline must NOT snap
+    to the roll's own rate on the section change, and the density path must
+    not wait out BUILD_SETTLE_S (that guard is for the level path's step)."""
     clock = FakeClock()
     det = RollRiseDetector(clock)
-    _drun(det, clock, 0.4, 4.3, 4.0, bucket="drop")
-    assert _drun(det, clock, 0.4, 9.0, 1.0) is False           # inside BUILD_SETTLE_S (1.5 s)
-    assert _drun(det, clock, 0.4, 9.0, 2.0, bucket="drop") is False
+    _drun(det, clock, 0.4, 4.3, 6.0, bucket="break")   # hats
+    _drun(det, clock, 0.4, 8.0, 0.5, bucket="drop")    # the roll starts while the classifier says DROP
+    assert _drun(det, clock, 0.4, 8.0, 1.2, bucket="build") is True  # C press -> BUILD: caught within ARM_S
+    assert det.rate_base < 5.5
+    assert _drun(det, clock, 0.4, 9.0, 2.0, bucket="drop") is False  # never in a drop
 
 
 def test_a_level_roll_still_arms_with_the_rate_at_zero():

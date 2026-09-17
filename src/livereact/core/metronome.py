@@ -171,6 +171,16 @@ ENERGY_NORM_MIN_SPAN = 0.20          # floor on (ceiling - floor) -- avoids the
                                        # and is unaffected). Raw-energy units, so
                                        # tied to inputs/audio.py's ENERGY_GAIN
                                        # calibration like every threshold here.
+ENERGY_NORM_MIN_SPAN_FLOOR = 0.12     # ...and never under this, whatever the ceiling:
+                                       # run 8 (2026-09-17, recordings/session-20260917-
+                                       # 151218) -- a cued BUILD 70 s into a quiet set,
+                                       # ceiling ~0.10, so 0.6 x ceiling let a 0.13 kick
+                                       # read 1.0 and the hit lead committed a DROP on
+                                       # it (Josh: "it was on an 8-bar drop"). At 0.12 a
+                                       # hit must sit ~0.12 above the set's floor: run
+                                       # 7/8's real drops (0.22-0.27 over 0.05-0.09) do,
+                                       # that kick (0.13) and the 2026-09-15 intro blip
+                                       # (0.20 over 0.10) don't.
 ENERGY_NORM_MIN_SPAN_OF_CEILING = 0.6  # ...but never more than this fraction of the
                                        # ceiling itself: run 7 (2026-09-17, recordings/
                                        # session-20260917-145419) came in at about half
@@ -776,7 +786,8 @@ class Metronome(threading.Thread):
             self._energy_norm_inst = 0.0
             return
 
-        span = max(ceiling - floor, min(ENERGY_NORM_MIN_SPAN, ENERGY_NORM_MIN_SPAN_OF_CEILING * ceiling))
+        span = max(ceiling - floor,
+                   max(ENERGY_NORM_MIN_SPAN_FLOOR, min(ENERGY_NORM_MIN_SPAN, ENERGY_NORM_MIN_SPAN_OF_CEILING * ceiling)))
         self._energy_norm = max(0.0, min(1.0, (self._energy_smooth - floor) / span))
         # The same rescaling on the UNSMOOTHED per-tick energy -- "is the
         # sound still there right now" -- used only to confirm an upward
