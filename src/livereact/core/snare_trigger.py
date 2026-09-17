@@ -53,7 +53,7 @@ from .show_state import ShowSnapshot
 
 FAST_TAU_S = 0.10      # the "now" level: a couple of roll hits
 SLOW_TAU_S = 3.0       # the "before" level: a bar or two of the build so far
-ON_RATIO = 2.0         # measured 2026-09-15: pre-roll 0.12 -> roll 0.3-0.5 (2.5-4x)
+ON_RATIO = 2.5         # measured 2026-09-15: pre-roll 0.12 -> roll 0.3-0.5 (2.5-4x); 2.0 -> 2.5 on run 7 (see ROLL_MIN_RATE)
 OFF_RATIO = 1.3        # against the FROZEN baseline, so the hold survives the roll's own dips (min 0.16 vs 0.12 base)
 LEVEL_FLOOR = 0.05     # below this the high band is noise; never arm off a ratio against it
 MAX_HOLD_S = 8.0       # a "roll" longer than this is a texture, not an accent
@@ -66,13 +66,25 @@ WARMUP_S = 1.0         # the fast/slow levels start at 0 -- don't arm off the co
 # for BUILD_SETTLE_S; and the rise must HOLD for ARM_S before it counts --
 # a 16th-note roll into a drop lasts bars, a stray hat lasts a tick.
 BUILD_SETTLE_S = 1.5
-ARM_S = 0.4
+ARM_S = 1.0            # 0.4 -> 1.0 (2026-09-17, run 7): the real rolls held 5.6 and 5.9 s; the
+                       # hat blips that also cleared the thresholds lasted 0.2-0.9 s.
 # Density path (see the module docstring's second half).
 RATE_SLOW_TAU_S = 3.0      # baseline onset rate: the build's hats so far
-ROLL_MIN_RATE = 6.0        # onsets/s: 8th hats are ~4.3/s at 128 BPM (4.7 at 140), 16ths ~8.5 (9.3)
+ROLL_MIN_RATE = 7.0        # onsets/s: 8th hats are ~4.3/s at 128 BPM (4.7 at 140), 16ths ~8.5 (9.3).
+                           # 6 -> 7 on run 7 (2026-09-17, recordings/session-20260917-145419):
+                           # the two real rolls read 8 and 7 against hats at 4.1; the stray
+                           # blips read 5-6. With ARM_S 1.0 and ON_RATIO 2.5 that capture
+                           # gives 2/2 rolls and one 0.3 s stray (replayed offline).
 ROLL_DENSITY_RATIO = 1.4   # rate vs the build's baseline rate (2x for 8ths -> 16ths; ~1.4x at the cap)
 ROLL_OFF_RATIO = 1.2       # against the FROZEN baseline rate
 ROLL_OFF_MIN_RATE = 4.5    # never hold on a rate under this
+# Where a roll may be recognised. The Bible tags the accent [BUILD]; run 7
+# (2026-09-17) showed why BREAK must count too: a quiet UKG build (raw 0.10
+# against a 0.09 set floor) read BREAK to the loudness classifier, and the
+# roll -- clean in the data, onset rate 8/s vs 4 for 5.6 s -- was gated out.
+# A 16th-note roll IS a build wherever the loudness classifier thinks it is;
+# DROP/PEAK stay excluded (the accent must never fight the drop look).
+ROLL_BUCKETS = ("build", "break", "outro")
 
 
 class RollRiseDetector:
@@ -141,8 +153,8 @@ class RollRiseDetector:
         slow_coeff = 1 - math.exp(-dt / SLOW_TAU_S)
         rate_coeff = 1 - math.exp(-dt / RATE_SLOW_TAU_S)
 
-        if snap.bucket != "build":
-            # Keep the baselines tracking outside a build; never active.
+        if snap.bucket not in ROLL_BUCKETS:
+            # Keep the baselines tracking in a drop; never active there.
             self._slow += slow_coeff * (raw - self._slow)
             self._rate_slow += rate_coeff * (rate - self._rate_slow)
             self.active = False
@@ -154,7 +166,7 @@ class RollRiseDetector:
 
         if self._build_since is None:
             self._build_since = now
-            self._slow = self._fast  # the build's own level is the reference, not the break's
+            self._slow = self._fast  # the section's own level is the reference, not the drop's
             self._rate_slow = rate   # same for its hat density
         if not self.active:
             if self._rise_since is None:

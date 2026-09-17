@@ -171,6 +171,19 @@ ENERGY_NORM_MIN_SPAN = 0.20          # floor on (ceiling - floor) -- avoids the
                                        # and is unaffected). Raw-energy units, so
                                        # tied to inputs/audio.py's ENERGY_GAIN
                                        # calibration like every threshold here.
+ENERGY_NORM_MIN_SPAN_OF_CEILING = 0.6  # ...but never more than this fraction of the
+                                       # ceiling itself: run 7 (2026-09-17, recordings/
+                                       # session-20260917-145419) came in at about half
+                                       # the level every earlier session had (raw drop
+                                       # 0.24 vs ~0.6), so the whole set's real range
+                                       # (0.09-0.23) sat under the 0.20 floor and the
+                                       # drop could only reach 0.79 -- read as BUILD,
+                                       # build strobe ramping through the drop. In raw
+                                       # units the floor is a gain-staging assumption;
+                                       # scaling it with the ceiling keeps its intent
+                                       # (a flat window can't turn a blip into a drop)
+                                       # at any input level. On the ten captures
+                                       # replayed, only run 7's transitions change.
 ENERGY_NORM_MIN_CEILING = 0.05        # if nothing above this has happened
                                        # recently, the set is genuinely silent --
                                        # report 0.0 rather than let a tiny residual
@@ -754,7 +767,7 @@ class Metronome(threading.Thread):
             self._energy_norm_inst = 0.0
             return
 
-        span = max(ceiling - floor, ENERGY_NORM_MIN_SPAN)
+        span = max(ceiling - floor, min(ENERGY_NORM_MIN_SPAN, ENERGY_NORM_MIN_SPAN_OF_CEILING * ceiling))
         self._energy_norm = max(0.0, min(1.0, (self._energy_smooth - floor) / span))
         # The same rescaling on the UNSMOOTHED per-tick energy -- "is the
         # sound still there right now" -- used only to confirm an upward

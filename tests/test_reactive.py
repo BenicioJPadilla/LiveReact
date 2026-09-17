@@ -412,7 +412,7 @@ def test_a_roll_rise_in_a_build_pushes_the_strobe_to_max_and_the_flash_to_full()
     assert not eng.snare_roll_active
     assert eng.strobe_level < STROBE_MAX - 1e-6
     assert eng.strobe_flash_dmx < STROBE_ROLL_FLASH_DMX
-    _run_build(eng, rig, clock, high=0.45, seconds=1.0)   # the roll
+    _run_build(eng, rig, clock, high=0.45, seconds=1.5)   # the roll (ARM_S is 1.0 s)
     assert eng.snare_roll_active
     assert abs(eng.strobe_level - round(STROBE_MAX * 255) / 255) < 1e-6 or eng.strobe_level == STROBE_MAX
     assert eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
@@ -426,7 +426,7 @@ def test_a_density_roll_at_a_flat_level_pushes_the_strobe_to_max_too():
     eng = ReactiveLayerEngine(clock)
     _run_build(eng, rig, clock, high=0.4, seconds=3.0, audio_high_onset_rate=4.3)
     assert not eng.snare_roll_active
-    _run_build(eng, rig, clock, high=0.4, seconds=1.0, audio_high_onset_rate=8.5)
+    _run_build(eng, rig, clock, high=0.4, seconds=1.5, audio_high_onset_rate=8.5)
     assert eng.snare_roll_active
     assert eng.roll_path == "density"
     assert eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
@@ -437,7 +437,7 @@ def test_the_roll_accent_runs_through_the_candidate_and_ends_on_the_commit():
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
     _run_build(eng, rig, clock, high=0.12, seconds=3.0)
-    _run_build(eng, rig, clock, high=0.45, seconds=1.0)
+    _run_build(eng, rig, clock, high=0.45, seconds=1.5)
     assert eng.snare_roll_active
     eng.tick(_build_snap(0.45, drop_candidate=True), rig)  # the candidate is up, the roll is still going
     assert eng.strobe_level > 0 and eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
@@ -445,14 +445,24 @@ def test_the_roll_accent_runs_through_the_candidate_and_ends_on_the_commit():
     assert not eng.snare_roll_active and eng.strobe_level == 0.0
 
 
-def test_the_same_rise_outside_a_build_is_not_an_accent():
+def test_the_same_rise_in_a_drop_is_not_an_accent():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    _run_build(eng, rig, clock, high=0.12, seconds=3.0, bucket="break")
-    _run_build(eng, rig, clock, high=0.45, seconds=1.0, bucket="break")
+    _run_build(eng, rig, clock, high=0.12, seconds=3.0, bucket="drop", energy_norm=0.9)
+    _run_build(eng, rig, clock, high=0.45, seconds=1.5, bucket="drop", energy_norm=0.9)
     assert not eng.snare_roll_active
-    assert eng.strobe_level == 0.0
+
+
+def test_a_roll_in_a_break_is_an_accent_too():
+    """Run 7 (2026-09-17): the build read BREAK, the roll was gated out."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    _run_build(eng, rig, clock, high=0.4, seconds=3.0, bucket="break", energy_norm=0.1, audio_high_onset_rate=4.1)
+    _run_build(eng, rig, clock, high=0.4, seconds=1.5, bucket="break", energy_norm=0.1, audio_high_onset_rate=8.5)
+    assert eng.snare_roll_active
+    assert eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
 
 
 # --- bucket-driven wash/par model (LIGHTING_BIBLE.md §5/§9.1, 2026-09-08) ---
