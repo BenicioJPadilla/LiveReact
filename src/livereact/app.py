@@ -120,7 +120,8 @@ class App:
         if self.config.demo:
             self.manual.laser_enable = True
         self.phrase_engine = PhraseEngine(SceneCatalog(full=self.config.full_catalog))
-        self.reactive_engine = ReactiveLayerEngine(self.clock, manual=self.manual)  # manual: Synth Sync toggle
+        self.reactive_engine = ReactiveLayerEngine(self.clock, manual=self.manual,  # manual: Synth Sync toggle
+                                                   roll_sink=self.metronome.note_roll)  # a roll arms the drop
         self.laser_engine = LaserEngine(self.clock)
         # Merge is LTP-by-priority per channel kind (merge/merge.py), so list
         # order is cosmetic: Reactive (25) base, Phrase (50) look, Laser (60)

@@ -336,7 +336,32 @@ DROP_HIT_LOW_FLOOR = 1.0          # abs low-band units; below this a build is ki
 DROP_HIT_LOW_TAU_S = 2.0          # rolling level of the low band, frozen once a hit is under confirmation
 DROP_HIT_LOW_HOLD_S = 0.3         # peak-hold on the low band: bridges the dip between two kicks, not a whole beat
 DROP_HIT_CONFIRM_S = 60.0 / NOMINAL_BPM  # one beat: the hit must be seen again a beat after it was first seen
-DROP_HIT_MIN_KICKS = 2                 # the hit must be a PATTERN: two distinct kicks
+# ARMED DROPS (Josh, 2026-09-17, after runs 7-9): "if our strobing mechanism
+# can never fully detect a proper beat drop accurately, make the beat drop be
+# cued manually usually, and have the snare roll accent be another factor."
+# The loudness classifier gets the MOMENT of a drop right only on tracks
+# shaped the way it expects; on today's UKG it committed a false drop on one
+# kick and read a loud intro as the build. So:
+#   - D (arm_drop) or a snare roll (note_roll) ARMS the drop for
+#     DROP_ARM_HOLD_BARS; while armed, the FIRST drop-level kick (low band
+#     over DROP_HIT_LOW_RATIO x its rolling level) commits instantly.
+#   - unarmed, the loudness path still commits a DROP, but only after the
+#     smoothed level holds drop range for AUTO_DROP_CONFIRM_S (two bars) --
+#     a safety net that is late rather than wrong. The old one-beat hit
+#     lead and the RMS lead are gone with it.
+DROP_ARM_HOLD_BARS = 16.0              # the D key's window
+DROP_ARM_HOLD_S = DROP_ARM_HOLD_BARS * SECONDS_PER_BAR
+ROLL_ARM_HOLD_BARS = 4.0               # a roll's window: its drop lands within a bar or two
+ROLL_ARM_HOLD_S = ROLL_ARM_HOLD_BARS * SECONDS_PER_BAR
+ROLL_ARM_MIN_S = 1.5                   # a roll must have HELD this long before it arms --
+                                       # the detector's strays last 0.2-1 s, real rolls 4-6 s
+                                       # (replaying 12 captures: strays armed 8 false drops)
+ARMED_HIT_MIN_INST = 0.65              # and the sound RIGHT NOW must be at least upper-BUILD
+                                       # loud (instantaneous energy_norm peak) -- a lone kick
+                                       # in a quiet intro is not the drop even when armed
+AUTO_DROP_CONFIRM_S = 2.0 * SECONDS_PER_BAR
+DROP_HIT_MIN_KICKS = 2                 # (unarmed hit lead, retired 2026-09-17 -- see above; kept for the record)
+                                       # the hit must be a PATTERN: two distinct kicks
                                        # (rising edges of the raw low band over the
                                        # ratio) or one held DROP_HIT_SUSTAIN_S. Run 9
                                        # (2026-09-17, recordings/session-20260917-
@@ -528,10 +553,10 @@ class Metronome(threading.Thread):
         self._hit_last_seen: float | None = None
         self._hit_bar: int | None = None
         self._hit_ref = 0.0
-        self._hit_kicks = 0                 # distinct kicks seen since _hit_since (DROP_HIT_MIN_KICKS)
-        self._kick_prev_above = False
-        self._kick_above_since: float | None = None
-        self._kick_sustain_credited = False
+        self._drop_armed_until: float | None = None  # see DROP_ARM_HOLD_BARS: D key or a roll
+        self._drop_arm_source = ""                    # "dj" / "roll" while armed
+        self._roll_active = False                     # written by the reactive engine via note_roll
+        self._roll_since: float | None = None         # when the current roll began (ROLL_ARM_MIN_S)
         self._pending_drop_release = False  # Phase 3: confirmed DROP, waiting for the next downbeat
         self.transition_likely = False  # Phase 3 heuristic, see TYPICAL_EXTENDED_PEAK_S above
 
@@ -875,6 +900,39 @@ class Metronome(threading.Thread):
         self._build_cue_source = "dj"
         self.request_manual_bucket(EnergyBucket.BUILD)
 
+    @property
+    def drop_armed(self) -> bool:
+        return self._drop_armed_until is not None
+
+    @property
+    def drop_arm_source(self) -> str:
+        """"dj" / "roll" while armed, else "" (console)."""
+        return self._drop_arm_source if self.drop_armed else ""
+
+    def arm_drop(self) -> None:
+        """The DJ's "the drop is next" (D key). Toggle: arms the drop for
+        DROP_ARM_HOLD_BARS -- the next drop-level kick commits it instantly
+        -- and, if the lights aren't in a build yet, cues the build too. A
+        second press disarms (a roll-armed drop is upgraded, not cancelled).
+        Console-thread safe: plain attribute writes, like cue_build."""
+        now = self.clock.monotonic()
+        if self._drop_armed_until is not None and self._drop_arm_source == "dj":
+            self._drop_armed_until = None
+            self._drop_arm_source = ""
+            return
+        self._drop_armed_until = now + DROP_ARM_HOLD_S
+        self._drop_arm_source = "dj"
+        if self._base_committed != EnergyBucket.BUILD and self._build_cue_until is None:
+            self._build_cue_until = now + BUILD_CUE_HOLD_S
+            self._build_cue_source = "dj"
+            self.request_manual_bucket(EnergyBucket.BUILD)
+
+    def note_roll(self, active: bool) -> None:
+        """Called every tick by engines/reactive.py with the roll accent's
+        state (the detector lives there). A roll arms the drop and cues the
+        build; consumed on the metronome thread in _derive_bucket."""
+        self._roll_active = bool(active)
+
     def _commit_drop(self, now: float, level: float | None = None, raw_energy: float | None = None) -> None:
         """Actually commit to DROP -- called either immediately (already on
         a downbeat when confirmed) or once a pending beat-quantized release
@@ -893,7 +951,9 @@ class Metronome(threading.Thread):
         span = 1.0 - BUILD_MAX
         progress = max(0.0, min(1.0, (level - BUILD_MAX) / span)) if span > 0 else 1.0
         self.drop_hit_intensity = DROP_INTENSITY_FLOOR + (DROP_INTENSITY_CEIL - DROP_INTENSITY_FLOOR) * progress
-        self._drop_commit_energy = self._energy_smooth if raw_energy is None else raw_energy  # see _lead_next_drop
+        self._drop_commit_energy = self._energy_smooth if raw_energy is None else raw_energy
+        self._drop_armed_until = None  # the drop it was armed for has landed
+        self._drop_arm_source = ""
         # Phrase origin for anything counting bars from the drop: the bar
         # the DROP candidate first appeared in, not this (later) commit bar
         # -- see ShowSnapshot.drop_start_bar. A manual override has no
@@ -955,75 +1015,38 @@ class Metronome(threading.Thread):
             return
 
         raw = bucket_for_energy_with_hysteresis(self._energy_norm, self._base_committed)
-        # BUILD -> DROP leads with the sound RIGHT NOW, but only when the
-        # window ceiling was set by a previous drop (2026-09-15, recordings/
-        # session-20260915-144431): a track's second drop is judged against
-        # a ceiling (and floor) its first drop already raised, so the
-        # smoothed value's asymptote sits AT the 0.85 threshold (measured
-        # 0.83 -- it only crossed on the loudest kicks) and the commit came
-        # 2.3s after the hit, the build strobe running 1s into it. The
-        # instantaneous level cleared the threshold on the hit's own tick.
-        # Read through a peak-hold (_inst_peak) so between-kick dips don't
-        # reset the candidate. The ceiling condition (_lead_next_drop) is
-        # what makes this safe: with a LOW ceiling (first build of a set,
-        # ceiling = intro loudness) the build's own kicks already read as
-        # instantaneous "DROP" and this lead fired 11s early on every one of
-        # the day's captures -- while the smoothed path needs no help there
-        # (it jumps to 1.0 on the hit). Validated by replaying all five
-        # captures: no new transitions, second drops commit 2 beats after
-        # the hit like first drops.
-        if self._base_committed == EnergyBucket.BUILD and raw != EnergyBucket.DROP and self._lead_next_drop():
-            peak = self._inst_peak()
-            if peak is not None and bucket_for_energy_with_hysteresis(peak, self._base_committed) == EnergyBucket.DROP:
-                raw = EnergyBucket.DROP
-        # The hit lead (see DROP_HIT_LOW_RATIO): any BUILD, first drop
-        # included -- the kick coming back on top of an instantaneous DROP
-        # reading, held one beat, commits without waiting for the smoothed
-        # level or the entry dwell.
-        if self._base_committed == EnergyBucket.BUILD:  # whatever raw says: this path is the faster one
-            peak = self._inst_peak()
+
+        # ARMED DROP (see DROP_ARM_HOLD_BARS): a roll arms it (and cues the
+        # build); D arms it; the first drop-level kick while armed commits.
+        if not self._roll_active:
+            self._roll_since = None
+        elif self._roll_since is None:
+            self._roll_since = now
+        if (self._roll_active and self._base_committed != EnergyBucket.DROP
+                and now - self._roll_since >= ROLL_ARM_MIN_S):
+            if self._drop_arm_source != "dj":
+                self._drop_armed_until = now + ROLL_ARM_HOLD_S
+                self._drop_arm_source = "roll"
+            if self._base_committed != EnergyBucket.BUILD and self._build_cue_until is None:
+                self._build_cue_until = now + BUILD_CUE_HOLD_S
+                self._build_cue_source = "roll"
+                self._apply_manual_override(EnergyBucket.BUILD, now)
+                self._manual_bucket_override = None
+                return
+        if self._drop_armed_until is not None and now >= self._drop_armed_until:
+            self._drop_armed_until = None  # nothing landed: disarm
+            self._drop_arm_source = ""
+        if self._drop_armed_until is not None and self._base_committed != EnergyBucket.DROP:
             low_peak = max((v for _, v in self._low_recent), default=0.0)
-            ref = self._hit_ref if self._hit_since is not None else max(self._low_avg, DROP_HIT_LOW_FLOOR)
-            hit = (peak is not None
-                   and bucket_for_energy_with_hysteresis(peak, self._base_committed) == EnergyBucket.DROP
-                   and low_peak >= DROP_HIT_LOW_RATIO * ref)
-            # Count distinct kicks on the RAW low band (not the peak-hold):
-            # a rising edge over the ratio, or one level held DROP_HIT_SUSTAIN_S.
-            low_now = self._low_recent[-1][1] if self._low_recent else 0.0
-            above = low_now >= DROP_HIT_LOW_RATIO * ref
-            if above and not self._kick_prev_above:
-                self._hit_kicks += 1
-                self._kick_above_since = now
-                self._kick_sustain_credited = False
-            elif (above and not self._kick_sustain_credited and self._kick_above_since is not None
-                  and now - self._kick_above_since >= DROP_HIT_SUSTAIN_S):
-                self._hit_kicks += 1
-                self._kick_sustain_credited = True
-            self._kick_prev_above = above
-            if self._hit_since is not None and now - self._hit_last_seen > DROP_HIT_GAP_S:
-                self._hit_since = None  # a one-shot: never re-seen
-            if not hit:
-                pass  # the dip between two kicks: keep waiting for the next one
-            elif self._hit_since is None:
-                self._hit_since = self._hit_last_seen = now
-                self._hit_bar = self._bar
-                self._hit_ref = ref
-                self._hit_kicks = 1  # this sighting is the first kick
-                self._kick_prev_above = above
-                self._kick_above_since = now if above else None
-                self._kick_sustain_credited = False
-            elif now - self._hit_since < DROP_HIT_CONFIRM_S or self._hit_kicks < DROP_HIT_MIN_KICKS:
-                self._hit_last_seen = now
-            else:
-                self._hit_since = None
+            ref = max(self._low_avg, DROP_HIT_LOW_FLOOR)
+            peak = self._inst_peak()
+            if low_peak >= DROP_HIT_LOW_RATIO * ref and peak is not None and peak >= ARMED_HIT_MIN_INST:
                 self._bucket_candidate = None
                 self._bucket_candidate_since = None
-                self._bucket_candidate_bar = self._hit_bar  # phrase origin = the bar the kick came back in
-                self._commit_drop(now, level=peak, raw_energy=max(self._energy_smooth, self._energy))
+                self._bucket_candidate_bar = self._bar  # the kick's own bar is the phrase origin
+                self._commit_drop(now, level=max(1.0, peak), raw_energy=max(self._energy_smooth, self._energy))
                 self._apply_bucket_overlay(now)
                 return
-        else:
-            self._hit_since = None
         # A DROP/PEAK breakdown exits on the sound RIGHT NOW (2026-09-15,
         # recordings/session-20260915-140630): the music dropped out at
         # 158.6s but the smoothed value (3s release tau, which exists to
@@ -1095,7 +1118,9 @@ class Metronome(threading.Thread):
                 direction_up = _BUCKET_ORDER.index(raw) > _BUCKET_ORDER.index(self._base_committed)
                 if direction_up:
                     floor_ok = True  # fast entry bypasses the outgoing state's own dwell floor
-                    confirm_s = FAST_ENTRY_DWELL_S
+                    # An unarmed DROP is the safety net (see DROP_ARM_HOLD_BARS):
+                    # two bars of drop-range level, late rather than wrong.
+                    confirm_s = AUTO_DROP_CONFIRM_S if raw == EnergyBucket.DROP else FAST_ENTRY_DWELL_S
                 else:
                     floor_ok = now - self._base_committed_since >= PER_STATE_DWELL_S[self._base_committed]
                     confirm_s = EXIT_CONFIRM_DWELL_S
@@ -1149,9 +1174,7 @@ class Metronome(threading.Thread):
                     self._bucket_candidate_since = now
                     self._bucket_candidate_bar = self._bar  # where the sound first supported this
                 elif now - self._bucket_candidate_since >= confirm_s:
-                    leading = (raw == EnergyBucket.DROP and self._base_committed == EnergyBucket.BUILD
-                               and self._lead_next_drop())
-                    inst_now = self._inst_peak() if leading and self._inst_peak() is not None else self._energy_norm_inst
+                    inst_now = self._energy_norm_inst
                     if direction_up and inst_now is not None and (
                         _BUCKET_ORDER.index(bucket_for_energy_with_hysteresis(inst_now, self._base_committed))
                         < _BUCKET_ORDER.index(raw)
@@ -1334,14 +1357,6 @@ class Metronome(threading.Thread):
         self._drop_marker_pulse = True
         self._marker_cooldown_until = now + MARKER_COOLDOWN_S
 
-    def _lead_next_drop(self) -> bool:
-        """True when the normaliser's ceiling is already at drop level (set
-        by a previous drop still inside the window) -- the one situation
-        where the smoothed energy_norm cannot reach the DROP threshold
-        promptly and the instantaneous lead in _derive_bucket is needed."""
-        return (self._drop_commit_energy is not None
-                and self._energy_ceiling >= DROP_LEAD_CEILING_FRACTION * self._drop_commit_energy)
-
     def _inst_peak(self) -> float | None:
         """Max of the unsmoothed energy_norm over the last INST_PEAK_HOLD_S --
         the level of the loudest recent kick, immune to the dip between
@@ -1429,6 +1444,8 @@ class Metronome(threading.Thread):
             drop_hit_intensity=self.drop_hit_intensity,
             drop_start_bar=self.drop_start_bar,
             build_cue=self.build_cue_active,
+            drop_armed=self.drop_armed,
+            drop_arm_source=self._drop_arm_source if self.drop_armed else "",
             build_cue_source=self._build_cue_source if self._build_cue_until is not None else "",
             norm_seeded=self.norm_seeded,
             drop_candidate=self._bucket_candidate == EnergyBucket.DROP,

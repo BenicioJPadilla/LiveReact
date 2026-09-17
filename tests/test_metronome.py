@@ -23,6 +23,7 @@ from livereact.core.messages import (
 from livereact.core.metronome import (
     CUT_EXIT_CONFIRM_S,
     EXIT_CONFIRM_DWELL_S,
+    AUTO_DROP_CONFIRM_S,
     FAST_ENTRY_DWELL_S,
     Metronome,
     PER_STATE_DWELL_S,
@@ -336,11 +337,21 @@ def test_bucket_ignores_a_brief_upward_blip_below_fast_entry_dwell():
 
 
 def test_bucket_commits_after_persisting_past_fast_entry_dwell():
+    """BUILD enters on FAST_ENTRY_DWELL_S; an unarmed DROP is the safety net
+    and takes AUTO_DROP_CONFIRM_S (two bars) -- see DROP_ARM_HOLD_BARS."""
     clock = FakeClock()
     m = _metronome(clock)
+    m._energy_norm = 0.5  # BUILD-range
+    m._derive_bucket(clock.monotonic())
+    clock.advance(1.0)  # past FAST_ENTRY_DWELL_S (~0.94s), still BUILD-range the whole time
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed.value == "build"
     m._energy_norm = 0.9  # DROP-range
     m._derive_bucket(clock.monotonic())
-    clock.advance(1.0)  # past FAST_ENTRY_DWELL_S (~0.94s), still DROP-range the whole time
+    clock.advance(1.0)
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_committed.value == "build"  # not yet: unarmed drops wait two bars
+    clock.advance(AUTO_DROP_CONFIRM_S)
     m._derive_bucket(clock.monotonic())
     assert m._bucket_committed.value == "drop"
 
@@ -360,7 +371,7 @@ def test_bucket_candidate_restarts_if_a_different_bucket_appears_first():
     clock.advance(0.5)  # would have been enough time for the ORIGINAL (BUILD) candidate
     m._derive_bucket(clock.monotonic())
     assert m._base_committed.value == "break"  # DROP candidate restarted, hasn't dwelled long enough yet
-    clock.advance(0.6)  # now past FAST_ENTRY_DWELL_S since DROP became the candidate
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.1)  # now past the (two-bar) DROP confirmation since it became the candidate
     m._derive_bucket(clock.monotonic())
     assert m._bucket_committed.value == "drop"
 
@@ -416,7 +427,7 @@ def test_drop_falls_back_to_build_only_after_two_bars_of_build_range_energy():
     m = _metronome(clock)
     m._energy_norm = 0.9  # commit to DROP
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.5)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
 
@@ -439,7 +450,6 @@ def test_drop_falls_back_to_build_only_after_two_bars_of_build_range_energy():
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.BUILD  # well before DROP's own 8-bar floor
     assert clock.monotonic() < PER_STATE_DWELL_S[EnergyBucket.DROP]
-    assert m._lead_next_drop()  # the second drop keeps its RMS lead (ceiling still from the first)
 
 
 def test_a_drop_dip_shorter_than_the_cut_confirmation_never_becomes_a_build():
@@ -451,7 +461,7 @@ def test_a_drop_dip_shorter_than_the_cut_confirmation_never_becomes_a_build():
     m = _metronome(clock)
     m._energy_norm = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.5)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     for _ in range(6):
@@ -471,7 +481,7 @@ def test_drop_escalates_to_peak_after_sustained_dwell():
     m = _metronome(clock)
     m._energy_norm = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.5)
     m._derive_bucket(clock.monotonic())
     assert m._bucket_committed == EnergyBucket.DROP  # not yet -- hasn't sustained DROP's own dwell
 
@@ -486,7 +496,7 @@ def test_break_promotes_to_outro_after_a_recent_drop_then_reverts():
     m = _metronome(clock)
     m._energy_norm = 0.9  # commit to DROP -- sets _last_drop_or_peak_t
     m._derive_bucket(clock.monotonic())
-    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    clock.advance(AUTO_DROP_CONFIRM_S + 1.0)
     m._derive_bucket(clock.monotonic())
     assert m._bucket_committed == EnergyBucket.DROP
 
@@ -520,7 +530,7 @@ def test_a_fast_recovering_break_never_gets_promoted_to_outro_at_all():
     m = _metronome(clock)
     m._energy_norm = 0.9  # commit to DROP
     m._derive_bucket(clock.monotonic())
-    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    clock.advance(AUTO_DROP_CONFIRM_S + 1.0)
     m._derive_bucket(clock.monotonic())
 
     m._energy_norm = 0.1  # fall to BREAK
@@ -552,7 +562,7 @@ def test_outro_does_not_illegally_block_a_real_second_build():
     m = _metronome(clock)
     m._energy_norm = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    clock.advance(AUTO_DROP_CONFIRM_S + 1.0)
     m._derive_bucket(clock.monotonic())
     m._energy_norm = 0.1
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # DROP's own floor must clear before any exit
@@ -630,7 +640,7 @@ def test_classifier_uses_the_declared_legal_transition_matrix():
     m = _metronome(clock)
     m._energy_norm = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.5)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])
@@ -714,7 +724,7 @@ def test_drop_commits_immediately_when_already_on_a_downbeat():
     m._beat_in_bar = 1  # _metronome()'s own default, spelled out here for clarity
     m._energy_norm = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.1)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP  # no wait needed -- already aligned
     assert not m._pending_drop_release
@@ -737,7 +747,7 @@ def test_drop_commits_immediately_mid_bar_and_backdates_its_start_bar():
     m._derive_bucket(clock.monotonic())  # candidate appears in bar 40
     m._bar = 41                          # the confirmation lands in the next bar
     m._beat_in_bar = 3                   # mid-bar -- would previously have waited for beat 1
-    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.1)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     assert not m._pending_drop_release
@@ -754,7 +764,7 @@ def test_a_sustained_cut_exits_the_drop_before_its_dwell_floor():
     m = _metronome(clock)
     m._energy_norm = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.1)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     clock.advance(2.0)  # well inside PER_STATE_DWELL_S[DROP] (~15s)
@@ -777,7 +787,7 @@ def test_transition_likely_after_a_typically_long_peak():
     m = _metronome(clock)
     m._energy_norm = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.1)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     assert not m.transition_likely  # hasn't been dwelling long yet
@@ -911,7 +921,7 @@ def test_a_one_bar_gap_past_the_drop_floor_does_not_exit_the_drop():
     m = _metronome(clock)
     m._energy_norm = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.1)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP] + 1.0)  # well past the floor
@@ -956,7 +966,7 @@ def test_build_cue_holds_build_against_a_quiet_reading_until_the_drop():
     m._energy_norm = 0.95  # the drop
     m._energy_norm_inst = 0.95
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.1)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.1)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     assert not m.build_cue_active
@@ -1016,19 +1026,66 @@ def _feed(m, clock, low, inst, seconds, dt=0.05):
         m._derive_bucket(now)
 
 
-def test_the_kick_coming_back_commits_the_drop_within_a_beat():
-    """Fifth live run: low band 1.3 -> 18.6 on the downbeat, smoothed
-    energy_norm still 0.11; the commit came a full bar later. Now: one beat."""
-    from livereact.core.metronome import DROP_HIT_CONFIRM_S
+def test_an_armed_drop_commits_on_the_first_kick():
+    """Josh, 2026-09-17: the drop is cued (D) or armed by a roll; the first
+    drop-level kick after that commits instantly -- no confirmation, no
+    smoothing, intensity pinned to 1.0."""
     clock = FakeClock()
     m = _build_with_kickless_bars(clock)
     m._bar = 116
+    m.arm_drop()
+    assert m.drop_armed and m._drop_arm_source == "dj"
     t_hit = clock.monotonic()
-    _feed(m, clock, low=18.0, inst=0.95, seconds=DROP_HIT_CONFIRM_S + 0.15)
+    _feed(m, clock, low=18.0, inst=0.95, seconds=0.1)
     assert m._base_committed == EnergyBucket.DROP
-    assert clock.monotonic() - t_hit < FAST_ENTRY_DWELL_S  # faster than the smoothed path could ever be
-    assert m.drop_start_bar == 116                          # origin = the bar the kick came back in
-    assert m.drop_hit_intensity >= 0.95                     # booked off the instantaneous level, not the lagging smooth
+    assert clock.monotonic() - t_hit <= 0.15
+    assert m.drop_start_bar == 116
+    assert m.drop_hit_intensity >= 0.95
+    assert not m.drop_armed  # consumed by the drop it was armed for
+
+
+def test_a_roll_arms_the_drop_and_cues_the_build():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.1  # the classifier says BREAK
+    m._derive_bucket(clock.monotonic())
+    from livereact.core.metronome import ROLL_ARM_MIN_S
+    m.note_roll(True)
+    m._derive_bucket(clock.monotonic())
+    assert not m.drop_armed  # a roll must HOLD before it means anything (strays last under a second)
+    clock.advance(ROLL_ARM_MIN_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BUILD
+    assert m.build_cue_active and m._build_cue_source == "roll"
+    assert m.drop_armed and m._drop_arm_source == "roll"
+    m.note_roll(False)
+    m._low_avg = 1.5
+    _feed(m, clock, low=18.0, inst=0.95, seconds=0.1)  # the hit after the roll
+    assert m._base_committed == EnergyBucket.DROP
+
+
+def test_arming_times_out_and_a_second_d_press_disarms():
+    from livereact.core.metronome import DROP_ARM_HOLD_S
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    m.arm_drop()
+    m.arm_drop()
+    assert not m.drop_armed
+    m.arm_drop()
+    clock.advance(DROP_ARM_HOLD_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert not m.drop_armed
+    _feed(m, clock, low=18.0, inst=0.95, seconds=0.5)  # a kick now is just a kick
+    assert m._base_committed == EnergyBucket.BUILD
+
+
+def test_d_from_a_break_cues_the_build_too():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m.arm_drop()
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BUILD
+    assert m.build_cue_active and m.drop_armed
 
 
 def test_a_builds_own_kicks_do_not_trip_the_hit_lead():
@@ -1150,7 +1207,7 @@ def test_a_drop_tail_with_gaps_between_hits_holds_the_drop():
     m._energy_norm = 0.9
     m._energy_norm_inst = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.5)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     m._energy_norm = 0.5
@@ -1173,7 +1230,7 @@ def test_a_sustained_post_drop_bed_becomes_a_build():
     m._energy_norm = 0.9
     m._energy_norm_inst = 0.9
     m._derive_bucket(clock.monotonic())
-    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    clock.advance(AUTO_DROP_CONFIRM_S + 0.5)
     m._derive_bucket(clock.monotonic())
     m._energy_norm = 0.5
     m._energy_norm_inst = 0.4
@@ -1211,24 +1268,13 @@ def test_a_warm_range_is_handed_to_the_callback_periodically():
     assert got[-1][1] == pytest.approx(0.3, abs=0.02)
 
 
-def test_a_lone_kick_that_outlives_the_peak_holds_does_not_commit_but_two_kicks_do():
-    """Run 9 (2026-09-17, 198.0 s): one drop-level kick 15 s before the real
-    drop committed a DROP because the 0.3 s low peak-hold and 0.6 s inst
-    peak-hold kept 'hit' true through the one-beat confirmation. The hit
-    must be a pattern: a second distinct kick (raw low band back over the
-    ratio after falling under it), which a 4/4 drop supplies within the
-    same beat."""
-    from livereact.core.metronome import DROP_HIT_CONFIRM_S
+def test_unarmed_kicks_never_lead_the_drop():
+    """Runs 8/9 (2026-09-17): one drop-level kick committed a DROP 15 s early.
+    Unarmed, kicks are just kicks -- the drop is the smoothed level holding
+    drop range for AUTO_DROP_CONFIRM_S, nothing faster."""
     clock = FakeClock()
     m = _build_with_kickless_bars(clock)
-    _feed(m, clock, low=18.0, inst=0.95, seconds=0.15)   # one kick: raw low up for 150 ms
-    _feed(m, clock, low=1.5, inst=0.95, seconds=0.6)     # raw low gone; peak-holds still say hit
+    for _ in range(4):
+        _feed(m, clock, low=18.0, inst=0.95, seconds=0.15)
+        _feed(m, clock, low=1.5, inst=0.95, seconds=0.30)
     assert m._base_committed == EnergyBucket.BUILD
-    clock2 = FakeClock()
-    m2 = _build_with_kickless_bars(clock2)
-    _feed(m2, clock2, low=18.0, inst=0.95, seconds=0.15)  # kick 1
-    _feed(m2, clock2, low=1.5, inst=0.95, seconds=0.30)   # between kicks
-    _feed(m2, clock2, low=18.0, inst=0.95, seconds=0.15)  # kick 2, one beat after kick 1
-    _feed(m2, clock2, low=1.5, inst=0.95, seconds=0.10)
-    assert m2._base_committed == EnergyBucket.DROP
-    assert m2.drop_start_bar is not None

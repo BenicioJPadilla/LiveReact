@@ -57,6 +57,7 @@ from livereact.clock import FakeClock
 from livereact.core.messages import AudioLevelMessage, BeatMessage, StatusMessage
 from livereact.core.metronome import Metronome
 from livereact.core.show_state import ShowState
+from livereact.core.snare_trigger import RollRiseDetector
 
 TRACE_FIELDS = (
     "t", "rel", "bar", "beat", "energy", "energy_smooth", "energy_norm", "energy_norm_inst",
@@ -93,6 +94,10 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
     state = ShowState()
     q: queue.Queue = queue.Queue()
     m = Metronome(q, state, clock, threading.Event(), log_interval=1e9, seed_range=seed)
+    roll = RollRiseDetector(clock)  # the accent lives in the reactive engine live; here it arms the drop
+    prev_roll = False
+    rolls: list[tuple[float, float]] = []
+    roll_since: float | None = None
 
     env_cues = cue_times_from_env(t0)
     transitions: list[tuple[float, int, str, str, float, float]] = []
@@ -147,6 +152,15 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
                 m.cue_build()
                 cues.append(t)
             snap = m.tick()
+            # The roll detector reads the snapshot the engines would see and
+            # feeds the metronome like engines/reactive.py does live.
+            roll_on = roll.update(snap)
+            m.note_roll(roll_on)
+            if roll_on and not prev_roll:
+                roll_since = t
+            if not roll_on and prev_roll and roll_since is not None:
+                rolls.append((roll_since, t))
+            prev_roll = roll_on
             if snap.build_cue_source != prev_src and "auto" in (snap.build_cue_source, prev_src):
                 auto_cues.append((t, snap.bar, "fired" if snap.build_cue_source == "auto" else "released"))
             prev_src = snap.build_cue_source
@@ -185,6 +199,9 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
             print(f"   C press     {t - t0:8.1f} s")
         for t, bar, what in auto_cues:
             print(f"   auto cue {what:8} {t - t0:8.1f} s  bar {bar:4d}")
+        for a, b in rolls:
+            if b - a >= 1.0:
+                print(f"   roll        {a - t0:8.1f}-{b - t0:.1f} s")
         for t, bar, a, b, en, inst in transitions:
             print(f"   {t - t0:8.1f} s  bar {bar:4d}  {a:>5} -> {b:<5}  en={en:.2f} inst={inst:.2f}")
         for t, bar, hit in drops:

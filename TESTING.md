@@ -353,6 +353,12 @@ Play a set: a track, a build, a drop, then mix into another track.
   now and holds (strobe ramp, wash ramp) until the drop lands, 32 bars pass, or you press C again.
   Exists because a kick-only intro reads louder than a mid-heavy build to a loudness classifier
   (2026-09-16) — the DJ sees the build, the RMS doesn't
+- **the drop is armed, not guessed** (2026-09-17, after runs 7-9): press **D** ("Arm drop") a few
+  bars before the hit — the next drop-level kick cuts the drop instantly, and if the lights aren't
+  in a build yet D cues the build too. A snare roll arms it by itself (console: "DROP ARMED (snare
+  roll)"), so on a track with a roll you need not touch anything. Unarmed, the loudness classifier
+  still commits a drop, but only after two full bars of drop-level sound — late rather than wrong.
+  D again disarms; it disarms itself after 16 bars.
 - after the set's first drop, a build the loudness can't see may cue ITSELF (2026-09-17,
   `core/build_rule.py`): once a drop has set the track's kick level, four bars of the kick back at
   30-65 % of it while the classifier still says BREAK raises the same held BUILD (console shows

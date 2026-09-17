@@ -536,7 +536,7 @@ class _StrobeClock:
 class ReactiveLayerEngine:
     """Always-on beat/energy/color reactivity."""
 
-    def __init__(self, clock: Clock, manual: ManualParams | None = None) -> None:
+    def __init__(self, clock: Clock, manual: ManualParams | None = None, roll_sink=None) -> None:
         self.clock = clock
         self._ambient_gate = _BurstGate(clock, STROBE_MAX_BURST_S, STROBE_MIN_SPACING_S)
         self.strobe_level = 0.0     # exposed for the recorder: last post-gate 0..STROBE_MAX rate
@@ -558,6 +558,7 @@ class ReactiveLayerEngine:
         # build_snare_accent: the roll-rise detector (core/snare_trigger.py),
         # owned here so the accent shares the one strobe clock/output.
         self._roll = RollRiseDetector(clock)
+        self._roll_sink = roll_sink  # called with the roll state every tick (app.py: Metronome.note_roll)
         self.snare_roll_active = False  # exposed for the console/tests/recorder
         self.roll_ratio = 0.0            # exposed for the recorder: the detector's live ratio
         self.roll_path = ""              # which path(s) cleared: level / density / both (recorder)
@@ -647,6 +648,8 @@ class ReactiveLayerEngine:
         see that constant). The roll is BUILD-only (RollRiseDetector) and the
         ambient burst is DROP/PEAK-only, so the two can never chain."""
         self.snare_roll_active = self._roll.update(snap)
+        if self._roll_sink is not None:
+            self._roll_sink(self.snare_roll_active)  # core/metronome.py note_roll: a roll arms the drop
         self.roll_ratio = self._roll.ratio
         self.roll_path = self._roll.path
         self.roll_rate_base = self._roll.rate_base

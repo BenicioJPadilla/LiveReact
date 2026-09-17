@@ -125,6 +125,11 @@ class ShowSnapshot:
     # Who raised the held BUILD: "dj" (the C key) or "auto" (core/build_rule.py's
     # kick-level rule, 2026-09-17); "" when no cue is held.
     build_cue_source: str = ""
+    # True while the drop is ARMED (core/metronome.py arm_drop / note_roll,
+    # 2026-09-17): the next drop-level kick commits it instantly. Source is
+    # "dj" (D key) or "roll" (the snare-roll accent).
+    drop_armed: bool = False
+    drop_arm_source: str = ""
     # True while energy_norm is still (partly) measured against the LAST
     # session's persisted range rather than this set's own window
     # (core/metronome.py seed_range, config.py energy_norm seed, 2026-09-17)

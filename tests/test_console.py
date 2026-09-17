@@ -132,3 +132,19 @@ def test_build_cue_button_and_shortcut_reach_the_metronome(qapp):
     app.metronome.cue_build()
     win.refresh()
     assert "BUILD CUED" in win.l_cue.text()
+
+
+def test_drop_arm_button_and_shortcut_reach_the_metronome(qapp):
+    from PySide6 import QtGui
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    assert not app.metronome.drop_armed
+    win.b_arm.click()
+    assert app.metronome.drop_armed
+    win.show()
+    for sc in win.findChildren(QtGui.QShortcut):
+        if sc.key() == QtGui.QKeySequence("D"):
+            sc.activated.emit()
+    assert not app.metronome.drop_armed  # second press disarms

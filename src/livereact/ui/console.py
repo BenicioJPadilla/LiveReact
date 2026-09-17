@@ -234,7 +234,11 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         # DJ build cue (2026-09-16, core/metronome.py's cue_build): BUILD now,
         # held until the drop lands (or 32 bars, or a second press cancels).
         self.b_cue = QtWidgets.QPushButton("Cue build (C)")
+        # DJ drop arm (2026-09-17, core/metronome.py's arm_drop): the next
+        # drop-level kick commits the drop instantly; cues the build if needed.
+        self.b_arm = QtWidgets.QPushButton("Arm drop (D)")
         self.l_cue = QtWidgets.QLabel("")
+        self.l_arm = QtWidgets.QLabel("")
         # docs/14 §2: distinguishes the system's auto-blackout (no music detected)
         # from the operator's manual toggle above — they're independent triggers,
         # so the manual button's own checked-state won't reflect the auto one.
@@ -242,9 +246,10 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         bl.addWidget(self.b_black, 0, 0); bl.addWidget(self.b_freeze, 0, 1)
         bl.addWidget(self.b_skip, 1, 0); bl.addWidget(self.b_tap, 1, 1)
         bl.addWidget(self.b_burst, 2, 0, 1, 2)
-        bl.addWidget(self.b_cue, 3, 0, 1, 2)
+        bl.addWidget(self.b_cue, 3, 0); bl.addWidget(self.b_arm, 3, 1)
         bl.addWidget(self.l_cue, 4, 0, 1, 2)
-        bl.addWidget(self.l_auto_blackout, 5, 0, 1, 2)
+        bl.addWidget(self.l_arm, 5, 0, 1, 2)
+        bl.addWidget(self.l_auto_blackout, 6, 0, 1, 2)
         v.addWidget(btns)
         v.addStretch(1)
 
@@ -254,6 +259,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.b_tap.clicked.connect(self._do_tap)
         self.b_burst.clicked.connect(self._strobe_burst)
         self.b_cue.clicked.connect(self.app.metronome.cue_build)
+        self.b_arm.clicked.connect(self.app.metronome.arm_drop)
         return w
 
     def _install_shortcuts(self) -> None:
@@ -267,6 +273,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         sc("S", self.cb_synth.toggle)
         sc("L", self.cb_laser.toggle)
         sc("C", self.app.metronome.cue_build)
+        sc("D", self.app.metronome.arm_drop)
         sc(QtCore.Qt.Key.Key_Space, self._strobe_burst)
 
     # ------------------------------------------------------------------ actions
@@ -339,6 +346,14 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             self.l_cue.setStyleSheet(_DOT_OK)
         else:
             self.l_cue.setText("")
+        if self.app.metronome.drop_armed:
+            if self.app.metronome.drop_arm_source == "roll":
+                self.l_arm.setText("● DROP ARMED (snare roll) — the next kick cuts it")
+            else:
+                self.l_arm.setText("● DROP ARMED (D) — the next kick cuts it (D again cancels)")
+            self.l_arm.setStyleSheet(_DOT_OK)
+        else:
+            self.l_arm.setText("")
 
         if self.app.reactive_engine.synth_sync_active:
             self.l_synth.setText("● SYNTH SYNC — wash follows the mids, strobes paused")
