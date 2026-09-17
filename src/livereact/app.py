@@ -94,7 +94,8 @@ class App:
         self.input_queue: "queue.Queue" = queue.Queue()
         self.show_state = ShowState()
         self.metronome = Metronome(self.input_queue, self.show_state, self.clock, self.stop_event,
-                                   seed_range=self._energy_norm_seed())
+                                   seed_range=self._energy_norm_seed(),
+                                   range_callback=self._persist_energy_norm_range)
         self.sources = self._build_sources()
 
         # --- show pipeline (Phases 3-4): snapshot -> engines -> merge -> frame buffer ---
@@ -156,6 +157,15 @@ class App:
         if self.config.demo or not self.config.norm_seed or not self.config.config_path:
             return None
         return app_config.energy_norm_seed(self.config.config_path, self._norm_fingerprint())
+
+    def _persist_energy_norm_range(self, floor: float, ceiling: float) -> None:
+        """Save the warm window's range as the next launch's seed -- called by
+        the metronome every RANGE_PERSIST_INTERVAL_S, and at shutdown, because
+        live runs end with kill -9 (SIGTERM doesn't land under --visualize)."""
+        if self.config.demo or not self.config.config_path:
+            return
+        seed = app_config.energy_norm_record(floor, ceiling, self._norm_fingerprint())
+        app_config.save_from(self.manual, self.config.config_path, energy_norm=seed)
 
     def _setup_recording(self, session_dir: str) -> None:
         from .recorder import SessionRecorder, write_meta, write_notes_template
@@ -257,7 +267,7 @@ class App:
                 floor, ceiling = self.metronome.energy_norm_range
                 seed = app_config.energy_norm_record(floor, ceiling, self._norm_fingerprint())
                 log.info("Saving energy_norm seed for the next launch: floor=%.3f ceiling=%.3f", floor, ceiling)
-            app_config.save_from(self.manual, self.config.config_path, energy_norm=seed)
+            app_config.save_from(self.manual, self.config.config_path, energy_norm=seed)  # None keeps the periodic one
         if self.recorder is not None and self.config.session_dir:
             from .recorder import write_summary
 

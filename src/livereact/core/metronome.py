@@ -184,6 +184,9 @@ ENERGY_NORM_MIN_SPAN_OF_CEILING = 0.6  # ...but never more than this fraction of
                                        # (a flat window can't turn a blip into a drop)
                                        # at any input level. On the ten captures
                                        # replayed, only run 7's transitions change.
+RANGE_PERSIST_INTERVAL_S = 60.0       # how often a warm window's range is handed to
+                                       # the range_callback (app.py saves it as the
+                                       # next launch's seed) -- see __init__.
 ENERGY_NORM_MIN_CEILING = 0.05        # if nothing above this has happened
                                        # recently, the set is genuinely silent --
                                        # report 0.0 rather than let a tiny residual
@@ -420,6 +423,7 @@ class Metronome(threading.Thread):
         hz: float = 100.0,
         log_interval: float = 1.0,
         seed_range: tuple[float, float] | None = None,
+        range_callback=None,
     ) -> None:
         super().__init__(name="metronome", daemon=False)
         self.queue = input_queue
@@ -430,6 +434,11 @@ class Metronome(threading.Thread):
         self._log_interval = log_interval
         # (floor, ceiling) from the last real session -- see ENERGY_NORM_MIN_SAMPLES
         self._seed_range = seed_range if seed_range and seed_range[1] >= ENERGY_NORM_MIN_CEILING else None
+        # Called with (floor, ceiling) every RANGE_PERSIST_INTERVAL_S once the
+        # window is warm, so the seed survives a kill -9 (the only way this app
+        # gets stopped under --visualize; a clean shutdown never happens live).
+        self._range_callback = range_callback
+        self._last_range_persist = clock.monotonic()
 
         # --- authoritative working state (owned solely by this thread) ---
         self._bpm = 124.0
@@ -1394,3 +1403,10 @@ class Metronome(threading.Thread):
         if now - self._last_log >= self._log_interval:
             self._last_log = now
             log.info("ShowState | %s", snap.summary())
+        if (self._range_callback is not None and self.norm_warm
+                and now - self._last_range_persist >= RANGE_PERSIST_INTERVAL_S):
+            self._last_range_persist = now
+            try:
+                self._range_callback(*self.energy_norm_range)
+            except Exception:  # noqa: BLE001 - persistence must never touch the clock thread
+                log.exception("energy_norm range callback failed")

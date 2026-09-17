@@ -1194,3 +1194,18 @@ def test_on_audio_copies_the_onset_rate_to_the_snapshot():
     snap = m.tick()
     assert snap.audio_high_onset_rate == 8.5
     assert snap.audio_high_flux == 0.2
+
+
+def test_a_warm_range_is_handed_to_the_callback_periodically():
+    """The seed must survive a kill -9 (how live runs end under --visualize):
+    the metronome hands its warm range out every RANGE_PERSIST_INTERVAL_S."""
+    from livereact.core.metronome import RANGE_PERSIST_INTERVAL_S
+    clock = FakeClock()
+    got = []
+    m = Metronome(queue.Queue(), ShowState(), clock, threading.Event(), log_interval=1e9,
+                  range_callback=lambda f, c: got.append((f, c)))
+    _pump_audio(m, clock, rms=0.3, seconds=30.0)
+    assert got == []  # not warm yet
+    _pump_audio(m, clock, rms=0.3, seconds=RANGE_PERSIST_INTERVAL_S + 15.0)
+    assert len(got) >= 1
+    assert got[-1][1] == pytest.approx(0.3, abs=0.02)
