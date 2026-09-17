@@ -130,6 +130,12 @@ class ShowSnapshot:
     # "dj" (D key) or "roll" (the snare-roll accent).
     drop_armed: bool = False
     drop_arm_source: str = ""
+    # The rise phase (core/rise.py, 2026-09-17): `rising` while the high band's
+    # level + onset density are climbing against the bars before; `rise_index`
+    # is the intensity ratio (1.0 = no change). engines/reactive.py runs the
+    # build strobe only while armed AND rising, at a rate from the index.
+    rising: bool = False
+    rise_index: float = 1.0
     # True while energy_norm is still (partly) measured against the LAST
     # session's persisted range rather than this set's own window
     # (core/metronome.py seed_range, config.py energy_norm seed, 2026-09-17)

@@ -353,12 +353,16 @@ Play a set: a track, a build, a drop, then mix into another track.
   now and holds (strobe ramp, wash ramp) until the drop lands, 32 bars pass, or you press C again.
   Exists because a kick-only intro reads louder than a mid-heavy build to a loudness classifier
   (2026-09-16) — the DJ sees the build, the RMS doesn't
-- **the drop is armed, not guessed** (2026-09-17, after runs 7-9): press **D** ("Arm drop") a few
-  bars before the hit — the next drop-level kick cuts the drop instantly, and if the lights aren't
-  in a build yet D cues the build too. A snare roll arms it by itself (console: "DROP ARMED (snare
-  roll)"), so on a track with a roll you need not touch anything. Unarmed, the loudness classifier
-  still commits a drop, but only after two full bars of drop-level sound — late rather than wrong.
-  D again disarms; it disarms itself after 16 bars.
+- **the drop is armed, not guessed; the strobe follows the rise** (2026-09-17, after runs 7-10):
+  press **D** ("Arm drop") any time in the 32 bars before a drop. From then on LiveReact watches
+  for the *rise* — the high band's level and hi-hat/snare density climbing against what the track
+  was doing a few bars earlier — and runs the strobe only while that is happening, starting slow
+  and getting faster with the intensity (`rising` / `rise_index` in `state.jsonl`). The drop is
+  cut by the first kick *pattern* (two kicks within a beat) at drop level. A snare roll arms the
+  drop by itself; so does a strong rise once the hats/snares clearly thicken (console: "DROP
+  ARMED (intensity rising)"). Neither changes the look until the drop cuts. Unarmed, the loudness
+  classifier still commits a drop, but only after two full bars of drop-level sound — late rather
+  than wrong. A loudness-guessed BUILD gets its wash ramp and look but no strobe. D again disarms.
 - after the set's first drop, a build the loudness can't see may cue ITSELF (2026-09-17,
   `core/build_rule.py`): once a drop has set the track's kick level, four bars of the kick back at
   30-65 % of it while the classifier still says BREAK raises the same held BUILD (console shows

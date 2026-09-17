@@ -347,10 +347,14 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         else:
             self.l_cue.setText("")
         if self.app.metronome.drop_armed:
-            if self.app.metronome.drop_arm_source == "roll":
-                self.l_arm.setText("● DROP ARMED (snare roll) — the next kick cuts it")
+            src = self.app.metronome.drop_arm_source
+            rising = " · RISING" if self.app.show_state.snapshot().rising else ""
+            if src == "roll":
+                self.l_arm.setText(f"● DROP ARMED (snare roll){rising} — the next kick pattern cuts it")
+            elif src == "rise":
+                self.l_arm.setText(f"● DROP ARMED (intensity rising){rising} — the next kick pattern cuts it")
             else:
-                self.l_arm.setText("● DROP ARMED (D) — the next kick cuts it (D again cancels)")
+                self.l_arm.setText(f"● DROP ARMED (D){rising} — strobe runs while the intensity rises; D again cancels")
             self.l_arm.setStyleSheet(_DOT_OK)
         else:
             self.l_arm.setText("")

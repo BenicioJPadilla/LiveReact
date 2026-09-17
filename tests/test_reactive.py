@@ -8,7 +8,7 @@ from livereact.clock import FakeClock
 from livereact.core.show_state import ShowSnapshot
 from livereact.engines.palette import rgb as palette_rgb
 from livereact.engines.reactive import (
-    BUILD_STROBE_MID, BUILD_STROBE_START, DROP_HELD_HIGH, DROP_HELD_LOW, PEAK_BOOST, STROBE_FLASH_DMX, STROBE_FLASH_START_DMX,
+    BUILD_STROBE_START, DROP_HELD_HIGH, DROP_HELD_LOW, PEAK_BOOST, STROBE_FLASH_DMX, STROBE_FLASH_START_DMX,
     STROBE_MAX,
     STROBE_TOGGLE_MAX_HZ, ReactiveLayerEngine, _StrobeClock, _drop_held_level,
 )
@@ -86,46 +86,43 @@ def test_moving_heads_mirror_left_and_right():
     assert c.values[mh_l.offset] != c.values[mh_r.offset]
 
 
-def test_strobe_off_outside_build_drop_and_peak_buckets():
-    """Bucket gate replaced the old fixed energy_norm>0.85 threshold
-    (2026-09-14, see reactive.py's STROBE_THRESHOLD retirement note) --
-    strobe now only ever engages in BUILD/DROP/PEAK (PEAK included since
-    it's an escalation of an already-committed DROP, not a fresh section --
-    same reasoning _bucket_wash_level's own PEAK branch already uses), no
-    matter how high raw energy reads in e.g. a BREAK section."""
+def test_strobe_off_unless_the_drop_is_armed_and_the_rise_is_on():
+    """2026-09-17 (run 10): the pre-drop strobe is driven by the rise, not
+    by the loudness classifier's BUILD -- a BUILD without an armed drop and
+    a rise gets no strobe, however loud; a BREAK with both does."""
     rig = load_rig()
     eng = ReactiveLayerEngine(FakeClock())
     eng.tick(_snap(energy=1.0, beat_phase=0.0, bucket="break"), rig)
-    assert eng.strobe_level == 0  # strobe off -- wrong bucket, regardless of energy
-    assert not eng.strobe_on
+    assert eng.strobe_level == 0 and not eng.strobe_on
+    eng.tick(_snap(energy=1.0, beat_phase=0.0, bucket="build"), rig)
+    assert eng.strobe_level == 0  # a guessed build: no strobe
+    eng.tick(_snap(energy=1.0, beat_phase=0.0, bucket="build", drop_armed=True), rig)
+    assert eng.strobe_level == 0  # armed but nothing rising yet
+    eng.tick(_snap(energy=1.0, beat_phase=0.0, bucket="build", rising=True, rise_index=1.5), rig)
+    assert eng.strobe_level == 0  # rising but not armed
+    eng.tick(_snap(energy=0.2, beat_phase=0.0, bucket="break", drop_armed=True, rising=True, rise_index=1.5), rig)
+    assert eng.strobe_level > 0  # armed + rising: the classifier's bucket doesn't matter
 
 
-def test_build_strobe_is_continuous_and_gets_faster_across_the_build():
-    """Josh, 2026-09-15 (second live test): "the strobe should be strobing
-    throughout the build up and... slowly get faster." A sustained rate
-    (not burst-gated) from BUILD_STROBE_START x STROBE_MAX at entry, to
-    BUILD_STROBE_MID x STROBE_MAX at 8 bars (an 8-bar build's drop), to
-    STROBE_MAX at 16 bars (2026-09-16: two-stage, so a 16-bar build no
-    longer sits at 4 Hz for its whole second half) -- never dark."""
+def test_pre_drop_strobe_rate_follows_the_rise_intensity():
+    """Josh, 2026-09-17: "when intensity is building... that should cue"
+    -- the rate is the rise index: BUILD_STROBE_START x STROBE_MAX where the
+    rise begins (index 1.0), STROBE_MAX at RISE_FULL, sustained (never
+    burst-gated dark), in whatever bucket the classifier thinks it is."""
+    from livereact.core.rise import RISE_FULL, RISE_ON
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
-    seen = {}
-    for b in (0, 2, 4, 6, 8, 12, 16):
-        clock.advance(3.75)  # two bars of real time -- far past STROBE_MAX_BURST_S
-        eng.tick(_snap(bar=b, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
-        seen[b] = eng.strobe_level
-    vals = [seen[b] for b in sorted(seen)]
-    assert vals[0] == pytest.approx(BUILD_STROBE_START * STROBE_MAX)  # starts at the floor, not 0
-    assert all(a < b for a, b in zip(vals, vals[1:]))                # monotonically faster
-    assert seen[4] < BUILD_STROBE_START * STROBE_MAX * 1.3           # half of stage 1: barely off the start
-    assert seen[8] == pytest.approx(BUILD_STROBE_MID * STROBE_MAX)   # an 8-bar build ends here, not at the ceiling
-    assert seen[16] == pytest.approx(STROBE_MAX)                     # a 16-bar build reaches the ceiling
-    assert all(v > 0 for v in vals)                                  # never gated dark
-    clock.advance(3.75)
-    eng.tick(_snap(bar=20, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
-    assert eng.strobe_level == pytest.approx(STROBE_MAX)             # and holds there
+    seen = []
+    for i, idx in enumerate((RISE_ON, 1.7, 1.9, 2.1, 2.4, RISE_FULL, 3.0)):
+        clock.advance(3.75)
+        eng.tick(_snap(bar=i * 2, beat_in_bar=1, beat_phase=0.0, bucket="break",
+                       drop_armed=True, rising=True, rise_index=idx), rig)
+        seen.append(eng.strobe_level)
+    assert seen[0] == pytest.approx(BUILD_STROBE_START * STROBE_MAX)
+    assert all(a <= b for a, b in zip(seen, seen[1:]))
+    assert seen[5] == pytest.approx(STROBE_MAX) and seen[6] == pytest.approx(STROBE_MAX)
+    assert all(v > 0 for v in seen)
 
 
 def test_build_strobe_runs_through_the_candidate_and_ends_on_the_commit():
@@ -136,12 +133,13 @@ def test_build_strobe_runs_through_the_candidate_and_ends_on_the_commit():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    rise = dict(drop_armed=True, rising=True, rise_index=1.6)
+    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build", **rise), rig)
     clock.advance(0.5)
-    eng.tick(_snap(bar=0, beat_in_bar=2, beat_phase=0.0, bucket="build"), rig)
+    eng.tick(_snap(bar=0, beat_in_bar=2, beat_phase=0.0, bucket="build", **rise), rig)
     assert eng.strobe_level > 0
     clock.advance(0.5)
-    eng.tick(_snap(bar=0, beat_in_bar=3, beat_phase=0.0, bucket="build", drop_candidate=True), rig)
+    eng.tick(_snap(bar=0, beat_in_bar=3, beat_phase=0.0, bucket="build", drop_candidate=True, **rise), rig)
     assert eng.strobe_level > 0  # still strobing through the candidate window
     clock.advance(0.5)
     eng.tick(_snap(bar=0, beat_in_bar=4, beat_phase=0.0, bucket="drop"), rig)  # the commit
@@ -170,11 +168,12 @@ def test_par_and_wash_bar_flash_on_the_same_frames_at_the_cap_byte():
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
     bar = rig.fixture("bar_l")
-    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    rise = dict(drop_armed=True, rising=True, rise_index=1.6)
+    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build", **rise), rig)
     seen_on = seen_off = False
-    for _ in range(120):  # 3s at 40 Hz, ~1 Hz strobe at the build's start
+    for _ in range(120):  # 3s at 40 Hz, 2 Hz strobe at the rise's start
         clock.advance(1 / 40)
-        c = eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+        c = eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build", **rise), rig)
         par_d, bar_d = _dimmers(c, rig)
         assert par_d == bar_d, "par and wash bar must toggle on the same DMX frame"
         assert par_d in (0, STROBE_FLASH_START_DMX)  # a build's first bars flash at the start byte
@@ -191,16 +190,18 @@ def test_build_flash_brightness_climbs_to_the_cap_and_drop_tail_uses_the_cap():
     clock = FakeClock()
     rig = load_rig()
     eng = ReactiveLayerEngine(clock)
-    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    from livereact.core.rise import RISE_FULL, RISE_ON
+    arm = dict(drop_armed=True, rising=True)
+    eng.tick(_snap(bar=0, beat_in_bar=1, beat_phase=0.0, bucket="build", rise_index=RISE_ON, **arm), rig)
     assert eng.strobe_flash_dmx == STROBE_FLASH_START_DMX
     clock.advance(3.75)
-    eng.tick(_snap(bar=3, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)
+    eng.tick(_snap(bar=3, beat_in_bar=1, beat_phase=0.0, bucket="build", rise_index=1.9, **arm), rig)
     assert STROBE_FLASH_START_DMX < eng.strobe_flash_dmx < STROBE_FLASH_DMX
     clock.advance(3.75)
-    eng.tick(_snap(bar=8, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)  # end of stage 1
+    eng.tick(_snap(bar=8, beat_in_bar=1, beat_phase=0.0, bucket="build", rise_index=2.3, **arm), rig)
     assert STROBE_FLASH_START_DMX < eng.strobe_flash_dmx < STROBE_FLASH_DMX
     clock.advance(3.75)
-    eng.tick(_snap(bar=16, beat_in_bar=1, beat_phase=0.0, bucket="build"), rig)  # BUILD_STROBE_STAGE2_BARS
+    eng.tick(_snap(bar=16, beat_in_bar=1, beat_phase=0.0, bucket="build", rise_index=RISE_FULL, **arm), rig)
     assert eng.strobe_flash_dmx == STROBE_FLASH_DMX
     eng2 = ReactiveLayerEngine(FakeClock())
     _enter_drop(eng2, rig)
@@ -770,8 +771,8 @@ def test_synth_sync_a_stab_lifts_the_wash_toward_the_ceiling():
 def test_synth_sync_suppresses_the_build_strobe_and_the_drop_tail_burst():
     rig = load_rig()
     eng, _ = _synth_engine()
-    # BUILD: the sustained strobe would otherwise run the whole build
-    eng.tick(_mid_snap(1.0, bucket="build", energy=0.5), rig)
+    # armed + rising: the sustained pre-drop strobe would otherwise run
+    eng.tick(_mid_snap(1.0, bucket="build", energy=0.5, drop_armed=True, rising=True, rise_index=1.8), rig)
     assert eng.strobe_level == 0 and not eng.strobe_on
     # DROP phrase tail (bar 7 of the phrase, beat 3): the ambient burst would fire
     eng.tick(_mid_snap(1.0, bucket="drop", bar=7, beat_in_bar=3, drop_start_bar=0), rig)

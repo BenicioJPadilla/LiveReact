@@ -1026,25 +1026,40 @@ def _feed(m, clock, low, inst, seconds, dt=0.05):
         m._derive_bucket(now)
 
 
-def test_an_armed_drop_commits_on_the_first_kick():
-    """Josh, 2026-09-17: the drop is cued (D) or armed by a roll; the first
-    drop-level kick after that commits instantly -- no confirmation, no
-    smoothing, intensity pinned to 1.0."""
+def _kicks(m, clock, n, low=18.0, inst=0.95, gap=0.30):
+    """`n` distinct kicks: raw low band up for 150 ms, down for `gap`."""
+    for _ in range(n):
+        _feed(m, clock, low=low, inst=inst, seconds=0.15)
+        _feed(m, clock, low=1.5, inst=inst, seconds=gap)
+
+
+def test_an_armed_drop_commits_on_the_kick_pattern():
+    """Josh, 2026-09-17: the drop is cued (D) or armed by a roll/rise; the
+    first kick PATTERN after that -- two distinct kicks within a beat, what a
+    4/4 drop supplies -- commits instantly, intensity pinned to 1.0. One
+    kick alone never does (run 10, 439.6 s: a breakdown kick 4.5 s after D
+    cut a false drop)."""
     clock = FakeClock()
     m = _build_with_kickless_bars(clock)
     m._bar = 116
     m.arm_drop()
     assert m.drop_armed and m._drop_arm_source == "dj"
+    _kicks(m, clock, 1)
+    _feed(m, clock, low=1.5, inst=0.95, seconds=1.0)
+    assert m._base_committed == EnergyBucket.BUILD  # a lone kick
     t_hit = clock.monotonic()
-    _feed(m, clock, low=18.0, inst=0.95, seconds=0.1)
+    _kicks(m, clock, 2)
     assert m._base_committed == EnergyBucket.DROP
-    assert clock.monotonic() - t_hit <= 0.15
+    assert clock.monotonic() - t_hit <= 1.0  # on the second kick
     assert m.drop_start_bar == 116
     assert m.drop_hit_intensity >= 0.95
     assert not m.drop_armed  # consumed by the drop it was armed for
 
 
-def test_a_roll_arms_the_drop_and_cues_the_build():
+def test_a_roll_arms_the_drop_without_touching_the_look():
+    """Run 10 (2026-09-17): the roll's build cue rotated the look under the
+    accent (blue -> white). Now a roll only ARMS; the bucket, and so the
+    look, stay until the drop cuts."""
     clock = FakeClock()
     m = _metronome(clock)
     m._energy_norm = 0.1  # the classifier says BREAK
@@ -1055,12 +1070,12 @@ def test_a_roll_arms_the_drop_and_cues_the_build():
     assert not m.drop_armed  # a roll must HOLD before it means anything (strays last under a second)
     clock.advance(ROLL_ARM_MIN_S + 0.1)
     m._derive_bucket(clock.monotonic())
-    assert m._base_committed == EnergyBucket.BUILD
-    assert m.build_cue_active and m._build_cue_source == "roll"
+    assert m._base_committed == EnergyBucket.BREAK
+    assert not m.build_cue_active
     assert m.drop_armed and m._drop_arm_source == "roll"
     m.note_roll(False)
     m._low_avg = 1.5
-    _feed(m, clock, low=18.0, inst=0.95, seconds=0.1)  # the hit after the roll
+    _kicks(m, clock, 2)  # the hit after the roll
     assert m._base_committed == EnergyBucket.DROP
 
 
@@ -1075,7 +1090,7 @@ def test_arming_times_out_and_a_second_d_press_disarms():
     clock.advance(DROP_ARM_HOLD_S + 0.1)
     m._derive_bucket(clock.monotonic())
     assert not m.drop_armed
-    _feed(m, clock, low=18.0, inst=0.95, seconds=0.5)  # a kick now is just a kick
+    _kicks(m, clock, 4)  # kicks now are just kicks
     assert m._base_committed == EnergyBucket.BUILD
 
 
@@ -1278,3 +1293,20 @@ def test_unarmed_kicks_never_lead_the_drop():
         _feed(m, clock, low=18.0, inst=0.95, seconds=0.15)
         _feed(m, clock, low=1.5, inst=0.95, seconds=0.30)
     assert m._base_committed == EnergyBucket.BUILD
+
+def test_a_strong_rise_arms_the_drop_by_itself():
+    """The autonomous path: core/rise.py's index held over RISE_ARM for
+    RISE_ARM_BARS arms the drop (source 'rise'); the kick pattern then cuts."""
+    from livereact.core.rise import RISE_ARM_BARS, RISE_BASE_BARS, RISE_BASE_GAP_BARS
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    for _ in range((RISE_BASE_BARS + RISE_BASE_GAP_BARS) * 4):
+        m._rise.on_beat(0.10, 4.0)  # flat hats
+    for _ in range(RISE_ARM_BARS * 4 + 8):
+        m._rise.on_beat(0.30, 10.0)  # the rise
+        m._derive_bucket(clock.monotonic())
+        clock.advance(0.47)
+    assert m.drop_armed and m._drop_arm_source == "rise"
+    assert m.tick().rising
+    _kicks(m, clock, 2)
+    assert m._base_committed == EnergyBucket.DROP

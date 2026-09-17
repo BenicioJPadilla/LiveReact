@@ -30,6 +30,7 @@ from ..clock import Clock, LoopTimer
 from ..engines import palette as palette_mod
 from ..scenes.base import EnergyBucket
 from .build_rule import AUTO_HOLD_BARS, KickLevelBuildRule
+from .rise import RiseDetector
 from ..scenes.catalog import _BUCKET_ORDER, BUILD_MAX, LEGAL_TRANSITIONS, bucket_for_energy_with_hysteresis
 from .messages import AudioLevelMessage, BeatMessage, MidiControlMessage, StatusMessage, TransitionMessage
 from .show_state import ShowSnapshot, ShowState
@@ -349,7 +350,8 @@ DROP_HIT_CONFIRM_S = 60.0 / NOMINAL_BPM  # one beat: the hit must be seen again 
 #     smoothed level holds drop range for AUTO_DROP_CONFIRM_S (two bars) --
 #     a safety net that is late rather than wrong. The old one-beat hit
 #     lead and the RMS lead are gone with it.
-DROP_ARM_HOLD_BARS = 16.0              # the D key's window
+DROP_ARM_HOLD_BARS = 32.0              # the D key's window (16 -> 32, 2026-09-17 run 10:
+                                       # Josh arms 8-16 bars out and wants slack)
 DROP_ARM_HOLD_S = DROP_ARM_HOLD_BARS * SECONDS_PER_BAR
 ROLL_ARM_HOLD_BARS = 4.0               # a roll's window: its drop lands within a bar or two
 ROLL_ARM_HOLD_S = ROLL_ARM_HOLD_BARS * SECONDS_PER_BAR
@@ -359,6 +361,20 @@ ROLL_ARM_MIN_S = 1.5                   # a roll must have HELD this long before 
 ARMED_HIT_MIN_INST = 0.65              # and the sound RIGHT NOW must be at least upper-BUILD
                                        # loud (instantaneous energy_norm peak) -- a lone kick
                                        # in a quiet intro is not the drop even when armed
+DROP_HIT_PATTERN_S = 0.6               # ... and it must be a PATTERN: two distinct kicks
+                                       # (rising edges of the raw low band over the ratio)
+                                       # within this window -- one beat at 128 BPM with
+                                       # slack. Run 10 (2026-09-17, recordings/session-
+                                       # 20260917-154312 at 439.6 s): ONE breakdown kick
+                                       # 4.5 s after D passed the level tests and cut a
+                                       # false drop. A 4/4 drop's second kick lands at
+                                       # +0.47 s, so a real drop still cuts within a beat.
+RISE_AUTO_ARM = True                   # core/rise.py: a strong rise (RISE_ARM held
+                                       # RISE_ARM_BARS) arms the drop by itself for
+                                       # RISE_ARM_HOLD_BARS -- the autonomous path.
+                                       # Scored with replay_state.py before shipping.
+RISE_ARM_HOLD_BARS = 8.0
+RISE_ARM_HOLD_S = RISE_ARM_HOLD_BARS * SECONDS_PER_BAR
 AUTO_DROP_CONFIRM_S = 2.0 * SECONDS_PER_BAR
 DROP_HIT_MIN_KICKS = 2                 # (unarmed hit lead, retired 2026-09-17 -- see above; kept for the record)
                                        # the hit must be a PATTERN: two distinct kicks
@@ -557,6 +573,14 @@ class Metronome(threading.Thread):
         self._drop_arm_source = ""                    # "dj" / "roll" while armed
         self._roll_active = False                     # written by the reactive engine via note_roll
         self._roll_since: float | None = None         # when the current roll began (ROLL_ARM_MIN_S)
+        self._kick_edges: deque[float] = deque()      # times of raw low-band rising edges (DROP_HIT_PATTERN_S)
+        self._kick_prev_above = False
+        # the rise phase (core/rise.py): per-beat means of the high band + onset rate
+        self._rise = RiseDetector()
+        self._rise_beat: tuple[int, int] | None = None
+        self._rise_hi_sum = 0.0
+        self._rise_on_sum = 0.0
+        self._rise_n = 0
         self._pending_drop_release = False  # Phase 3: confirmed DROP, waiting for the next downbeat
         self.transition_likely = False  # Phase 3 heuristic, see TYPICAL_EXTENDED_PEAK_S above
 
@@ -622,6 +646,7 @@ class Metronome(threading.Thread):
         self._derive_energy_norm(now)
         self._derive_bucket(now)
         self._derive_build_rule(now)
+        self._derive_rise(now)
         self._derive_drop_marker(now)
         self._derive_palette()
         snap = self._build_snapshot(now)
@@ -954,6 +979,8 @@ class Metronome(threading.Thread):
         self._drop_commit_energy = self._energy_smooth if raw_energy is None else raw_energy
         self._drop_armed_until = None  # the drop it was armed for has landed
         self._drop_arm_source = ""
+        self._kick_edges.clear()
+        self._rise.drop_landed()
         # Phrase origin for anything counting bars from the drop: the bar
         # the DROP candidate first appeared in, not this (later) commit bar
         # -- see ShowSnapshot.drop_start_bar. A manual override has no
@@ -1016,31 +1043,39 @@ class Metronome(threading.Thread):
 
         raw = bucket_for_energy_with_hysteresis(self._energy_norm, self._base_committed)
 
-        # ARMED DROP (see DROP_ARM_HOLD_BARS): a roll arms it (and cues the
-        # build); D arms it; the first drop-level kick while armed commits.
+        # ARMED DROP (see DROP_ARM_HOLD_BARS): D arms it; a held roll arms it;
+        # a strong rise (RISE_AUTO_ARM) arms it. Arming never changes the
+        # look (run 10: the roll's build cue turned the accent blue -> white
+        # mid-roll) -- only D cues the build. While armed, a kick PATTERN
+        # (DROP_HIT_PATTERN_S) at drop level commits instantly.
         if not self._roll_active:
             self._roll_since = None
         elif self._roll_since is None:
             self._roll_since = now
         if (self._roll_active and self._base_committed != EnergyBucket.DROP
-                and now - self._roll_since >= ROLL_ARM_MIN_S):
-            if self._drop_arm_source != "dj":
-                self._drop_armed_until = now + ROLL_ARM_HOLD_S
-                self._drop_arm_source = "roll"
-            if self._base_committed != EnergyBucket.BUILD and self._build_cue_until is None:
-                self._build_cue_until = now + BUILD_CUE_HOLD_S
-                self._build_cue_source = "roll"
-                self._apply_manual_override(EnergyBucket.BUILD, now)
-                self._manual_bucket_override = None
-                return
+                and now - self._roll_since >= ROLL_ARM_MIN_S and self._drop_arm_source != "dj"):
+            self._drop_armed_until = now + ROLL_ARM_HOLD_S
+            self._drop_arm_source = "roll"
+        if (RISE_AUTO_ARM and self._rise.arm_ready and self._base_committed != EnergyBucket.DROP
+                and self._drop_arm_source not in ("dj", "roll")):
+            self._drop_armed_until = now + RISE_ARM_HOLD_S
+            self._drop_arm_source = "rise"
+            log.info("Drop armed by the rise (index %.2f)", self._rise.index)
         if self._drop_armed_until is not None and now >= self._drop_armed_until:
             self._drop_armed_until = None  # nothing landed: disarm
             self._drop_arm_source = ""
+        # Kick edges on the RAW low band (not the peak-hold), kept for the pattern window.
+        ref = max(self._low_avg, DROP_HIT_LOW_FLOOR)
+        low_now = self._low_recent[-1][1] if self._low_recent else 0.0
+        above = low_now >= DROP_HIT_LOW_RATIO * ref
+        if above and not self._kick_prev_above:
+            self._kick_edges.append(now)
+        self._kick_prev_above = above
+        while self._kick_edges and now - self._kick_edges[0] > DROP_HIT_PATTERN_S:
+            self._kick_edges.popleft()
         if self._drop_armed_until is not None and self._base_committed != EnergyBucket.DROP:
-            low_peak = max((v for _, v in self._low_recent), default=0.0)
-            ref = max(self._low_avg, DROP_HIT_LOW_FLOOR)
             peak = self._inst_peak()
-            if low_peak >= DROP_HIT_LOW_RATIO * ref and peak is not None and peak >= ARMED_HIT_MIN_INST:
+            if len(self._kick_edges) >= 2 and peak is not None and peak >= ARMED_HIT_MIN_INST:
                 self._bucket_candidate = None
                 self._bucket_candidate_since = None
                 self._bucket_candidate_bar = self._bar  # the kick's own bar is the phrase origin
@@ -1205,6 +1240,29 @@ class Metronome(threading.Thread):
                         self._bucket_candidate_since = None
 
         self._apply_bucket_overlay(now)
+
+    def _derive_rise(self, now: float) -> None:
+        """core/rise.py: hand the completed beat's mean high-band level and
+        onset rate to the RiseDetector on every beat change."""
+        beat = (self._bar, self._beat_in_bar)
+        if self._rise_beat is None:
+            self._rise_beat = beat
+        if beat != self._rise_beat:
+            # Only MUSIC feeds the reference: no silent beats (a track starting
+            # from silence would read as a 10x "rise"), and no drop/peak beats
+            # (the drop's own bars would read as a rise against the build, and
+            # would then become the reference the next build is judged
+            # against). A rise is relative to what this track has been doing.
+            if (self._rise_n > 0 and self._is_audio_fresh(now)
+                    and self._energy_smooth >= ENERGY_NORM_SILENCE_FLOOR
+                    and self._base_committed != EnergyBucket.DROP):
+                self._rise.on_beat(self._rise_hi_sum / self._rise_n, self._rise_on_sum / self._rise_n)
+            self._rise_beat = beat
+            self._rise_hi_sum = self._rise_on_sum = 0.0
+            self._rise_n = 0
+        self._rise_hi_sum += float(self._audio_band_high_abs)
+        self._rise_on_sum += float(self._audio_high_onset_rate)
+        self._rise_n += 1
 
     def _derive_build_rule(self, now: float) -> None:
         """core/build_rule.py: feed the completed bar's means on every bar
@@ -1446,6 +1504,8 @@ class Metronome(threading.Thread):
             build_cue=self.build_cue_active,
             drop_armed=self.drop_armed,
             drop_arm_source=self._drop_arm_source if self.drop_armed else "",
+            rising=self._rise.rising,
+            rise_index=self._rise.index,
             build_cue_source=self._build_cue_source if self._build_cue_until is not None else "",
             norm_seeded=self.norm_seeded,
             drop_candidate=self._bucket_candidate == EnergyBucket.DROP,

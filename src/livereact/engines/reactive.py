@@ -32,6 +32,7 @@ from ..fixtures.rig import Rig
 from ..merge.merge import Contribution, ManualParams
 from ..scenes.base import EnergyBucket
 from ..scenes.catalog import BREAK_MAX
+from ..core.rise import RISE_FULL, RISE_ON
 from ..core.snare_trigger import RollRiseDetector
 from ..scenes.base import scene_color, spot_color
 from .envelope import NORMALIZE_TAU_S, BandEnvelope
@@ -242,11 +243,19 @@ STROBE_PHRASE_TAIL_BEATS = 2  # beats 3+4 of the phrase's last bar -- "strobe
 # peak needs the burst rules (<= 1.5s, then a gap) and there is no way to
 # know which 1.5s of a build is the last. If the top still reads weak, the
 # lever is flash brightness (STROBE_FLASH_DMX), Josh's own cap.
-BUILD_STROBE_START = 0.5          # 2 Hz at build entry -- a pulse, not yet a strobe
-BUILD_STROBE_MID = 0.85           # 3.4 Hz at BUILD_STROBE_STAGE1_BARS: where an 8-bar build ends
-BUILD_STROBE_STAGE1_BARS = 8.0    # the Bible's own build length
-BUILD_STROBE_STAGE2_BARS = 16.0   # the other common build length; 4 Hz lands here
-BUILD_STROBE_STAGE1_EXPONENT = 2.0  # ease-in over stage 1: the first half barely moves off the start
+BUILD_STROBE_START = 0.5          # 2 Hz where the rise starts -- a pulse, not yet a strobe
+# THE RISE DRIVES THE STROBE (2026-09-17, run 10 -- recordings/session-
+# 20260917-154312): the bar-count ramp from BUILD entry ran for 42 s before
+# the first drop, because the loudness classifier's BUILD is a plateau
+# guess; the audible rise (core/rise.py: high-band level + onset density
+# climbing) began ~8 bars out. Josh: "arm the strobe and then it correctly
+# identifies in the next however many bars when the strobe starts and when
+# it ends." So the build strobe runs only while the drop is ARMED (D, a
+# roll, or a strong rise -- core/metronome.py) AND the rise is on, and its
+# rate is the rise's intensity: BUILD_STROBE_START at rise_index RISE_ON,
+# STROBE_MAX at RISE_FULL (core/rise.py). It ends when the rise ends or the
+# drop cuts. A loudness-only BUILD keeps its wash ramp and look, no strobe.
+# The 8/16-bar two-stage ramp (BUILD_STROBE_STAGE*) is retired.
 # Two-stage ramp (2026-09-16, third live run, recordings/session-20260916-
 # 110050, a 15-bar build): the previous single 8-bar ramp reached 4 Hz at
 # bar 8 and then sat there for six more bars -- Josh: "started a little
@@ -645,8 +654,7 @@ class ReactiveLayerEngine:
         """The single strobe value for this tick: the ambient path (BUILD's
         sustained ramp, or the DROP/PEAK phrase-tail burst through its gate)
         max()'d with build_snare_accent's roll accent (STROBE_ROLL_FLASH_DMX,
-        see that constant). The roll is BUILD-only (RollRiseDetector) and the
-        ambient burst is DROP/PEAK-only, so the two can never chain."""
+        see that constant). One strobe clock: the roll overrides the rate."""
         self.snare_roll_active = self._roll.update(snap)
         if self._roll_sink is not None:
             self._roll_sink(self.snare_roll_active)  # core/metronome.py note_roll: a roll arms the drop
@@ -657,8 +665,9 @@ class ReactiveLayerEngine:
         ambient_rate = self._strobe_rate(snap)  # BUILD: sets strobe_flash_dmx to the ramp's byte...
         if roll_rate > 0:
             self.strobe_flash_dmx = STROBE_ROLL_FLASH_DMX  # ...which the roll accent overrides
-        if EnergyBucket(snap.bucket) == EnergyBucket.BUILD:
-            # The build strobe is a SUSTAINED slow-to-medium rate, not a
+        if EnergyBucket(snap.bucket) not in (EnergyBucket.DROP, EnergyBucket.PEAK):
+            # The pre-drop strobe (armed + rising, whatever bucket the
+            # classifier thinks) is a SUSTAINED slow-to-medium rate, not a
             # burst (see BUILD_STROBE_START) -- it bypasses the burst gate,
             # which still sees a 0 so any DROP-side moment it was tracking
             # closes and earns its spacing normally.
@@ -684,10 +693,8 @@ class ReactiveLayerEngine:
         -- see the separate open item (2026-09-14, Josh) about a sustained
         drop with no quiet section getting stuck; not addressed here."""
         bucket = EnergyBucket(snap.bucket)
-        if bucket == EnergyBucket.BUILD:
-            return self._build_strobe_rate(snap)
         if bucket not in (EnergyBucket.DROP, EnergyBucket.PEAK):
-            return 0.0
+            return self._build_strobe_rate(snap)  # armed + rising, in whatever bucket the classifier thinks
         # Phrase origin: the metronome's own drop_start_bar (the bar the
         # rise was FIRST seen in -- see ShowSnapshot.drop_start_bar) when it
         # has one; the bar this engine saw the bucket flip in otherwise.
@@ -708,25 +715,15 @@ class ReactiveLayerEngine:
         return STROBE_MAX
 
     def _build_strobe_rate(self, snap: ShowSnapshot) -> float:
-        """Continuous BUILD strobe that gets faster across the build (Josh,
-        2026-09-15 after the second live test: "the strobe should be
-        strobing throughout the build up and... slowly get faster"). Bar
-        position from build entry, two stages: BUILD_STROBE_START -> _MID
-        over the first BUILD_STROBE_STAGE1_BARS, _MID -> STROBE_MAX over
-        bars STAGE1..STAGE2, held after (see the constants' comment for the
-        8-vs-16-bar reasoning). Not burst-gated -- see BUILD_STROBE_START's
-        comment for the sustained-rate safety argument and the floor."""
-        pos = musical_bar_position(snap)
-        entry = self._build_entry_pos if self._build_entry_pos is not None else pos
-        bars_in = max(0.0, pos - entry)
-        if bars_in < BUILD_STROBE_STAGE1_BARS:
-            p = (bars_in / BUILD_STROBE_STAGE1_BARS) ** BUILD_STROBE_STAGE1_EXPONENT
-            rate01 = BUILD_STROBE_START + (BUILD_STROBE_MID - BUILD_STROBE_START) * p
-        else:
-            p = min(1.0, (bars_in - BUILD_STROBE_STAGE1_BARS) / (BUILD_STROBE_STAGE2_BARS - BUILD_STROBE_STAGE1_BARS))
-            rate01 = BUILD_STROBE_MID + (1.0 - BUILD_STROBE_MID) * p
-        progress = (rate01 - BUILD_STROBE_START) / (1.0 - BUILD_STROBE_START)  # the flash byte tracks the rate
-        self.strobe_flash_dmx = round(STROBE_FLASH_START_DMX + (STROBE_FLASH_DMX - STROBE_FLASH_START_DMX) * progress)
+        """The pre-drop strobe: only while the drop is armed AND the rise is
+        on (see BUILD_STROBE_START's comment), at a rate from the rise's
+        intensity -- BUILD_STROBE_START at rise_index RISE_ON, the ceiling
+        at RISE_FULL. Not burst-gated: a sustained rate under the 4 Hz line."""
+        if not (snap.drop_armed and snap.rising):
+            return 0.0
+        p = max(0.0, min(1.0, (snap.rise_index - RISE_ON) / (RISE_FULL - RISE_ON)))
+        rate01 = BUILD_STROBE_START + (1.0 - BUILD_STROBE_START) * p
+        self.strobe_flash_dmx = round(STROBE_FLASH_START_DMX + (STROBE_FLASH_DMX - STROBE_FLASH_START_DMX) * p)
         return STROBE_MAX * rate01
 
     def _musical_position(self, snap: ShowSnapshot) -> float:

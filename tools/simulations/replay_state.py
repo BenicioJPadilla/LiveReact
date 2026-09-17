@@ -62,7 +62,7 @@ from livereact.core.snare_trigger import RollRiseDetector
 TRACE_FIELDS = (
     "t", "rel", "bar", "beat", "energy", "energy_smooth", "energy_norm", "energy_norm_inst",
     "bucket", "base", "candidate", "build_cue", "drop_hit_intensity", "band_low", "band_mid",
-    "band_high", "onset_rate",
+    "band_high", "onset_rate", "rising", "rise_index", "drop_armed", "drop_arm_src",
 )
 
 
@@ -98,6 +98,13 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
     prev_roll = False
     rolls: list[tuple[float, float]] = []
     roll_since: float | None = None
+    rises: list[tuple[float, float, float]] = []   # (start, end, peak index) -- the metronome's own RiseDetector
+    rise_since: float | None = None
+    rise_peak = 1.0
+    prev_rising = False
+    arms: list[tuple[float, float, str]] = []      # (start, end, source)
+    arm_since: float | None = None
+    arm_src = ""
 
     env_cues = cue_times_from_env(t0)
     transitions: list[tuple[float, int, str, str, float, float]] = []
@@ -161,6 +168,18 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
             if not roll_on and prev_roll and roll_since is not None:
                 rolls.append((roll_since, t))
             prev_roll = roll_on
+            if snap.rising and not prev_rising:
+                rise_since, rise_peak = t, snap.rise_index
+            if snap.rising:
+                rise_peak = max(rise_peak, snap.rise_index)
+            if not snap.rising and prev_rising and rise_since is not None:
+                rises.append((rise_since, t, rise_peak))
+            prev_rising = snap.rising
+            if snap.drop_armed and arm_since is None:
+                arm_since, arm_src = t, snap.drop_arm_source
+            if not snap.drop_armed and arm_since is not None:
+                arms.append((arm_since, t, arm_src))
+                arm_since = None
             if snap.build_cue_source != prev_src and "auto" in (snap.build_cue_source, prev_src):
                 auto_cues.append((t, snap.bar, "fired" if snap.build_cue_source == "auto" else "released"))
             prev_src = snap.build_cue_source
@@ -185,6 +204,8 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
                     "build_cue": snap.build_cue, "drop_hit_intensity": snap.drop_hit_intensity,
                     "band_low": row.get("band_low"), "band_mid": row.get("band_mid"),
                     "band_high": row.get("band_high"), "onset_rate": row.get("onset_rate", ""),
+                    "rising": snap.rising, "rise_index": round(snap.rise_index, 2),
+                    "drop_armed": snap.drop_armed, "drop_arm_src": snap.drop_arm_source,
                 })
     finally:
         if fh is not None:
@@ -202,6 +223,19 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
         for a, b in rolls:
             if b - a >= 1.0:
                 print(f"   roll        {a - t0:8.1f}-{b - t0:.1f} s")
+        drop_ts = [d[0] for d in drops]
+        for a, b, pk in rises:
+            nxt = [d for d in drop_ts if a <= d <= b + 2.0]
+            tag = f"-> drop at {nxt[0] - t0:.1f}" if nxt else "NO DROP"
+            print(f"   rise        {a - t0:8.1f}-{b - t0:.1f} s  peak {pk:.2f}  {tag}")
+        for a, b, src in arms:
+            nxt = [d for d in drop_ts if a <= d <= b + 0.5]
+            print(f"   armed ({src:4}) {a - t0:8.1f}-{b - t0:.1f} s  {'-> drop' if nxt else 'NO DROP'}")
+        true_rises = sum(1 for a, b, _ in rises if any(a <= d <= b + 2.0 for d in drop_ts))
+        missed = sum(1 for d in drop_ts if not any(a - 2.0 <= d <= b + 2.0 for a, b, _ in rises))
+        false_arms = sum(1 for a, b, _ in arms if not any(a <= d <= b + 0.5 for d in drop_ts))
+        print(f"   rises: {true_rises} true, {len(rises) - true_rises} false; drops without a rise: {missed}; "
+              f"false arms: {false_arms}")
         for t, bar, a, b, en, inst in transitions:
             print(f"   {t - t0:8.1f} s  bar {bar:4d}  {a:>5} -> {b:<5}  en={en:.2f} inst={inst:.2f}")
         for t, bar, hit in drops:
