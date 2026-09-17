@@ -855,3 +855,21 @@ def test_the_break_breath_is_not_applied_in_a_drop_or_under_synth_sync():
     manual.synth_sync = True
     eng.tick(_mid_snap(6.0, bucket="break"), rig)
     assert eng.synth_sync_active       # Synth Sync owns the wash outright, no extra breath on top
+
+
+def test_the_strobe_stops_the_instant_the_roll_ends_and_stays_off_until_the_hit():
+    """Run 11 (2026-09-17): the roll ended 2-3 s before each hit and the rise
+    strobe filled the gap; Josh wants that gap silent -- the breath."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    arm = dict(bucket="break", drop_armed=True, rising=True, rise_index=2.2, audio_band_high_abs=0.4)
+    _run_build(eng, rig, clock, high=0.4, seconds=3.0, audio_high_onset_rate=4.1, **arm)
+    assert eng.strobe_level > 0                         # the rise strobe
+    _run_build(eng, rig, clock, high=0.4, seconds=1.5, audio_high_onset_rate=8.5, **arm)
+    assert eng.snare_roll_active                        # the roll: max
+    _run_build(eng, rig, clock, high=0.4, seconds=0.6, audio_high_onset_rate=4.1, **arm)
+    assert not eng.snare_roll_active
+    assert eng.strobe_level == 0 and not eng.strobe_on  # the breath: nothing, though still armed + rising
+    eng.tick(_snap(bucket="drop", drop_armed=False), rig)
+    assert eng.strobe_level == 0                        # the hit: the drop look owns it

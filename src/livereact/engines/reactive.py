@@ -568,6 +568,16 @@ class ReactiveLayerEngine:
         # owned here so the accent shares the one strobe clock/output.
         self._roll = RollRiseDetector(clock)
         self._roll_sink = roll_sink  # called with the roll state every tick (app.py: Metronome.note_roll)
+        # The breath (Josh, run 11, 2026-09-17): "the snare roll ends the last
+        # bar... and the strobing is still going until the end of the bar. If
+        # we can make it so the strobing stops exactly when those snares
+        # stop, it has that moment of silence right before the big hit." So
+        # once a roll has ended while the drop is armed, the pre-drop strobe
+        # holds OFF until the drop cuts (or the arming lapses, or a new roll
+        # starts). Recorded: the roll ended 2.0-2.8 s before each hit and the
+        # rise strobe filled that gap.
+        self._breath = False
+        self._prev_roll = False
         self.snare_roll_active = False  # exposed for the console/tests/recorder
         self.roll_ratio = 0.0            # exposed for the recorder: the detector's live ratio
         self.roll_path = ""              # which path(s) cleared: level / density / both (recorder)
@@ -662,6 +672,11 @@ class ReactiveLayerEngine:
         self.roll_path = self._roll.path
         self.roll_rate_base = self._roll.rate_base
         roll_rate = STROBE_MAX if self.snare_roll_active else 0.0  # ends with the roll or on the commit
+        if self._prev_roll and not self.snare_roll_active and snap.drop_armed:
+            self._breath = True   # the roll just ended: silence until the hit
+        if self.snare_roll_active or not snap.drop_armed:
+            self._breath = False  # a new roll, the drop landed, or the arming lapsed
+        self._prev_roll = self.snare_roll_active
         ambient_rate = self._strobe_rate(snap)  # BUILD: sets strobe_flash_dmx to the ramp's byte...
         if roll_rate > 0:
             self.strobe_flash_dmx = STROBE_ROLL_FLASH_DMX  # ...which the roll accent overrides
@@ -719,7 +734,7 @@ class ReactiveLayerEngine:
         on (see BUILD_STROBE_START's comment), at a rate from the rise's
         intensity -- BUILD_STROBE_START at rise_index RISE_ON, the ceiling
         at RISE_FULL. Not burst-gated: a sustained rate under the 4 Hz line."""
-        if not (snap.drop_armed and snap.rising):
+        if not (snap.drop_armed and snap.rising) or self._breath:
             return 0.0
         p = max(0.0, min(1.0, (snap.rise_index - RISE_ON) / (RISE_FULL - RISE_ON)))
         rate01 = BUILD_STROBE_START + (1.0 - BUILD_STROBE_START) * p

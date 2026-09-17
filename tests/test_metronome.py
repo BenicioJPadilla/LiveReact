@@ -1094,13 +1094,44 @@ def test_arming_times_out_and_a_second_d_press_disarms():
     assert m._base_committed == EnergyBucket.BUILD
 
 
-def test_d_from_a_break_cues_the_build_too():
+def test_d_changes_nothing_but_the_arming():
+    """Run 11 (2026-09-17): D used to cue the build look ("the lights turn
+    white"). D is preparation only: armed, bucket and look untouched."""
     clock = FakeClock()
     m = _metronome(clock)
     m.arm_drop()
     m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BREAK
+    assert not m.build_cue_active and m.drop_armed
+
+
+def test_an_armed_cut_must_reach_the_last_drops_kick_level():
+    """Run 11 at 177.6 s: armed by D, the kick coming back at build level
+    (3-5 against the last drop's 8-12) made a pattern and cut a false drop.
+    Once a drop has been heard, the armed cut must reach
+    ARMED_KICK_VS_LAST_DROP of its kick peak."""
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    m._drop_kick_ref = 10.0  # the last drop's kicks peaked at 10
+    m.arm_drop()
+    _kicks(m, clock, 3, low=4.0)   # a build-level kick pattern
     assert m._base_committed == EnergyBucket.BUILD
-    assert m.build_cue_active and m.drop_armed
+    _kicks(m, clock, 2, low=8.0)   # the drop's kicks
+    assert m._base_committed == EnergyBucket.DROP
+
+
+def test_a_drops_first_bars_set_the_kick_reference():
+    from livereact.core.metronome import DROP_KICK_REF_BARS
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    m._bar = 10
+    m.arm_drop()
+    _kicks(m, clock, 2, low=12.0)
+    assert m._base_committed == EnergyBucket.DROP and m._drop_kick_ref is None
+    for bar in range(11, 11 + DROP_KICK_REF_BARS + 1):
+        m._bar = bar
+        _kicks(m, clock, 4, low=12.0)
+    assert m._drop_kick_ref is not None and 6.0 <= m._drop_kick_ref <= 12.0
 
 
 def test_a_builds_own_kicks_do_not_trip_the_hit_lead():

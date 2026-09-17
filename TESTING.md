@@ -354,11 +354,14 @@ Play a set: a track, a build, a drop, then mix into another track.
   Exists because a kick-only intro reads louder than a mid-heavy build to a loudness classifier
   (2026-09-16) — the DJ sees the build, the RMS doesn't
 - **the drop is armed, not guessed; the strobe follows the rise** (2026-09-17, after runs 7-10):
-  press **D** ("Arm drop") any time in the 32 bars before a drop. From then on LiveReact watches
+  press **D** ("Arm drop") any time in the 32 bars before a drop — it changes nothing on stage by
+  itself (C is the build cue). From then on LiveReact watches
   for the *rise* — the high band's level and hi-hat/snare density climbing against what the track
   was doing a few bars earlier — and runs the strobe only while that is happening, starting slow
   and getting faster with the intensity (`rising` / `rise_index` in `state.jsonl`). The drop is
-  cut by the first kick *pattern* (two kicks within a beat) at drop level. A snare roll arms the
+  cut by the first kick *pattern* (two kicks within a beat) at drop level — once a drop has been
+  heard, at least 60 % of its kick peak. The strobe stops the instant a snare roll ends (the
+  breath) and stays off until the hit. A snare roll arms the
   drop by itself; so does a strong rise once the hats/snares clearly thicken (console: "DROP
   ARMED (intensity rising)"). Neither changes the look until the drop cuts. Unarmed, the loudness
   classifier still commits a drop, but only after two full bars of drop-level sound — late rather

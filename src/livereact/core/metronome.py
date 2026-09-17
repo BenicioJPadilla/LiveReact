@@ -361,6 +361,15 @@ ROLL_ARM_MIN_S = 1.5                   # a roll must have HELD this long before 
 ARMED_HIT_MIN_INST = 0.65              # and the sound RIGHT NOW must be at least upper-BUILD
                                        # loud (instantaneous energy_norm peak) -- a lone kick
                                        # in a quiet intro is not the drop even when armed
+ARMED_KICK_VS_LAST_DROP = 0.6          # ... and, once a drop has been heard, the kick must
+                                       # reach this fraction of the last drop's kick peak
+                                       # (p90 of the raw low band over its first 4 bars).
+                                       # Run 11 (2026-09-17, recordings/session-20260917-
+                                       # 161315 at 177.6 s): armed by D, the kick coming
+                                       # back at BUILD level (3-5 against the drop's 8-12)
+                                       # made a pattern and cut a false drop. The set's
+                                       # first drop has no reference and keeps the 3x rule.
+DROP_KICK_REF_BARS = 4
 DROP_HIT_PATTERN_S = 0.6               # ... and it must be a PATTERN: two distinct kicks
                                        # (rising edges of the raw low band over the ratio)
                                        # within this window -- one beat at 128 BPM with
@@ -574,6 +583,9 @@ class Metronome(threading.Thread):
         self._roll_active = False                     # written by the reactive engine via note_roll
         self._roll_since: float | None = None         # when the current roll began (ROLL_ARM_MIN_S)
         self._kick_edges: deque[float] = deque()      # times of raw low-band rising edges (DROP_HIT_PATTERN_S)
+        self._drop_kick_ref: float | None = None      # last drop's kick peak (ARMED_KICK_VS_LAST_DROP)
+        self._drop_kick_samples: list[float] = []     # raw low band over a drop's first DROP_KICK_REF_BARS
+        self._drop_kick_until_bar: int | None = None
         self._kick_prev_above = False
         # the rise phase (core/rise.py): per-beat means of the high band + onset rate
         self._rise = RiseDetector()
@@ -936,10 +948,13 @@ class Metronome(threading.Thread):
 
     def arm_drop(self) -> None:
         """The DJ's "the drop is next" (D key). Toggle: arms the drop for
-        DROP_ARM_HOLD_BARS -- the next drop-level kick commits it instantly
-        -- and, if the lights aren't in a build yet, cues the build too. A
-        second press disarms (a roll-armed drop is upgraded, not cancelled).
-        Console-thread safe: plain attribute writes, like cue_build."""
+        DROP_ARM_HOLD_BARS -- the next drop-level kick PATTERN commits it
+        instantly, and the strobe runs while the rise is on. Arming changes
+        NOTHING about the current look (run 11, 2026-09-17: D used to cue
+        the build look, "the lights turn white... D should just be
+        preparation"); C is the build cue. A second press disarms (a
+        roll-armed drop is upgraded, not cancelled). Console-thread safe:
+        plain attribute writes, like cue_build."""
         now = self.clock.monotonic()
         if self._drop_armed_until is not None and self._drop_arm_source == "dj":
             self._drop_armed_until = None
@@ -947,10 +962,6 @@ class Metronome(threading.Thread):
             return
         self._drop_armed_until = now + DROP_ARM_HOLD_S
         self._drop_arm_source = "dj"
-        if self._base_committed != EnergyBucket.BUILD and self._build_cue_until is None:
-            self._build_cue_until = now + BUILD_CUE_HOLD_S
-            self._build_cue_source = "dj"
-            self.request_manual_bucket(EnergyBucket.BUILD)
 
     def note_roll(self, active: bool) -> None:
         """Called every tick by engines/reactive.py with the roll accent's
@@ -981,6 +992,8 @@ class Metronome(threading.Thread):
         self._drop_arm_source = ""
         self._kick_edges.clear()
         self._rise.drop_landed()
+        self._drop_kick_samples = []
+        self._drop_kick_until_bar = self._bar + DROP_KICK_REF_BARS
         # Phrase origin for anything counting bars from the drop: the bar
         # the DROP candidate first appeared in, not this (later) commit bar
         # -- see ShowSnapshot.drop_start_bar. A manual override has no
@@ -1067,6 +1080,16 @@ class Metronome(threading.Thread):
         # Kick edges on the RAW low band (not the peak-hold), kept for the pattern window.
         ref = max(self._low_avg, DROP_HIT_LOW_FLOOR)
         low_now = self._low_recent[-1][1] if self._low_recent else 0.0
+        if self._drop_kick_until_bar is not None:
+            # The last drop's kick peak becomes the bar the next armed cut must clear.
+            if self._base_committed == EnergyBucket.DROP and self._bar < self._drop_kick_until_bar:
+                self._drop_kick_samples.append(low_now)
+            else:
+                if len(self._drop_kick_samples) >= 20:
+                    ordered = sorted(self._drop_kick_samples)
+                    self._drop_kick_ref = ordered[int(0.9 * (len(ordered) - 1))]
+                self._drop_kick_samples = []
+                self._drop_kick_until_bar = None
         above = low_now >= DROP_HIT_LOW_RATIO * ref
         if above and not self._kick_prev_above:
             self._kick_edges.append(now)
@@ -1075,7 +1098,9 @@ class Metronome(threading.Thread):
             self._kick_edges.popleft()
         if self._drop_armed_until is not None and self._base_committed != EnergyBucket.DROP:
             peak = self._inst_peak()
-            if len(self._kick_edges) >= 2 and peak is not None and peak >= ARMED_HIT_MIN_INST:
+            low_peak = max((v for _, v in self._low_recent), default=0.0)
+            kick_ok = self._drop_kick_ref is None or low_peak >= ARMED_KICK_VS_LAST_DROP * self._drop_kick_ref
+            if len(self._kick_edges) >= 2 and kick_ok and peak is not None and peak >= ARMED_HIT_MIN_INST:
                 self._bucket_candidate = None
                 self._bucket_candidate_since = None
                 self._bucket_candidate_bar = self._bar  # the kick's own bar is the phrase origin
