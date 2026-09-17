@@ -1183,3 +1183,14 @@ def test_a_sustained_post_drop_bed_becomes_a_build():
         clock.advance(0.1)
     assert m._base_committed == EnergyBucket.BUILD
     assert clock.monotonic() < PER_STATE_DWELL_S[EnergyBucket.DROP]
+
+
+def test_on_audio_copies_the_onset_rate_to_the_snapshot():
+    clock = FakeClock()
+    m = _metronome(clock)
+    m.queue.put(AudioLevelMessage(clock.monotonic(), rms=0.3, band_low=0.5, band_mid=0.3, band_high=0.2,
+                                   band_low_abs=6.0, band_mid_abs=3.6, band_high_abs=2.4,
+                                   high_flux=0.2, high_onset_rate=8.5))
+    snap = m.tick()
+    assert snap.audio_high_onset_rate == 8.5
+    assert snap.audio_high_flux == 0.2

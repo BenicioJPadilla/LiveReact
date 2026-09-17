@@ -68,8 +68,12 @@ class AudioLevelMessage:
     absolute version keeps it. Don't derive one from the other downstream.
     ``band_mid_abs``/``band_high_abs`` are the same absolute-energy idea for
     the other two bands (2026-09-14, build_snare_accent Step 0) -- a snare/
-    hi-hat onset detector needs these for the identical structural reason;
-    not yet consumed by anything, plumbing only.
+    hi-hat onset detector needs these for the identical structural reason.
+    ``high_flux``/``high_onset_rate`` (2026-09-17) are the block-rate onset
+    measurement for core/snare_trigger.py's roll accent -- spectral flux over
+    the high band and the trailing onsets/s (inputs/audio.py's ONSET_*); a
+    roll is a rate the 10 Hz recorder can't see, so it's measured at the
+    source. Default 0.0 so other producers (demo, replay) needn't set them.
     """
 
     timestamp: float
@@ -80,6 +84,8 @@ class AudioLevelMessage:
     band_low_abs: float
     band_mid_abs: float
     band_high_abs: float
+    high_flux: float = 0.0
+    high_onset_rate: float = 0.0
 
 
 @dataclass(frozen=True)

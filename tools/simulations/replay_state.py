@@ -122,6 +122,8 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
                     band_low_abs=row.get("band_low", 0.0),
                     band_mid_abs=row.get("band_mid", 0.0),
                     band_high_abs=row.get("band_high", 0.0),
+                    high_onset_rate=row.get("onset_rate", 0.0),  # only in captures from 2026-09-17 on
+                    high_flux=row.get("high_flux", 0.0),
                 ))
             beat = row.get("beat")
             if row.get("pdl_fresh") and beat != prev_beat:

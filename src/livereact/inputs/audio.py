@@ -43,6 +43,7 @@ import logging
 import os
 import queue
 import threading
+from collections import deque
 
 from ..clock import Clock
 from ..core.messages import AudioLevelMessage
@@ -90,6 +91,29 @@ AGC_RELEASE_S = 20.0       # strobe/drop logic loses the song. A peak tracker on
                            # quiet-venue behaviour are exactly as before, and at the XDJ's normal
                            # line level it's a no-op.
 
+# High-band onset density (2026-09-17, for core/snare_trigger.py's roll
+# accent). A snare roll is a RATE, not a level: on run 5 (recordings/session-
+# 20260916-114402) the roll's high-band level was only ~2x the build's own
+# spiky hi-hats, invisible to a level-ratio detector, while its onsets came
+# at 16th-note density (~8.5/s at 128 BPM) against 8th-note hats (~4.3/s).
+# The recorder's 10 Hz can't resolve that, so it's measured HERE, at block
+# rate (~43 blocks/s at BLOCK=1024): spectral flux over the high band (mean
+# positive change of each bin's magnitude vs the previous block -- a new
+# transient, not a sustained tone), an onset when the flux clears its own
+# short running mean by ONSET_RATIO plus a floor, one onset per refractory,
+# and the rate = onsets in the last ONSET_RATE_WINDOW_S. Gain-independent by
+# construction (a ratio on the raw spectrum; the AGC only touches rms).
+# Resolution limit, disclosed: ONSET_REFRACTORY_S = 3 blocks ~ 70 ms caps
+# the measurable rate near ~12/s (synthetic 16/s clicks read 11-12/s), so
+# 32nd-note rolls (~17/s at 128) read as ~12/s -- still far above
+# ROLL_MIN_RATE, so the accent fires; it just can't tell 32nds from 16ths. Thresholds are [CONVENTION] until the first
+# live --record run with the `onset_rate` column (Josh: validate live).
+ONSET_MEAN_TAU_S = 0.5     # adaptive threshold: EMA of the high-band flux
+ONSET_RATIO = 2.0          # flux must exceed ONSET_RATIO x its own mean ...
+ONSET_FLOOR = 0.01         # ... plus this absolute floor (mean-per-bin magnitude units)
+ONSET_REFRACTORY_S = 0.06  # one onset per this (counted in blocks)
+ONSET_RATE_WINDOW_S = 1.0  # onsets/s = count over this trailing window
+
 
 class AudioInputError(RuntimeError):
     pass
@@ -122,6 +146,20 @@ class AudioAnalyzer(InputSource):
         self._gain_eff = ENERGY_GAIN
         self._agc_last_log = 0.0
         self._agc_attack, self._agc_release = self._agc_coeffs()
+        # onset density (see ONSET_* above); block-indexed so it's rate-exact
+        self._prev_high = None
+        self._flux_mean = 0.0
+        self._block_idx = 0
+        self._onset_blocks: deque[int] = deque()
+        self._last_onset_block = -(10 ** 9)
+        self._onset_coeffs()
+
+    def _onset_coeffs(self) -> None:
+        import math
+        dt_block = BLOCK / self._sr
+        self._flux_coeff = float(1 - math.exp(-dt_block / ONSET_MEAN_TAU_S))
+        self._refractory_blocks = max(1, math.ceil(ONSET_REFRACTORY_S / dt_block))
+        self._rate_window_blocks = max(1, round(ONSET_RATE_WINDOW_S / dt_block))
 
     @property
     def name(self) -> str:
@@ -220,6 +258,7 @@ class AudioAnalyzer(InputSource):
         attack = float(1 - np.exp(-dt_block / ATTACK_S))
         release = float(1 - np.exp(-dt_block / RELEASE_S))
         self._agc_attack, self._agc_release = self._agc_coeffs()  # real sample rate now known
+        self._onset_coeffs()
         while not self.stop_event.is_set():
             try:
                 block = self._ring.get(timeout=0.5)
@@ -261,6 +300,7 @@ class AudioAnalyzer(InputSource):
         m_mid = float(spec[self._mid_mask].mean())
         m_high = float(spec[self._high_mask].mean())
         total = m_low + m_mid + m_high + 1e-9
+        flux, rate = self._onset_density(spec[self._high_mask], np)
 
         self.queue.put(AudioLevelMessage(
             timestamp=now,
@@ -271,4 +311,30 @@ class AudioAnalyzer(InputSource):
             band_low_abs=m_low,
             band_mid_abs=m_mid,
             band_high_abs=m_high,
+            high_flux=flux,
+            high_onset_rate=rate,
         ))
+
+    def _onset_density(self, high_bins, np) -> tuple[float, float]:
+        """High-band spectral flux for this block and the trailing onset rate
+        (onsets/s) -- see ONSET_* above. Called once per block, in order."""
+        self._block_idx += 1
+        if self._prev_high is None:
+            flux = 0.0
+        else:
+            flux = float(np.maximum(high_bins - self._prev_high, 0.0).mean())
+        self._prev_high = high_bins
+        threshold = ONSET_RATIO * self._flux_mean + ONSET_FLOOR
+        onset = flux > threshold and self._block_idx - self._last_onset_block >= self._refractory_blocks
+        if onset:
+            self._onset_blocks.append(self._block_idx)
+            self._last_onset_block = self._block_idx
+        else:
+            # The mean tracks the BETWEEN-onset floor: at 16th-note density
+            # the onset blocks are ~40% of all blocks, and folding them into
+            # the mean pulled the threshold up until half the hits missed
+            # (synthetic clicks read 8/s as 5-6/s; excluding them, 7-8/s).
+            self._flux_mean += self._flux_coeff * (flux - self._flux_mean)
+        while self._onset_blocks and self._block_idx - self._onset_blocks[0] >= self._rate_window_blocks:
+            self._onset_blocks.popleft()
+        return flux, len(self._onset_blocks) / ONSET_RATE_WINDOW_S

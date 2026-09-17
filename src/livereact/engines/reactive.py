@@ -560,6 +560,8 @@ class ReactiveLayerEngine:
         self._roll = RollRiseDetector(clock)
         self.snare_roll_active = False  # exposed for the console/tests/recorder
         self.roll_ratio = 0.0            # exposed for the recorder: the detector's live ratio
+        self.roll_path = ""              # which path(s) cleared: level / density / both (recorder)
+        self.roll_rate_base = 0.0        # the onset-rate baseline the density path judged against
         # Synth Sync (see SYNTH_* above). `manual` is optional so every
         # caller/test that constructs a bare engine keeps the feature off.
         self.manual = manual
@@ -646,6 +648,8 @@ class ReactiveLayerEngine:
         ambient burst is DROP/PEAK-only, so the two can never chain."""
         self.snare_roll_active = self._roll.update(snap)
         self.roll_ratio = self._roll.ratio
+        self.roll_path = self._roll.path
+        self.roll_rate_base = self._roll.rate_base
         roll_rate = STROBE_MAX if self.snare_roll_active else 0.0  # ends with the roll or on the commit
         ambient_rate = self._strobe_rate(snap)  # BUILD: sets strobe_flash_dmx to the ramp's byte...
         if roll_rate > 0:

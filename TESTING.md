@@ -353,6 +353,12 @@ Play a set: a track, a build, a drop, then mix into another track.
   now and holds (strobe ramp, wash ramp) until the drop lands, 32 bars pass, or you press C again.
   Exists because a kick-only intro reads louder than a mid-heavy build to a loudness classifier
   (2026-09-16) — the DJ sees the build, the RMS doesn't
+- a snare roll into the drop pushes the build strobe to its max with a full-brightness flash
+  (`snare_roll_active` in `state.jsonl`, `roll_path` says whether the LEVEL or the onset
+  DENSITY path caught it). New 2026-09-17: `onset_rate` (high-band onsets/s, measured at
+  audio block rate) is what the density path reads — expect ~2-5 on a groove, ~8-9 on
+  16th-note hats, higher on a roll. **First run with this column tunes it**: note the time
+  of every real roll you hear, then compare `onset_rate` there against the bars before it.
 - press **S** (or tick "Synth Sync") on a garage track: the par + wash bar stop following the
   bucket model and pulse with the synth stabs instead; strobes pause while it's on. Press S again
   to hand the wash back to the automation. Off at every startup.

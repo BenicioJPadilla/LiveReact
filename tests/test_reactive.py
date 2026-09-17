@@ -418,6 +418,20 @@ def test_a_roll_rise_in_a_build_pushes_the_strobe_to_max_and_the_flash_to_full()
     assert eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
 
 
+def test_a_density_roll_at_a_flat_level_pushes_the_strobe_to_max_too():
+    """2026-09-17: run 5's roll never moved the high band's level; its onset
+    rate doubled. The density path must drive the same accent."""
+    clock = FakeClock()
+    rig = load_rig()
+    eng = ReactiveLayerEngine(clock)
+    _run_build(eng, rig, clock, high=0.4, seconds=3.0, audio_high_onset_rate=4.3)
+    assert not eng.snare_roll_active
+    _run_build(eng, rig, clock, high=0.4, seconds=1.0, audio_high_onset_rate=8.5)
+    assert eng.snare_roll_active
+    assert eng.roll_path == "density"
+    assert eng.strobe_flash_dmx == STROBE_ROLL_FLASH_DMX
+
+
 def test_the_roll_accent_runs_through_the_candidate_and_ends_on_the_commit():
     clock = FakeClock()
     rig = load_rig()

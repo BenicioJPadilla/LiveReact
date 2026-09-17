@@ -206,3 +206,25 @@ def test_recorder_writes_norm_seeded(tmp_path):
     rec.close()
     row = json.loads((tmp_path / "state.jsonl").read_text().strip())
     assert row["norm_seeded"] is True
+
+
+def test_recorder_writes_onset_rate_and_roll_path(tmp_path):
+    """2026-09-17: the roll accent's rate signal and which detector path
+    fired must be in the capture -- the whole point of measuring onsets at
+    block rate is that the 10 Hz log can't recompute them."""
+    from livereact.engines.reactive import ReactiveLayerEngine
+    state = ShowState()
+    state.publish(ShowSnapshot(audio_high_onset_rate=8.5, audio_high_flux=0.31))
+    fb = DmxFrameBuffer()
+    fb.publish(bytes(UNIVERSE_SIZE))
+    eng = ReactiveLayerEngine(FakeClock())
+    eng.roll_path = "density"
+    eng.roll_rate_base = 4.3
+    rec = SessionRecorder(state, fb, FakeClock(), __import__("threading").Event(), str(tmp_path),
+                          reactive_engine=eng)
+    rec.open()
+    rec.tick()
+    rec.close()
+    row = json.loads((tmp_path / "state.jsonl").read_text().strip())
+    assert row["onset_rate"] == 8.5 and row["high_flux"] == 0.31
+    assert row["roll_path"] == "density" and row["roll_rate_base"] == 4.3

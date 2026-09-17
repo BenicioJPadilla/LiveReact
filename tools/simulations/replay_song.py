@@ -229,6 +229,12 @@ def run(mp3_path: str, bpm: float, duration: float | None, rig_path: str, out_pr
             "energy_norm": round(snap.energy_norm, 4),
             "bucket": bucket,
             "wash_level": round(reactive.wash_level, 4),
+            "band_low": round(snap.audio_band_low_abs, 4),
+            "band_mid": round(snap.audio_band_mid_abs, 4),
+            "band_high": round(snap.audio_band_high_abs, 4),
+            "onset_rate": round(snap.audio_high_onset_rate, 1),  # inputs/audio.py ONSET_* (2026-09-17)
+            "snare_roll_active": reactive.snare_roll_active,
+            "roll_path": reactive.roll_path,
             "palette": snap.palette,
             "scene": phrase._current.name,
             "scene_uses_lasers": phrase._current.uses_lasers,

@@ -130,3 +130,101 @@ def test_band_mid_abs_and_high_abs_are_not_normalized_either():
     a._analyze_block(loud_high, attack=1.0, release=1.0, np=np)
     loud_high_msg = a.queue.get_nowait()
     assert loud_high_msg.band_high_abs > quiet_high_msg.band_high_abs * 5
+
+
+# --- high-band onset density (2026-09-17, the roll accent's rate signal) -----
+
+def _clicks(rate_hz: float, seconds: float, sr: int = 44100, amp: float = 0.5, seed: int = 1) -> np.ndarray:
+    """Short white-noise bursts (10 ms, hi-hat-like; a 3 ms click can vanish under the Hann window's edge) at `rate_hz` over a -60 dB
+    noise floor -- the shape a hat pattern has in the high band."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * sr)
+    x = rng.standard_normal(n) * 1e-3
+    burst_len = int(0.010 * sr)
+    env = np.hanning(burst_len)
+    step = sr / rate_hz
+    t = 0.0
+    while t + burst_len < n:
+        i = int(t)
+        x[i:i + burst_len] += rng.standard_normal(burst_len) * env * amp
+        t += step
+    return x.astype(np.float32)
+
+
+def _feed(a: AudioAnalyzer, x: np.ndarray) -> list[AudioLevelMessage]:
+    out = []
+    for i in range(0, len(x) - BLOCK + 1, BLOCK):
+        a._analyze_block(x[i:i + BLOCK], attack=1.0, release=1.0, np=np)
+        out.append(a.queue.get())
+    return out
+
+
+@pytest.mark.parametrize("rate", [4.0, 8.0])
+def test_high_onset_rate_counts_synthetic_clicks(rate):
+    """8th-note hats at 120 BPM are 4/s, 16ths are 8/s: the trailing rate
+    must read within about one onset of the truth once the window is full."""
+    a = _analyzer()
+    msgs = _feed(a, _clicks(rate, 4.0))
+    settled = [m.high_onset_rate for m in msgs[-40:]]  # last ~1 s
+    assert min(settled) >= rate - 1.0 and max(settled) <= rate + 1.0, settled
+
+
+def test_a_16th_roll_reads_far_above_8th_hats_even_at_the_resolution_limit():
+    """32nd-note density (16/s) sits at the ~70 ms refractory's ceiling and
+    is allowed to read low -- but it must still read well above 8/s, which
+    is all the roll detector needs from it."""
+    a = _analyzer()
+    msgs = _feed(a, _clicks(16.0, 4.0))
+    assert min(m.high_onset_rate for m in msgs[-40:]) >= 10.0
+
+
+def test_high_onset_rate_is_zero_for_silence_and_a_steady_tone():
+    a = _analyzer()
+    silence = np.zeros(BLOCK * 60, dtype=np.float32)
+    assert max(m.high_onset_rate for m in _feed(a, silence)) == 0.0
+    a = _analyzer()
+    t = np.arange(BLOCK * 60) / 44100
+    tone = (0.3 * np.sin(2 * np.pi * 4000 * t)).astype(np.float32)
+    msgs = _feed(a, tone)
+    assert max(m.high_onset_rate for m in msgs[5:]) == 0.0  # the first block's own attack may count
+
+
+def test_low_band_kicks_do_not_register_as_high_onsets():
+    """A 60 Hz kick pattern has no energy above 2 kHz: the HIGH-band flux
+    must stay flat, so a kick-heavy build can't fake a roll."""
+    a = _analyzer()
+    sr = 44100
+    n = sr * 4
+    t = np.arange(n) / sr
+    x = np.zeros(n, dtype=np.float32)
+    for k in range(0, n, sr // 2):  # a kick every 0.5 s
+        seg = slice(k, min(n, k + int(0.15 * sr)))
+        env = np.exp(-np.arange(seg.stop - seg.start) / (0.03 * sr))
+        x[seg] += (0.8 * np.sin(2 * np.pi * 60 * t[seg]) * env).astype(np.float32)
+    msgs = _feed(a, x)
+    assert max(m.high_onset_rate for m in msgs[-80:]) <= 1.0
+
+
+def test_onset_rate_is_independent_of_input_gain():
+    """A ratio on the raw spectrum: the same pattern at -20 dB and +20 dB
+    must count the same onsets (the AGC only ever touches rms)."""
+    quiet = _feed(_analyzer(), _clicks(8.0, 3.0, amp=0.1))
+    loud = _feed(_analyzer(), _clicks(8.0, 3.0, amp=10.0))
+    q = [m.high_onset_rate for m in quiet[-40:]]
+    l = [m.high_onset_rate for m in loud[-40:]]
+    assert abs(sum(q) / len(q) - sum(l) / len(l)) <= 1.0
+
+
+def test_white_noise_and_a_noise_riser_produce_no_onsets():
+    """The build's most common texture is a white-noise riser; its spectrum
+    fluctuates block to block but never clears ONSET_RATIO x its own
+    between-onset mean, so it can't read as a roll. Steady hiss neither
+    (the running mean starts cold and is excluded from onset blocks, so
+    the first second may count a few -- measured after that)."""
+    rng = np.random.default_rng(0)
+    for level in (0.01, 0.1):
+        hiss = (rng.standard_normal(BLOCK * 200) * level).astype(np.float32)
+        assert max(m.high_onset_rate for m in _feed(_analyzer(), hiss)[-120:]) == 0.0
+    n = BLOCK * 170
+    riser = (rng.standard_normal(n) * np.linspace(0.001, 0.2, n)).astype(np.float32)
+    assert max(m.high_onset_rate for m in _feed(_analyzer(), riser)[-60:]) == 0.0

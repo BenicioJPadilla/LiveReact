@@ -66,6 +66,11 @@ class ShowSnapshot:
     audio_band_low_abs: float = 0.0
     audio_band_mid_abs: float = 0.0
     audio_band_high_abs: float = 0.0
+    # Block-rate onset density in the high band (inputs/audio.py ONSET_*,
+    # 2026-09-17): onsets/s and the spectral flux behind it. A snare roll is
+    # a rate, not a level -- core/snare_trigger.py reads this.
+    audio_high_onset_rate: float = 0.0
+    audio_high_flux: float = 0.0
 
     # --- derived ---
     energy: float = 0.0                  # inferred 0.0-1.0

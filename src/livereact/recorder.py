@@ -161,6 +161,8 @@ class SessionRecorder(threading.Thread):
             "band_low": round(snap.audio_band_low_abs, 4),   # the laser / synth / roll
             "band_mid": round(snap.audio_band_mid_abs, 4),   # detector inputs, so a
             "band_high": round(snap.audio_band_high_abs, 4), # session can be replayed offline
+            "onset_rate": round(snap.audio_high_onset_rate, 1),  # high-band onsets/s (roll accent)
+            "high_flux": round(snap.audio_high_flux, 4),
             "palette": snap.palette,            # phrase-frozen palette entries (engines/palette.py)
             "palette_spot": snap.palette_spot,
         }
@@ -178,6 +180,8 @@ class SessionRecorder(threading.Thread):
             record["strobe_on"] = self.reactive_engine.strobe_on
             record["snare_roll_active"] = self.reactive_engine.snare_roll_active  # core/snare_trigger.py RollRiseDetector
             record["roll_ratio"] = round(self.reactive_engine.roll_ratio, 3)      # its live high-band fast/slow ratio
+            record["roll_path"] = self.reactive_engine.roll_path                   # level / density / both / ""
+            record["roll_rate_base"] = round(self.reactive_engine.roll_rate_base, 1)  # onset-rate baseline (density path)
             record["synth_sync"] = self.reactive_engine.synth_sync_active  # operator Synth Sync mode on (and audio fresh)
             record["synth_level"] = round(self.reactive_engine.synth_level, 3)  # the mid-band envelope driving the wash
         if self.phrase_engine is not None:
