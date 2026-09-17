@@ -16,6 +16,7 @@ Usage:
     .venv/bin/python tools/simulations/replay_state.py recordings/session-2026091{5,6}-*   # several
     CUE=220,310 .venv/bin/python tools/simulations/replay_state.py <dir>   # inject C presses (s)
     .venv/bin/python tools/simulations/replay_state.py <dir> --csv out.csv  # per-row trace
+    .venv/bin/python tools/simulations/replay_state.py <dir> --seed 0.12,0.48  # last session's range
 
 What it prints per session: the normalizer's warm-up end, every bucket
 transition (time, bar, from -> to, the smoothed/instantaneous energy at
@@ -80,7 +81,8 @@ def cue_times_from_env(first_t: float) -> list[float]:
     return [first_t + float(x) for x in raw.split(",") if x.strip()]
 
 
-def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = False) -> dict:
+def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = False,
+           seed: tuple[float, float] | None = None) -> dict:
     rows = load_rows(session_dir)
     if not rows:
         print(f"{session_dir}: empty")
@@ -89,13 +91,14 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
     clock = FakeClock(t0)
     state = ShowState()
     q: queue.Queue = queue.Queue()
-    m = Metronome(q, state, clock, threading.Event(), log_interval=1e9)
+    m = Metronome(q, state, clock, threading.Event(), log_interval=1e9, seed_range=seed)
 
     env_cues = cue_times_from_env(t0)
     transitions: list[tuple[float, int, str, str, float, float]] = []
     drops: list[tuple[float, int, float]] = []
     cues: list[float] = []
-    warm_at: float | None = None
+    warm_at: float | None = None        # the live window reached ENERGY_NORM_MIN_SAMPLES
+    first_norm_at: float | None = None  # first nonzero energy_norm (earlier than warm_at when seeded)
     prev_bucket = None
     prev_beat = None
     prev_cue = False
@@ -139,8 +142,10 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
                 m.cue_build()
                 cues.append(t)
             snap = m.tick()
-            if warm_at is None and snap.energy_norm > 0.0 and row.get("audio_fresh"):
+            if warm_at is None and m.norm_warm:
                 warm_at = t
+            if first_norm_at is None and snap.energy_norm > 0.0 and row.get("audio_fresh"):
+                first_norm_at = t
             if snap.bucket != prev_bucket:
                 transitions.append((t, snap.bar, prev_bucket or "-", snap.bucket,
                                     snap.energy_norm, m._energy_norm_inst or 0.0))  # noqa: SLF001
@@ -165,7 +170,9 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
 
     if not quiet:
         print(f"== {session_dir.name}  ({len(rows)} rows, {rows[-1]['t'] - t0:.0f} s)")
-        print(f"   warm-up done: {'never' if warm_at is None else f'{warm_at - t0:.1f} s'}")
+        print(f"   warm-up done: {'never' if warm_at is None else f'{warm_at - t0:.1f} s'}"
+              f"   first energy_norm>0: {'never' if first_norm_at is None else f'{first_norm_at - t0:.1f} s'}"
+              f"{'   (seeded)' if seed else ''}")
         for t in cues:
             print(f"   C press     {t - t0:8.1f} s")
         for t, bar, a, b, en, inst in transitions:
@@ -173,21 +180,31 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
         for t, bar, hit in drops:
             print(f"   DROP commit {t - t0:8.1f} s  bar {bar:4d}  hit={hit:.2f}")
         print(f"   {len(transitions)} transitions, {len(drops)} drops, {len(cues)} cues")
-    return {"transitions": transitions, "drops": drops, "cues": cues, "warm_at": warm_at, "t0": t0}
+        floor, ceiling = m.energy_norm_range
+        print(f"   final range: floor={floor:.3f} ceiling={ceiling:.3f}"
+              f"{'' if m.norm_warm else '  (never warmed up)'}  -> --seed {floor:.3f},{ceiling:.3f}")
+    return {"transitions": transitions, "drops": drops, "cues": cues, "warm_at": warm_at, "t0": t0,
+            "range": m.energy_norm_range}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("sessions", nargs="+", type=Path, help="recordings/session-* directories")
     ap.add_argument("--csv", type=Path, help="write a per-row trace (single session only)")
+    ap.add_argument("--seed", help="floor,ceiling to seed the normalizer with (what config.py would "
+                                   "have persisted from the previous session; see 'final range')")
     args = ap.parse_args()
+    seed = None
+    if args.seed:
+        floor, ceiling = (float(x) for x in args.seed.split(","))
+        seed = (floor, ceiling)
     if args.csv is not None and len(args.sessions) != 1:
         ap.error("--csv takes exactly one session")
     for s in args.sessions:
         if not (s / "state.jsonl").exists():
             print(f"{s}: no state.jsonl, skipping")
             continue
-        replay(s, csv_path=args.csv)
+        replay(s, csv_path=args.csv, seed=seed)
 
 
 if __name__ == "__main__":

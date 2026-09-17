@@ -75,3 +75,66 @@ def test_loading_all_default_values_does_not_warn(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         config.load_into(loaded, path)
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+# --- energy_norm seed (2026-09-17) -------------------------------------------
+
+FP = {"gain": 5.0, "audio_device": "None"}
+
+
+def test_energy_norm_seed_round_trips_with_its_fingerprint(tmp_path):
+    path = str(tmp_path / "config.json")
+    rec = config.energy_norm_record(0.1234, 0.5678, FP)
+    config.save_from(ManualParams(), path, energy_norm=rec)
+    assert config.energy_norm_seed(path, FP) == (0.1234, 0.5678)
+
+
+def test_energy_norm_seed_is_dropped_when_the_gain_or_device_differs(tmp_path, caplog):
+    """The saved range is only a range for the SAME gain staging: the laptop
+    mic fallback or a re-gained mixer must start cold, not against last
+    week's XDJ line level."""
+    path = str(tmp_path / "config.json")
+    config.save_from(ManualParams(), path, energy_norm=config.energy_norm_record(0.1, 0.5, FP))
+    assert config.energy_norm_seed(path, {"gain": 1.4, "audio_device": "None"}) is None
+    assert config.energy_norm_seed(path, {"gain": 5.0, "audio_device": "MacBook Pro Microphone"}) is None
+    assert config.energy_norm_seed(path, FP) == (0.1, 0.5)
+
+
+def test_saving_without_a_seed_keeps_the_existing_one(tmp_path):
+    """A demo run, or a real session that never finished warming up, saves
+    the operator settings but must not erase the last good seed."""
+    path = str(tmp_path / "config.json")
+    config.save_from(ManualParams(), path, energy_norm=config.energy_norm_record(0.1, 0.5, FP))
+    config.save_from(ManualParams(master_brightness=0.6), path)  # no seed given
+    assert config.energy_norm_seed(path, FP) == (0.1, 0.5)
+    loaded = ManualParams()
+    config.load_into(loaded, path)
+    assert loaded.master_brightness == 0.6
+
+
+def test_a_missing_or_corrupt_seed_is_none(tmp_path):
+    import json
+    path = str(tmp_path / "config.json")
+    assert config.energy_norm_seed(path, FP) is None
+    config.save_from(ManualParams(), path)
+    assert config.energy_norm_seed(path, FP) is None
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"energy_norm": {"floor": "x", "ceiling": 0.5, "fingerprint": FP}}, fh)
+    assert config.energy_norm_seed(path, FP) is None
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"energy_norm": {"floor": 0.6, "ceiling": 0.5, "fingerprint": FP}}, fh)
+    assert config.energy_norm_seed(path, FP) is None  # floor above ceiling
+
+
+def test_demo_mode_never_reads_or_writes_a_seed(tmp_path):
+    """Synthetic demo data isn't a venue; its range must not seed a real
+    show, and a saved real seed must not be read by a demo run."""
+    from livereact.app import App, AppConfig
+    path = str(tmp_path / "config.json")
+    config.save_from(ManualParams(), path, energy_norm=config.energy_norm_record(0.1, 0.5, FP))
+    app = App(AppConfig(demo=True, config_path=path, duration=0.01))
+    assert app.metronome._seed_range is None
+    app.metronome._energy_history.extend([0.3] * 60)  # pretend it warmed up
+    app.start()
+    app.shutdown()
+    assert config.energy_norm_seed(path, FP) == (0.1, 0.5)  # untouched

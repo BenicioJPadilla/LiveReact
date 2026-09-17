@@ -220,7 +220,7 @@ Every recorded session folder contains:
 |------|------------|
 | `session.log` | All output (info/warnings/errors + tracebacks) |
 | `errors.log`  | Just warnings/errors — quick scan for problems |
-| `state.jsonl` | What the show did, sampled ~10×/sec (BPM, beat, energy, inputs, active DMX channels) |
+| `state.jsonl` | What the show did, sampled ~10×/sec (BPM, beat, energy, inputs, active DMX channels). `tools/simulations/replay_state.py <session dir>` feeds it back through the real classifier to check a change against the capture |
 | `meta.json`   | Your machine + detected devices + run settings at startup |
 | `summary.json`| Totals (frames sent, samples) at shutdown |
 | `NOTES.md`    | **You fill this in** — what you expected vs. what actually happened |
@@ -359,6 +359,15 @@ Play a set: a track, a build, a drop, then mix into another track.
 - crossfading into the next track is detected (console shows TRANSITION) and the
   show settles into a new look afterward
 - the operator controls (brightness, blackout, freeze, skip) all respond
+- the classifier reacts from the first seconds of music, not after ~40 s: the loudness
+  normalizer is seeded from the last real session's range (saved to `config.json` at
+  shutdown once it has heard 40 s of music; demo runs never save it). `state.jsonl`'s
+  `norm_seeded` is true while that seed still carries weight. The seed is only used when
+  the input gain and audio device match the session that saved it — after re-gaining the
+  mixer, at a new venue, or on the laptop-mic fallback, launch with `--no-norm-seed` (or
+  just let the first 40 s be BREAK, as before). Cost, disclosed: a kick-only intro that the
+  RMS reads as loud will now read as a DROP from the start instead of hiding inside the
+  warm-up — same limitation as the C cue exists for, just no longer masked.
 
 **Record:** the whole thing. Note anything that felt wrong (timing, color, a fixture
 misbehaving) in `NOTES.md`.

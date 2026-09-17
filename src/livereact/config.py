@@ -65,11 +65,82 @@ def load_into(manual, path: str = DEFAULT_PATH) -> bool:
     return True
 
 
-def save_from(manual, path: str = DEFAULT_PATH) -> None:
-    """Write the persistable settings from ``manual`` to ``path``."""
+def save_from(manual, path: str = DEFAULT_PATH, energy_norm: dict | None = None) -> None:
+    """Write the persistable settings from ``manual`` to ``path``.
+
+    ``energy_norm`` (see `save_energy_norm_seed`) is written alongside when
+    given; when it's None the file's existing seed is carried over untouched,
+    so a demo run or a session that never finished warming up can't erase a
+    good seed from the last real set.
+    """
     data = {field: getattr(manual, field) for field in _PERSIST}
+    if energy_norm is None:
+        energy_norm = _read(path).get(ENERGY_NORM_KEY)
+    if energy_norm is not None:
+        data[ENERGY_NORM_KEY] = energy_norm
     try:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
     except OSError as exc:
         log.warning("Could not save config %s: %s", path, exc)
+
+
+# --- normalizer seed (2026-09-17) --------------------------------------------
+# core/metronome.py's adaptive energy normalizer needs ~40 s of music before it
+# can classify anything (ENERGY_NORM_MIN_SAMPLES): until then energy_norm reads
+# 0.0 and every track starts as BREAK -- on 2026-09-15's first live laser run
+# a track audible only 46 s before its drop went BREAK -> DROP with no build.
+# The range it converges to is a property of the venue's gain staging far more
+# than of the track, so the last real session's p10/p90 is a good first guess
+# for the next one. Josh's call (2026-09-17): persist it and seed the next
+# launch, rather than shorten the window or start tracks earlier.
+#
+# The seed is only meaningful for the SAME gain staging, so it carries a
+# fingerprint (the static input gain and the audio device) and is ignored --
+# with a log line -- when either differs. Demo mode never writes one.
+ENERGY_NORM_KEY = "energy_norm"
+
+
+def _read(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def energy_norm_seed(path: str, fingerprint: dict) -> tuple[float, float] | None:
+    """The (floor, ceiling) saved by the last real session, or None when there
+    is none or it was made under a different ``fingerprint`` (gain/device)."""
+    seed = _read(path).get(ENERGY_NORM_KEY)
+    if not isinstance(seed, dict):
+        return None
+    try:
+        floor, ceiling = float(seed["floor"]), float(seed["ceiling"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    saved_fp = seed.get("fingerprint") or {}
+    if saved_fp != fingerprint:
+        log.info("Ignoring saved energy_norm seed from %s: fingerprint %s != %s",
+                 seed.get("saved", "?"), saved_fp, fingerprint)
+        return None
+    if not (0.0 <= floor <= ceiling <= 1.5):
+        return None
+    log.info("Seeding energy normalizer from %s: floor=%.3f ceiling=%.3f (saved %s)",
+             path, floor, ceiling, seed.get("saved", "?"))
+    return floor, ceiling
+
+
+def energy_norm_record(floor: float, ceiling: float, fingerprint: dict) -> dict:
+    """The dict `save_from` writes under ENERGY_NORM_KEY."""
+    from datetime import datetime
+
+    return {
+        "floor": round(float(floor), 4),
+        "ceiling": round(float(ceiling), 4),
+        "fingerprint": dict(fingerprint),
+        "saved": datetime.now().isoformat(timespec="seconds"),
+    }

@@ -191,3 +191,18 @@ def test_recorder_serializes_numpy_scalars_instead_of_dropping_the_sample(tmp_pa
     assert _json_default(np.bool_(True)) is True
     assert _json_default(np.float64(0.5)) == 0.5
     assert json.dumps({"a": np.bool_(False), "b": np.int64(3)}, default=_json_default) == '{"a": false, "b": 3}'
+
+
+def test_recorder_writes_norm_seeded(tmp_path):
+    """2026-09-17: a capture must show whether an early classification came
+    from the last session's persisted range or this set's own window."""
+    state = ShowState()
+    state.publish(ShowSnapshot(norm_seeded=True))
+    fb = DmxFrameBuffer()
+    fb.publish(bytes(UNIVERSE_SIZE))
+    rec = SessionRecorder(state, fb, FakeClock(), __import__("threading").Event(), str(tmp_path))
+    rec.open()
+    rec.tick()
+    rec.close()
+    row = json.loads((tmp_path / "state.jsonl").read_text().strip())
+    assert row["norm_seeded"] is True

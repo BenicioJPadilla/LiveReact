@@ -117,6 +117,11 @@ class ShowSnapshot:
     # True while the DJ's build cue is holding BUILD (core/metronome.py
     # cue_build, 2026-09-16) -- for the recorder/console, no engine reads it.
     build_cue: bool = False
+    # True while energy_norm is still (partly) measured against the LAST
+    # session's persisted range rather than this set's own window
+    # (core/metronome.py seed_range, config.py energy_norm seed, 2026-09-17)
+    # -- so a capture shows which regime an early classification came from.
+    norm_seeded: bool = False
     # True while the classifier has a DROP candidate under confirmation
     # (core/metronome.py's _derive_bucket: the smoothed level has crossed
     # the DROP threshold and the FAST_ENTRY_DWELL_S clock is running). The

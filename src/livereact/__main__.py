@@ -61,6 +61,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                         "Lets the laser fire regardless of the rig's declared mount height "
                         "(LASER-09's 3 m rule) for this run only -- never persisted. Lasers "
                         "still need to be armed (config/console). Never use this at a show.")
+    p.add_argument("--no-norm-seed", action="store_true",
+                   help="Cold-start the energy normalizer instead of seeding it from the last "
+                        "session's saved range (new venue / re-gained mixer).")
     p.add_argument("--audio-device", default=None, help="Explicit audio input device name/index for real audio analysis (default: auto-detect the XDJ).")
     p.add_argument("--log-level", default="INFO", help="DEBUG, INFO, WARNING, ERROR (default: INFO).")
     # Recording / feedback (capture a session to hand back for analysis).
@@ -177,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
                        pdl_interface=args.pdl_interface, rig_path=args.rig,
                        audio_device=args.audio_device,
                        testing=args.testing,
+                       norm_seed=not args.no_norm_seed,
                        bible_failsafe_enabled=args.bible_failsafe,
                        full_catalog=args.full_catalog,
                        record=bool(session_dir), session_dir=session_dir)

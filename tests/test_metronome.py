@@ -1055,3 +1055,131 @@ def test_a_single_kick_that_does_not_hold_a_beat_does_not_commit():
     _feed(m, clock, low=18.0, inst=0.95, seconds=DROP_HIT_CONFIRM_S * 0.4)
     _feed(m, clock, low=1.5, inst=0.2, seconds=1.0)  # gone again
     assert m._base_committed == EnergyBucket.BUILD
+
+
+# --- persisted normalizer seed (2026-09-17, config.py energy_norm) -----------
+
+def _seeded(clock, seed):
+    return Metronome(queue.Queue(), ShowState(), clock, threading.Event(), seed_range=seed)
+
+
+def test_a_seeded_normalizer_classifies_from_the_first_second():
+    """The 40 s warm-up (ENERGY_NORM_MIN_SAMPLES) is the reason a track that
+    started 46 s before its drop got no build on 2026-09-15: energy_norm is
+    0.0 until the window fills. Seeded with the last session's range, the
+    same sustained loud passage reads high immediately -- and the flag says
+    the seed is what it's reading against."""
+    clock = FakeClock()
+    m = _seeded(clock, (0.10, 0.50))
+    _pump_audio(m, clock, rms=0.5, seconds=3.0)
+    snap = m.tick()
+    assert snap.energy_norm > 0.8
+    assert snap.norm_seeded is True
+    assert m.norm_warm is False
+
+
+def test_an_unseeded_normalizer_is_unchanged():
+    clock = FakeClock()
+    m = _metronome(clock)
+    _pump_audio(m, clock, rms=0.5, seconds=3.0)
+    snap = m.tick()
+    assert snap.energy_norm == 0.0
+    assert snap.norm_seeded is False
+
+
+def test_the_seed_hands_over_to_the_live_window_without_a_jump():
+    """The seed is blended toward the live window by n/ENERGY_NORM_MIN_SAMPLES,
+    so a seed that's wrong for tonight (0.1-0.5 saved, the set actually sits
+    at 0.2-0.4) converges smoothly instead of snapping at sample 40. Pin: no
+    single 1 s step moves energy_norm by more than a small amount, the seed
+    flag drops exactly when the window is trusted on its own, and after
+    that the value is what an unseeded metronome would produce."""
+    from livereact.core.metronome import ENERGY_NORM_MIN_SAMPLES
+    clock = FakeClock()
+    m = _seeded(clock, (0.10, 0.50))
+    _pump_audio(m, clock, rms=0.4, seconds=2.0)
+    values = []
+    for _ in range(ENERGY_NORM_MIN_SAMPLES + 5):
+        _pump_audio(m, clock, rms=0.4, seconds=1.0)
+        values.append((m.tick().energy_norm, m.norm_seeded))
+    steps = [abs(b[0] - a[0]) for a, b in zip(values, values[1:])]
+    assert max(steps) < 0.08, steps
+    seeded_flags = [s for _, s in values]
+    assert seeded_flags[0] is True and seeded_flags[-1] is False
+    assert m.norm_warm is True
+    ref_clock = FakeClock()
+    ref = _metronome(ref_clock)
+    _pump_audio(ref, ref_clock, rms=0.4, seconds=2.0 + ENERGY_NORM_MIN_SAMPLES + 5)
+    assert m.tick().energy_norm == pytest.approx(ref.tick().energy_norm, abs=0.02)
+
+
+def test_a_silent_seed_is_ignored():
+    """A saved range whose ceiling is under ENERGY_NORM_MIN_CEILING is not a
+    range (the last session never had music) -- behave as unseeded."""
+    clock = FakeClock()
+    m = _seeded(clock, (0.0, 0.01))
+    _pump_audio(m, clock, rms=0.5, seconds=3.0)
+    snap = m.tick()
+    assert snap.energy_norm == 0.0
+    assert snap.norm_seeded is False
+
+
+def test_energy_norm_range_is_the_live_window_not_the_seed():
+    """What gets persisted for the NEXT launch is the window this set
+    actually measured, never the seed passed in."""
+    clock = FakeClock()
+    m = _seeded(clock, (0.10, 0.50))
+    _pump_audio(m, clock, rms=0.3, seconds=50.0)
+    floor, ceiling = m.energy_norm_range
+    assert floor == pytest.approx(0.3, abs=0.02)
+    assert ceiling == pytest.approx(0.3, abs=0.02)
+    assert m.norm_warm is True
+
+
+def test_a_drop_tail_with_gaps_between_hits_holds_the_drop():
+    """The thinning tail of a drop (recordings/session-20260916-114402,
+    355-372 s): sparse kicks over a bed, smoothed level in BUILD range
+    (0.42-0.50) but the instantaneous level dropping to ~0 between hits.
+    The 'sound right now' lead flips `raw` to BREAK on each gap, which
+    restarts the BUILD candidate -- deliberately: only a section whose sound
+    stays continuously above the break line (pads, the kick gone) is a
+    post-drop build; this holds DROP until the real cut. Pooling both exits
+    into one clock turned this tail into a 12 s BUILD with a strobe ramp."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._energy_norm_inst = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+    m._energy_norm = 0.5
+    t_end = clock.monotonic() + 4 * CUT_EXIT_CONFIRM_S
+    i = 0
+    while clock.monotonic() < t_end:
+        m._energy_norm_inst = 0.05 if i % 8 == 0 else 0.5  # a gap under the break line every ~bar
+        m._derive_bucket(clock.monotonic())
+        clock.advance(0.2)
+        i += 1
+    assert m._base_committed == EnergyBucket.DROP
+
+
+def test_a_sustained_post_drop_bed_becomes_a_build():
+    """The case D3 exists for: after the drop the kick leaves but pads/vocal
+    keep the instantaneous level above the break line the whole time --
+    two bars of that is a build, and it commits before DROP's 8-bar floor."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._energy_norm_inst = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    m._derive_bucket(clock.monotonic())
+    m._energy_norm = 0.5
+    m._energy_norm_inst = 0.4
+    t_end = clock.monotonic() + CUT_EXIT_CONFIRM_S + 0.3
+    while clock.monotonic() < t_end:
+        m._derive_bucket(clock.monotonic())
+        clock.advance(0.1)
+    assert m._base_committed == EnergyBucket.BUILD
+    assert clock.monotonic() < PER_STATE_DWELL_S[EnergyBucket.DROP]

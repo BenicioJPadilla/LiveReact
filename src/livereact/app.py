@@ -61,6 +61,9 @@ class AppConfig:
         # Never persisted -- typed every run -- so a real show can't inherit it. It
         # does not change the fixture's physical safety, only what the software checks;
         # the operator owns the beam path for that session.
+    norm_seed: bool = True  # seed the energy normalizer from the last real session's
+        # persisted range (config.py energy_norm, 2026-09-17); `--no-norm-seed` for a
+        # cold start (new venue, re-gained mixer). Demo mode never reads or writes it.
 
 
 class App:
@@ -90,7 +93,8 @@ class App:
         # --- input pipeline (Phase 1; real PDL+MIDI in hardware mode) ---
         self.input_queue: "queue.Queue" = queue.Queue()
         self.show_state = ShowState()
-        self.metronome = Metronome(self.input_queue, self.show_state, self.clock, self.stop_event)
+        self.metronome = Metronome(self.input_queue, self.show_state, self.clock, self.stop_event,
+                                   seed_range=self._energy_norm_seed())
         self.sources = self._build_sources()
 
         # --- show pipeline (Phases 3-4): snapshot -> engines -> merge -> frame buffer ---
@@ -139,6 +143,19 @@ class App:
         self.recorder = None
         if self.config.record and self.config.session_dir:
             self._setup_recording(self.config.session_dir)
+
+    def _norm_fingerprint(self) -> dict:
+        """What the persisted normalizer range is only valid for: the same static
+        input gain and the same audio device (a re-gained mixer or the laptop mic
+        fallback is a different loudness range, not a different room)."""
+        from .inputs.audio import ENERGY_GAIN
+
+        return {"gain": ENERGY_GAIN, "audio_device": str(self.config.audio_device)}
+
+    def _energy_norm_seed(self) -> tuple[float, float] | None:
+        if self.config.demo or not self.config.norm_seed or not self.config.config_path:
+            return None
+        return app_config.energy_norm_seed(self.config.config_path, self._norm_fingerprint())
 
     def _setup_recording(self, session_dir: str) -> None:
         from .recorder import SessionRecorder, write_meta, write_notes_template
@@ -235,7 +252,12 @@ class App:
             if t.is_alive():
                 log.warning("Thread %s did not stop within timeout", t.name)
         if self.config.config_path:
-            app_config.save_from(self.manual, self.config.config_path)
+            seed = None
+            if not self.config.demo and self.metronome.norm_warm:
+                floor, ceiling = self.metronome.energy_norm_range
+                seed = app_config.energy_norm_record(floor, ceiling, self._norm_fingerprint())
+                log.info("Saving energy_norm seed for the next launch: floor=%.3f ceiling=%.3f", floor, ceiling)
+            app_config.save_from(self.manual, self.config.config_path, energy_norm=seed)
         if self.recorder is not None and self.config.session_dir:
             from .recorder import write_summary
 

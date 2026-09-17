@@ -138,7 +138,20 @@ ENERGY_NORM_MIN_SAMPLES = 40          # require this many seconds of actual MUSI
                                        # -- it delayed the first real drop by 10s
                                        # (the 90-sample window's p90 takes ~9
                                        # drop-seconds to move).
-ENERGY_NORM_MIN_SPAN = 0.20           # floor on (ceiling - floor) -- avoids the
+                                       # SEEDED as of 2026-09-17 (Josh's call;
+                                       # config.py's energy_norm seed): a
+                                       # Metronome built with `seed_range` uses
+                                       # the last real session's p10/p90 as the
+                                       # range while the window fills, blending
+                                       # toward the live window by n/MIN_SAMPLES
+                                       # so there's no jump at sample 40. Same
+                                       # venue/gain = same range (the seed carries
+                                       # a gain+device fingerprint and is dropped
+                                       # when either differs); a different room
+                                       # gets ~40 s of slightly-off classification
+                                       # instead of 40 s of BREAK. The warm-up
+                                       # count still gates persisting a NEW seed.
+ENERGY_NORM_MIN_SPAN = 0.20          # floor on (ceiling - floor) -- avoids the
                                        # ratio blowing up when the set's been flat.
                                        # 0.10 -> 0.20 (2026-09-15, replaying
                                        # recordings/session-20260915-114303): with
@@ -391,6 +404,7 @@ class Metronome(threading.Thread):
         stop_event: threading.Event,
         hz: float = 100.0,
         log_interval: float = 1.0,
+        seed_range: tuple[float, float] | None = None,
     ) -> None:
         super().__init__(name="metronome", daemon=False)
         self.queue = input_queue
@@ -399,6 +413,8 @@ class Metronome(threading.Thread):
         self.stop_event = stop_event
         self.hz = hz
         self._log_interval = log_interval
+        # (floor, ceiling) from the last real session -- see ENERGY_NORM_MIN_SAMPLES
+        self._seed_range = seed_range if seed_range and seed_range[1] >= ENERGY_NORM_MIN_CEILING else None
 
         # --- authoritative working state (owned solely by this thread) ---
         self._bpm = 124.0
@@ -706,21 +722,50 @@ class Metronome(threading.Thread):
                 self._energy_floor = vals[int(0.10 * (n - 1))]
                 self._energy_ceiling = vals[int(0.90 * (n - 1))]
 
-        if (len(self._energy_history) < ENERGY_NORM_MIN_SAMPLES
-                or self._energy_ceiling < ENERGY_NORM_MIN_CEILING):
-            self._energy_norm = 0.0  # not enough history yet, or genuinely silent recently
+        floor, ceiling = self._energy_floor, self._energy_ceiling
+        n = len(self._energy_history)
+        if n < ENERGY_NORM_MIN_SAMPLES:
+            if self._seed_range is None:
+                self._energy_norm = 0.0  # not enough history yet
+                self._energy_norm_inst = 0.0
+                return
+            # Warm-up with a seed: the last session's range, handing over to
+            # the live window as it fills (see ENERGY_NORM_MIN_SAMPLES).
+            w = n / ENERGY_NORM_MIN_SAMPLES
+            floor = (1.0 - w) * self._seed_range[0] + w * floor
+            ceiling = (1.0 - w) * self._seed_range[1] + w * ceiling
+        if ceiling < ENERGY_NORM_MIN_CEILING:
+            self._energy_norm = 0.0  # genuinely silent recently
             self._energy_norm_inst = 0.0
             return
 
-        span = max(self._energy_ceiling - self._energy_floor, ENERGY_NORM_MIN_SPAN)
-        self._energy_norm = max(0.0, min(1.0, (self._energy_smooth - self._energy_floor) / span))
+        span = max(ceiling - floor, ENERGY_NORM_MIN_SPAN)
+        self._energy_norm = max(0.0, min(1.0, (self._energy_smooth - floor) / span))
         # The same rescaling on the UNSMOOTHED per-tick energy -- "is the
         # sound still there right now" -- used only to confirm an upward
         # bucket move (see _derive_bucket), never to classify directly.
-        self._energy_norm_inst = max(0.0, min(1.0, (self._energy - self._energy_floor) / span))
+        self._energy_norm_inst = max(0.0, min(1.0, (self._energy - floor) / span))
         self._inst_recent.append((now, self._energy_norm_inst))
         while self._inst_recent and now - self._inst_recent[0][0] > INST_PEAK_HOLD_S:
             self._inst_recent.popleft()
+
+    @property
+    def norm_seeded(self) -> bool:
+        """True while the persisted seed still carries weight in the range
+        (window not yet at ENERGY_NORM_MIN_SAMPLES) -- recorder/console."""
+        return self._seed_range is not None and len(self._energy_history) < ENERGY_NORM_MIN_SAMPLES
+
+    @property
+    def norm_warm(self) -> bool:
+        """True once the live window alone is trusted -- the gate for saving a
+        NEW seed at shutdown (a half-warmed window is not a range)."""
+        return len(self._energy_history) >= ENERGY_NORM_MIN_SAMPLES
+
+    @property
+    def energy_norm_range(self) -> tuple[float, float]:
+        """The live window's (p10, p90) in raw energy units -- what gets
+        persisted as the next launch's seed (app.py, config.py)."""
+        return self._energy_floor, self._energy_ceiling
 
     def request_manual_bucket(self, bucket: EnergyBucket) -> None:
         """Bible-integration Phase 2 hook: a future DJ-triggered cue ("the
@@ -1247,6 +1292,7 @@ class Metronome(threading.Thread):
             drop_hit_intensity=self.drop_hit_intensity,
             drop_start_bar=self.drop_start_bar,
             build_cue=self.build_cue_active,
+            norm_seeded=self.norm_seeded,
             drop_candidate=self._bucket_candidate == EnergyBucket.DROP,
             palette=self.palette,
             palette_spot=self.palette_spot,
