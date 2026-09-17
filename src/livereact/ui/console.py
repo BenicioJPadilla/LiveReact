@@ -332,7 +332,10 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             self.l_laser_flash.setText("")
 
         if self.app.metronome.build_cue_active:
-            self.l_cue.setText("● BUILD CUED — held until the drop lands (C again cancels)")
+            if self.app.metronome.build_cue_source == "auto":
+                self.l_cue.setText("● BUILD (auto: kick back at half the drop's level) — C confirms it")
+            else:
+                self.l_cue.setText("● BUILD CUED — held until the drop lands (C again cancels)")
             self.l_cue.setStyleSheet(_DOT_OK)
         else:
             self.l_cue.setText("")

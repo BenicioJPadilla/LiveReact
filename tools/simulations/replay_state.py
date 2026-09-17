@@ -17,6 +17,7 @@ Usage:
     CUE=220,310 .venv/bin/python tools/simulations/replay_state.py <dir>   # inject C presses (s)
     .venv/bin/python tools/simulations/replay_state.py <dir> --csv out.csv  # per-row trace
     .venv/bin/python tools/simulations/replay_state.py <dir> --seed 0.12,0.48  # last session's range
+    .venv/bin/python tools/simulations/replay_state.py <dir> --no-cue        # ignore the recorded C presses
 
 What it prints per session: the normalizer's warm-up end, every bucket
 transition (time, bar, from -> to, the smoothed/instantaneous energy at
@@ -82,7 +83,7 @@ def cue_times_from_env(first_t: float) -> list[float]:
 
 
 def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = False,
-           seed: tuple[float, float] | None = None) -> dict:
+           seed: tuple[float, float] | None = None, replay_cues: bool = True) -> dict:
     rows = load_rows(session_dir)
     if not rows:
         print(f"{session_dir}: empty")
@@ -97,6 +98,8 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
     transitions: list[tuple[float, int, str, str, float, float]] = []
     drops: list[tuple[float, int, float]] = []
     cues: list[float] = []
+    auto_cues: list[tuple[float, int, str]] = []  # (t, bar, "fired"/"released")
+    prev_src = ""
     warm_at: float | None = None        # the live window reached ENERGY_NORM_MIN_SAMPLES
     first_norm_at: float | None = None  # first nonzero energy_norm (earlier than warm_at when seeded)
     prev_bucket = None
@@ -135,7 +138,7 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
                                     master_deck=row.get("master_deck"), playing=True, loop_active=False))
             # The DJ's C presses: recorded rising edges, plus any injected ones.
             cue_now = bool(row.get("build_cue"))
-            pressed = cue_now and not prev_cue
+            pressed = replay_cues and cue_now and not prev_cue
             prev_cue = cue_now
             while env_cues and env_cues[0] <= t:
                 env_cues.pop(0)
@@ -144,6 +147,9 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
                 m.cue_build()
                 cues.append(t)
             snap = m.tick()
+            if snap.build_cue_source != prev_src and "auto" in (snap.build_cue_source, prev_src):
+                auto_cues.append((t, snap.bar, "fired" if snap.build_cue_source == "auto" else "released"))
+            prev_src = snap.build_cue_source
             if warm_at is None and m.norm_warm:
                 warm_at = t
             if first_norm_at is None and snap.energy_norm > 0.0 and row.get("audio_fresh"):
@@ -177,11 +183,14 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
               f"{'   (seeded)' if seed else ''}")
         for t in cues:
             print(f"   C press     {t - t0:8.1f} s")
+        for t, bar, what in auto_cues:
+            print(f"   auto cue {what:8} {t - t0:8.1f} s  bar {bar:4d}")
         for t, bar, a, b, en, inst in transitions:
             print(f"   {t - t0:8.1f} s  bar {bar:4d}  {a:>5} -> {b:<5}  en={en:.2f} inst={inst:.2f}")
         for t, bar, hit in drops:
             print(f"   DROP commit {t - t0:8.1f} s  bar {bar:4d}  hit={hit:.2f}")
-        print(f"   {len(transitions)} transitions, {len(drops)} drops, {len(cues)} cues")
+        print(f"   {len(transitions)} transitions, {len(drops)} drops, {len(cues)} cues, "
+              f"{sum(1 for a in auto_cues if a[2] == 'fired')} auto cues")
         floor, ceiling = m.energy_norm_range
         print(f"   final range: floor={floor:.3f} ceiling={ceiling:.3f}"
               f"{'' if m.norm_warm else '  (never warmed up)'}  -> --seed {floor:.3f},{ceiling:.3f}")
@@ -193,6 +202,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("sessions", nargs="+", type=Path, help="recordings/session-* directories")
     ap.add_argument("--csv", type=Path, help="write a per-row trace (single session only)")
+    ap.add_argument("--no-cue", action="store_true",
+                    help="don't re-issue the recorded C presses (what the classifier does unaided)")
     ap.add_argument("--seed", help="floor,ceiling to seed the normalizer with (what config.py would "
                                    "have persisted from the previous session; see 'final range')")
     args = ap.parse_args()
@@ -206,7 +217,7 @@ def main() -> None:
         if not (s / "state.jsonl").exists():
             print(f"{s}: no state.jsonl, skipping")
             continue
-        replay(s, csv_path=args.csv, seed=seed)
+        replay(s, csv_path=args.csv, seed=seed, replay_cues=not args.no_cue)
 
 
 if __name__ == "__main__":

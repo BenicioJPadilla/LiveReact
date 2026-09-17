@@ -122,6 +122,9 @@ class ShowSnapshot:
     # True while the DJ's build cue is holding BUILD (core/metronome.py
     # cue_build, 2026-09-16) -- for the recorder/console, no engine reads it.
     build_cue: bool = False
+    # Who raised the held BUILD: "dj" (the C key) or "auto" (core/build_rule.py's
+    # kick-level rule, 2026-09-17); "" when no cue is held.
+    build_cue_source: str = ""
     # True while energy_norm is still (partly) measured against the LAST
     # session's persisted range rather than this set's own window
     # (core/metronome.py seed_range, config.py energy_norm seed, 2026-09-17)

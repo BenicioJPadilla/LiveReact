@@ -156,6 +156,7 @@ class SessionRecorder(threading.Thread):
             "drop_hit_intensity": round(snap.drop_hit_intensity, 4),
             "drop_pending": snap.drop_pending,
             "build_cue": snap.build_cue,                    # core/metronome.py cue_build: DJ-held BUILD
+            "build_cue_src": snap.build_cue_source,         # "dj" (C key) / "auto" (core/build_rule.py) / ""
             "norm_seeded": snap.norm_seeded,                # energy_norm still on last session's range
             "audio_fresh": snap.audio_fresh,
             "band_low": round(snap.audio_band_low_abs, 4),   # the laser / synth / roll

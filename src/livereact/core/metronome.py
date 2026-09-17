@@ -29,6 +29,7 @@ from collections import deque
 from ..clock import Clock, LoopTimer
 from ..engines import palette as palette_mod
 from ..scenes.base import EnergyBucket
+from .build_rule import AUTO_HOLD_BARS, KickLevelBuildRule
 from ..scenes.catalog import _BUCKET_ORDER, BUILD_MAX, LEGAL_TRANSITIONS, bucket_for_energy_with_hysteresis
 from .messages import AudioLevelMessage, BeatMessage, MidiControlMessage, StatusMessage, TransitionMessage
 from .show_state import ShowSnapshot, ShowState
@@ -288,6 +289,7 @@ EXIT_CONFIRM_DWELL_S = 4.0 * 60.0 / NOMINAL_BPM  # ~1.88s at 128 BPM
 # quantization note in _derive_bucket anticipated.
 BUILD_CUE_HOLD_BARS = 32.0
 BUILD_CUE_HOLD_S = BUILD_CUE_HOLD_BARS * SECONDS_PER_BAR
+AUTO_BUILD_HOLD_S = AUTO_HOLD_BARS * SECONDS_PER_BAR  # core/build_rule.py's automatic cue, shorter
 
 # The HIT lead out of a BUILD (2026-09-16, fifth live run, recordings/
 # session-20260916-114402): the audible drop -- the kick returning after a
@@ -466,6 +468,14 @@ class Metronome(threading.Thread):
         self._last_drop_or_peak_t: float | None = None  # for OUTRO promotion, see OUTRO_LOOKBACK_S
         self._manual_bucket_override: EnergyBucket | None = None  # see request_manual_bucket() / cue_build()
         self._build_cue_until: float | None = None  # while set, a cued BUILD can't fall to BREAK -- see cue_build()
+        self._build_cue_source = ""                  # "dj" (C key) or "auto" (core/build_rule.py) while held
+        # automatic build cue (core/build_rule.py): per-bar means fed on each bar change
+        self._build_rule = KickLevelBuildRule()
+        self._rule_bar: int | None = None
+        self._rule_low_sum = 0.0
+        self._rule_energy_sum = 0.0
+        self._rule_n = 0
+        self._rule_prev_base = EnergyBucket.BREAK
         # hit lead state (see DROP_HIT_LOW_RATIO)
         self._low_avg = 0.0
         self._low_recent: deque[tuple[float, float]] = deque()  # (t, band_low_abs) over INST_PEAK_HOLD_S
@@ -537,6 +547,7 @@ class Metronome(threading.Thread):
         self._derive_energy(now)
         self._derive_energy_norm(now)
         self._derive_bucket(now)
+        self._derive_build_rule(now)
         self._derive_drop_marker(now)
         self._derive_palette()
         snap = self._build_snapshot(now)
@@ -754,6 +765,11 @@ class Metronome(threading.Thread):
             self._inst_recent.popleft()
 
     @property
+    def build_cue_source(self) -> str:
+        """"dj" / "auto" while a build cue is held, else "" (console)."""
+        return self._build_cue_source if self._build_cue_until is not None else ""
+
+    @property
     def norm_seeded(self) -> bool:
         """True while the persisted seed still carries weight in the range
         (window not yet at ENERGY_NORM_MIN_SAMPLES) -- recorder/console."""
@@ -793,11 +809,20 @@ class Metronome(threading.Thread):
         a second press while held cancels back to BREAK. Safe to call from
         the console thread -- plain attribute writes, consumed on the
         metronome thread like request_manual_bucket."""
+        if self._build_cue_until is not None and self._build_cue_source == "auto":
+            # The rule got there first; the DJ agreeing makes it a DJ cue
+            # (full hold, no kick-gone release), never a cancel.
+            self._build_cue_until = self.clock.monotonic() + BUILD_CUE_HOLD_S
+            self._build_cue_source = "dj"
+            self._build_rule.released()
+            return
         if self._build_cue_until is not None:
             self._build_cue_until = None
+            self._build_cue_source = ""
             self.request_manual_bucket(EnergyBucket.BREAK)
             return
         self._build_cue_until = self.clock.monotonic() + BUILD_CUE_HOLD_S
+        self._build_cue_source = "dj"
         self.request_manual_bucket(EnergyBucket.BUILD)
 
     def _commit_drop(self, now: float, level: float | None = None, raw_energy: float | None = None) -> None:
@@ -1091,6 +1116,45 @@ class Metronome(threading.Thread):
 
         self._apply_bucket_overlay(now)
 
+    def _derive_build_rule(self, now: float) -> None:
+        """core/build_rule.py: feed the completed bar's means on every bar
+        change; raise/release the automatic build cue. Runs after
+        _derive_bucket so it sees this tick's committed base."""
+        rule = self._build_rule
+        if self._rule_bar is None:
+            self._rule_bar = self._bar
+        if self._bar != self._rule_bar and self._rule_n > 0:
+            low = self._rule_low_sum / self._rule_n
+            energy = self._rule_energy_sum / self._rule_n
+            base = self._base_committed
+            if self._rule_prev_base == EnergyBucket.DROP and base != EnergyBucket.DROP:
+                rule.drop_ended()
+            if base == EnergyBucket.DROP:
+                rule.note_drop_bar(low)
+            manual_cue = self._build_cue_until is not None and self._build_cue_source == "dj"
+            fresh = self._is_audio_fresh(now)
+            if rule.armed and self._build_cue_until is None:
+                rule.released()  # the drop landed (or the hold ran out): the cue is over
+            if fresh and not manual_cue and rule.on_bar(low, energy, base == EnergyBucket.BREAK):
+                self._build_cue_until = now + AUTO_BUILD_HOLD_S
+                self._build_cue_source = "auto"
+                self.request_manual_bucket(EnergyBucket.BUILD)
+                log.info("Auto build cue: kick at %.1f vs drop ref %.1f for %d bars", low, rule.ref, self._rule_bar)
+            elif rule.release_due():
+                log.info("Auto build cue released: kick gone %d bars without a drop", self._rule_bar)
+                self._build_cue_until = None
+                self._build_cue_source = ""
+                rule.released()
+            self._rule_prev_base = base
+            self._rule_bar = self._bar
+            self._rule_low_sum = self._rule_energy_sum = 0.0
+            self._rule_n = 0
+        elif self._bar != self._rule_bar:
+            self._rule_bar = self._bar
+        self._rule_low_sum += float(self._audio_band_low_abs)
+        self._rule_energy_sum += float(self._energy)
+        self._rule_n += 1
+
     def _apply_bucket_overlay(self, now: float) -> None:
         """PEAK escalation and OUTRO promotion (see the module-level comment
         above PER_STATE_DWELL_S) -- computed fresh every tick from the base
@@ -1298,6 +1362,7 @@ class Metronome(threading.Thread):
             drop_hit_intensity=self.drop_hit_intensity,
             drop_start_bar=self.drop_start_bar,
             build_cue=self.build_cue_active,
+            build_cue_source=self._build_cue_source if self._build_cue_until is not None else "",
             norm_seeded=self.norm_seeded,
             drop_candidate=self._bucket_candidate == EnergyBucket.DROP,
             palette=self.palette,

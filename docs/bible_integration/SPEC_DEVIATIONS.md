@@ -79,6 +79,16 @@ here rather than left invisible.
 
 ---
 
+**Partial predictive cue, 2026-09-17 (`core/build_rule.py`).** One
+audio-only cue now exists inside D1's limits: after a drop has set the
+track's kick level, four bars of the kick back at 30-65 % of it while the
+loudness classifier still reads BREAK raises the same held BUILD the C
+key does. It is not phrase prediction (no bar-count anticipation, no
+downbeat knowledge) and it cannot see a set's first build; it shipped
+because it fires on zero non-builds across every real capture (scored
+with `tools/simulations/replay_state.py --no-cue`), per Josh's rule that a
+false build start is the worse failure. The C key remains primary.
+
 ## D2 — §14 "manual = biases and caps, never an override": Synth Sync is an operator-chosen reactivity mode
 
 **What the Bible asks for.** The console's manual controls are biases and

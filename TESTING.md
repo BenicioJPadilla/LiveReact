@@ -353,6 +353,14 @@ Play a set: a track, a build, a drop, then mix into another track.
   now and holds (strobe ramp, wash ramp) until the drop lands, 32 bars pass, or you press C again.
   Exists because a kick-only intro reads louder than a mid-heavy build to a loudness classifier
   (2026-09-16) — the DJ sees the build, the RMS doesn't
+- after the set's first drop, a build the loudness can't see may cue ITSELF (2026-09-17,
+  `core/build_rule.py`): once a drop has set the track's kick level, four bars of the kick back at
+  30-65 % of it while the classifier still says BREAK raises the same held BUILD (console shows
+  "auto"; `build_cue_src` = "auto" in `state.jsonl`). It lets go by itself if the kick disappears
+  for 4 bars without a drop. Pressing C during an auto cue confirms it (never cancels). It cannot
+  see a set's FIRST build — no drop to measure against — so C is still the tool there. Scored on
+  every capture to date with zero false starts; if it ever raises a build that isn't one, note
+  the time and hand over the recording — that's a threshold to re-score, not to tune by ear.
 - a snare roll into the drop pushes the build strobe to its max with a full-brightness flash
   (`snare_roll_active` in `state.jsonl`, `roll_path` says whether the LEVEL or the onset
   DENSITY path caught it). New 2026-09-17: `onset_rate` (high-band onsets/s, measured at
