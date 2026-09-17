@@ -107,3 +107,42 @@ vocal chops and snare body share the mids.
 **What would change the answer.** A stab/chord detector that could identify
 the instrument (not just the band) could gate this automatically; nothing
 like that exists here today.
+
+## D3 — §9.8 legal transition matrix: DROP → BUILD is allowed as a confirmed exit
+
+**What the Bible asks for.** The transition matrix marks DROP → BUILD ✗:
+a drop either keeps going, escalates to PEAK, or resolves through BREAK
+first; it never downgrades to "still building."
+
+**Why it's deviated from.** The matrix assumes a breakdown reads as BREAK.
+On the tracks this runs on, the section after a drop is often a pad- or
+vocal-heavy breakdown that sits at `energy_norm` 0.2-0.5 -- BUILD range,
+never under the 0.15 BREAK exit -- so the strict matrix held DROP through
+the whole breakdown AND the build that followed: no build ramp, no build
+strobe, and the second drop committed with no lead (both the RMS lead and
+the hit lead are gated on a committed BUILD). Josh (2026-09-17) chose to
+allow the edge rather than route it through a fake BREAK look.
+
+**What LiveReact does instead.** `scenes/catalog.py`'s `LEGAL_TRANSITIONS`
+declares DROP → BUILD, and `core/metronome.py`'s `_derive_bucket` gives it
+exactly the treatment DROP → BREAK got on 2026-09-16: no dwell-floor wait,
+but a two-bar `CUT_EXIT_CONFIRM_S` confirmation of the smoothed level
+(already under the 0.65 down-hysteresis) before it commits. A between-kick
+dip or a one-bar fill returns to DROP range and clears the candidate. So
+does every gap where the instantaneous level falls under the break line
+(the same lead that lets a cut exit early flips the reading to BREAK for
+that tick and restarts the BUILD clock): only a section whose sound stays
+continuously above the break line for two bars -- pads or a vocal with the
+kick gone -- becomes a build, while the thinning tail of a drop (sparse
+kicks over a bed, `session-20260916-114402` 355-372 s) keeps flickering
+and holds DROP. Pooling the two exits into one clock was tried on that
+capture and turned the tail into a 12 s BUILD with a strobe ramp -- a
+false build, the worse failure. On the eight captures replayed the change
+alters no transition at all (their breakdowns all read BREAK); it is a
+safety net for the pad-heavy case, not a retune. The Bible's intent -- a
+drop can't flicker back to "building" on a dip -- is kept by the
+confirmation, not by the table.
+
+**What would change the answer.** Song-structure data (D1) that could say
+"this is the same drop, still going" during a two-bar mid-energy passage;
+until then two bars under the drop band is treated as a section change.

@@ -941,10 +941,11 @@ class Metronome(threading.Thread):
             # this module's 3-value base (PEAK/OUTRO are overlays that never
             # block the base -- see the OUTRO_LOOKBACK_S comment above for
             # why NOT doing that matters). Every BREAK/BUILD/DROP pair is
-            # legal except one: a committed DROP falling straight back to
-            # BUILD ("still building") is explicitly forbidden -- a real
-            # drop either keeps going, escalates to PEAK, or fully resolves
-            # through BREAK first, never downgrades to "not quite there yet."
+            # legal as of 2026-09-17 -- DROP -> BUILD was the Bible's one
+            # forbidden edge and is now allowed as a confirmed exit only
+            # (see LEGAL_TRANSITIONS' D3 note and the CUT_EXIT_CONFIRM_S
+            # branch below); the matrix check stays so the declared table
+            # remains the single source of truth.
             illegal = raw not in LEGAL_TRANSITIONS[self._base_committed]
             if illegal:
                 self._bucket_candidate = None
@@ -957,7 +958,7 @@ class Metronome(threading.Thread):
                 else:
                     floor_ok = now - self._base_committed_since >= PER_STATE_DWELL_S[self._base_committed]
                     confirm_s = EXIT_CONFIRM_DWELL_S
-                    if self._base_committed == EnergyBucket.DROP and raw == EnergyBucket.BREAK:
+                    if self._base_committed == EnergyBucket.DROP:
                         # Sustained-cut exit (2026-09-15, same capture): the
                         # music dropped out mid-drop and the 8-bar DROP dwell
                         # floor held full drop lighting over ~8s of quiet.
@@ -976,8 +977,29 @@ class Metronome(threading.Thread):
                         # a fill in every genre this runs on; a breakdown
                         # is two bars or more. Cost: a real breakdown's
                         # break look lands ~1 bar later than before.
+                        #
+                        # DROP -> BUILD takes the same exit (2026-09-17,
+                        # D3): a pad-heavy post-drop section that never
+                        # reads BREAK used to hold DROP through the next
+                        # build. Two bars of the smoothed level sitting
+                        # under the DROP band is a section change, not a
+                        # dip -- the build ramp/strobe start there and the
+                        # second drop gets its RMS lead.
                         floor_ok = True
                         confirm_s = CUT_EXIT_CONFIRM_S
+                # Note on the two DROP exits (2026-09-17, replaying
+                # recordings/session-20260916-114402 at 355-372 s): the
+                # "sound right now" lead above flips `raw` to BREAK on every
+                # between-hit gap, and each flip restarts the candidate
+                # below. That is deliberate, not a gap: a BUILD candidate
+                # only confirms when the instantaneous level stays ABOVE the
+                # break line for two whole bars (sustained pads/vocal, the
+                # kick gone), a BREAK candidate only when it stays UNDER
+                # (a real cut), and a thinning drop tail -- sparse kicks
+                # over a bed, smoothed 0.42-0.50 with gaps to 0.00 -- keeps
+                # flickering and HOLDS DROP. Pooling the two into one clock
+                # was tried and turned that 12 s tail into a BUILD with a
+                # strobe ramp; a false build is the worse failure (Josh).
                 if not floor_ok:
                     self._bucket_candidate = None
                     self._bucket_candidate_since = None

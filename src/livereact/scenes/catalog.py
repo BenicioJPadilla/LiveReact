@@ -62,16 +62,24 @@ _BUCKET_BOUNDARIES = (BREAK_MAX, BUILD_MAX)  # boundary i sits between order[i]/
 # only move to one of the states listed here; anything else is "ignored,
 # state holds" until a legal path opens up. Read by core/metronome.py's
 # `_derive_bucket` against its BREAK/BUILD/DROP base (PEAK/OUTRO are
-# overlays there and never block the base) -- in practice the one edge that
-# bites is DROP -> BUILD, explicitly illegal in the Bible (a real drop
-# doesn't downgrade back to "still building"; it either keeps going,
-# escalates to PEAK, or fully resolves through BREAK first). The PEAK/OUTRO
-# rows document the Bible's full matrix for a future consumer of the
-# overlay states.
+# overlays there and never block the base). The PEAK/OUTRO rows document
+# the Bible's full matrix for a future consumer of the overlay states.
+#
+# DELIBERATE DEVIATION (2026-09-17, D3 in docs/bible_integration/
+# SPEC_DEVIATIONS.md): the Bible forbids DROP -> BUILD outright ("a real
+# drop doesn't downgrade to still-building; it resolves through BREAK
+# first"). On real tracks the section after a drop is often a pad-heavy
+# breakdown that never gets quiet enough to read as BREAK (energy_norm
+# 0.2-0.5), so the strict matrix held DROP through the whole breakdown AND
+# the next build -- no build ramp, no build strobe, and the second drop
+# commits with no lead. Josh's call: allow it, but only as a CONFIRMED
+# EXIT -- metronome.py gives DROP -> BUILD the same two-bar
+# CUT_EXIT_CONFIRM_S it gives DROP -> BREAK, so a between-kick dip or a
+# one-bar fill still can't downgrade a drop.
 LEGAL_TRANSITIONS: dict[EnergyBucket, set[EnergyBucket]] = {
     EnergyBucket.BREAK: {EnergyBucket.BUILD, EnergyBucket.DROP, EnergyBucket.OUTRO},
     EnergyBucket.BUILD: {EnergyBucket.BREAK, EnergyBucket.DROP},
-    EnergyBucket.DROP: {EnergyBucket.BREAK, EnergyBucket.PEAK, EnergyBucket.OUTRO},
+    EnergyBucket.DROP: {EnergyBucket.BREAK, EnergyBucket.BUILD, EnergyBucket.PEAK, EnergyBucket.OUTRO},
     EnergyBucket.PEAK: {EnergyBucket.BREAK, EnergyBucket.DROP, EnergyBucket.OUTRO},
     EnergyBucket.OUTRO: set(),  # terminal -- no legal exit (a fresh track/transition resets it)
 }

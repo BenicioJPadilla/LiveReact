@@ -405,30 +405,65 @@ def test_midi_and_transition_and_status_update_state():
 # --- Bible-integration Phase 2: legal transition matrix, PEAK/OUTRO overlay,
 # manual override, drop marker (2026-09-11) -----------------------------------
 
-def test_legal_transition_matrix_rejects_drop_falling_back_to_build():
-    """LIGHTING_BIBLE.md §9.8 (TIME-13): DROP -> BUILD is explicitly illegal
-    -- a real drop doesn't downgrade back to "still building." It must
-    resolve through BREAK instead, however long BUILD-range energy persists."""
+def test_drop_falls_back_to_build_only_after_two_bars_of_build_range_energy():
+    """LIGHTING_BIBLE.md §9.8 forbids DROP -> BUILD; D3 (2026-09-17) allows it
+    as a CONFIRMED EXIT only -- the same two-bar CUT_EXIT_CONFIRM_S as
+    DROP -> BREAK, floor or no floor. A shorter BUILD-range dip (a fill, a
+    between-kick lull riding the release) holds DROP; two bars of it is a
+    post-drop section that never got quiet enough to read BREAK, and the
+    build ramp must start there instead of the drop look sitting on it."""
     clock = FakeClock()
     m = _metronome(clock)
     m._energy_norm = 0.9  # commit to DROP
     m._derive_bucket(clock.monotonic())
-    clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
+    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
 
-    m._energy_norm = 0.5  # BUILD-range -- the illegal downgrade
-    for _ in range(10):
-        clock.advance(EXIT_CONFIRM_DWELL_S + 1.0)
-        m._derive_bucket(clock.monotonic())
-    assert m._base_committed == EnergyBucket.DROP  # never became BUILD, however long this persists
+    m._energy_norm = 0.5  # BUILD-range, well clear of the downward margin
+    clock.advance(0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_candidate == EnergyBucket.BUILD  # entertained (legal), not yet committed
+    clock.advance(CUT_EXIT_CONFIRM_S - 0.5)  # one-and-a-bit bars: still a dip
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+    m._energy_norm = 0.9  # the drop comes back -> the candidate is dropped
+    m._derive_bucket(clock.monotonic())
+    assert m._bucket_candidate is None
+    assert m._base_committed == EnergyBucket.DROP
 
-    m._energy_norm = 0.1  # BREAK-range -- DROP -> BREAK IS legal
-    clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])  # DROP's own floor must clear before any exit
+    m._energy_norm = 0.5  # now a real post-drop section
+    clock.advance(0.1)
     m._derive_bucket(clock.monotonic())
-    clock.advance(CUT_EXIT_CONFIRM_S + 0.1)  # DROP -> BREAK always takes the 2-bar confirmation (2026-09-16)
+    clock.advance(CUT_EXIT_CONFIRM_S + 0.1)
     m._derive_bucket(clock.monotonic())
-    assert m._base_committed == EnergyBucket.BREAK
+    assert m._base_committed == EnergyBucket.BUILD  # well before DROP's own 8-bar floor
+    assert clock.monotonic() < PER_STATE_DWELL_S[EnergyBucket.DROP]
+    assert m._lead_next_drop()  # the second drop keeps its RMS lead (ceiling still from the first)
+
+
+def test_a_drop_dip_shorter_than_the_cut_confirmation_never_becomes_a_build():
+    """The other half of D3: repeated BUILD-range dips that each end before
+    CUT_EXIT_CONFIRM_S (the release tau riding through a breakdown-then-
+    kick pattern) never accumulate into a BUILD -- every return to DROP
+    range clears the candidate."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.9
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+    for _ in range(6):
+        m._energy_norm = 0.5
+        clock.advance(0.1)
+        m._derive_bucket(clock.monotonic())
+        clock.advance(CUT_EXIT_CONFIRM_S * 0.6)
+        m._derive_bucket(clock.monotonic())
+        m._energy_norm = 0.9
+        clock.advance(0.1)
+        m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
 
 
 def test_drop_escalates_to_peak_after_sustained_dwell():
@@ -585,11 +620,12 @@ def test_manual_drop_override_captures_the_drop_bookkeeping():
 
 def test_classifier_uses_the_declared_legal_transition_matrix():
     """scenes/catalog.py's LEGAL_TRANSITIONS is the single source for which
-    base moves the classifier may consider (2026-09-15 polish pass). A
-    committed DROP must ignore a BUILD-range reading outright (no candidate
-    ever forms), while a BREAK-range one is entertained."""
+    base moves the classifier may consider (2026-09-15 polish pass). With
+    DROP -> BUILD struck from the table (the Bible's own matrix, before D3)
+    a committed DROP must ignore a BUILD-range reading outright (no
+    candidate ever forms), while a BREAK-range one is entertained."""
     from livereact.scenes.catalog import LEGAL_TRANSITIONS
-    assert EnergyBucket.BUILD not in LEGAL_TRANSITIONS[EnergyBucket.DROP]
+    assert EnergyBucket.BUILD in LEGAL_TRANSITIONS[EnergyBucket.DROP]  # D3's edge is declared there
     clock = FakeClock()
     m = _metronome(clock)
     m._energy_norm = 0.9
@@ -598,12 +634,16 @@ def test_classifier_uses_the_declared_legal_transition_matrix():
     m._derive_bucket(clock.monotonic())
     assert m._base_committed == EnergyBucket.DROP
     clock.advance(PER_STATE_DWELL_S[EnergyBucket.DROP])
-    m._energy_norm = 0.5  # BUILD range, well clear of the downward margin
-    m._derive_bucket(clock.monotonic())
-    assert m._bucket_candidate is None  # illegal edge: never even a candidate
-    m._energy_norm = 0.05  # BREAK range
-    m._derive_bucket(clock.monotonic())
-    assert m._bucket_candidate == EnergyBucket.BREAK
+    LEGAL_TRANSITIONS[EnergyBucket.DROP].discard(EnergyBucket.BUILD)
+    try:
+        m._energy_norm = 0.5  # BUILD range, well clear of the downward margin
+        m._derive_bucket(clock.monotonic())
+        assert m._bucket_candidate is None  # struck edge: never even a candidate
+        m._energy_norm = 0.05  # BREAK range
+        m._derive_bucket(clock.monotonic())
+        assert m._bucket_candidate == EnergyBucket.BREAK
+    finally:
+        LEGAL_TRANSITIONS[EnergyBucket.DROP].add(EnergyBucket.BUILD)
 
 
 def test_drop_marker_fires_after_a_qualifying_dip_and_rebound():
