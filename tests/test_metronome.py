@@ -861,7 +861,9 @@ def test_palette_repicks_on_a_bucket_family_change_but_not_on_a_peak_overlay():
         m._derive_palette()
         return m.palette
 
+    m._build_cue_until = clock.monotonic() + 60.0  # a confirmed build (an unconfirmed one renders as BREAK)
     assert with_bucket(EnergyBucket.BUILD) in BUILD_WASH  # white wash for the build strobe
+    m._build_cue_until = None
     drop_pick = with_bucket(EnergyBucket.DROP)
     assert drop_pick in DROP_WASH
     assert with_bucket(EnergyBucket.PEAK) == drop_pick  # an overlay on the same drop -- same family
@@ -1341,3 +1343,26 @@ def test_a_strong_rise_arms_the_drop_by_itself():
     assert m.tick().rising
     _kicks(m, clock, 2)
     assert m._base_committed == EnergyBucket.DROP
+
+
+def test_an_unconfirmed_build_renders_as_the_break_it_came_from():
+    """Run 12 (2026-09-17): the loudness classifier's BUILD brought Rising
+    Tide (white) and the wash ramp with no cue and no arming -- "the lights
+    turned completely white and slowly started increasing in brightness".
+    The look follows the classifier's BUILD only once a build CUE (C, or
+    the kick-level rule) confirms it -- arming never changes the look; the
+    classifier itself is unchanged."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m._energy_norm = 0.5
+    m._derive_bucket(clock.monotonic())
+    clock.advance(FAST_ENTRY_DWELL_S + 0.5)
+    m._derive_bucket(clock.monotonic())
+    snap = m._build_snapshot(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BUILD
+    assert snap.classifier_bucket == "build" and snap.bucket == "break"
+    m.arm_drop()
+    assert m._build_snapshot(clock.monotonic()).bucket == "break"  # arming changes nothing on stage
+    m.arm_drop()  # disarm
+    m.cue_build()
+    assert m._build_snapshot(clock.monotonic()).bucket == "build"  # C confirms the build look

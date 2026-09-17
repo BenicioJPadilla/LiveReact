@@ -149,6 +149,7 @@ class SessionRecorder(threading.Thread):
             "active_channels": sum(1 for b in uni if b),
             "energy_norm": round(snap.energy_norm, 4),
             "bucket": snap.bucket,
+            "classifier_bucket": snap.classifier_bucket,   # the loudness classifier's own state (bucket = the look)
             # 2026-09-15: the first post-build_snare_accent capture couldn't
             # answer "did the roll fire / did the strobe byte move / what was
             # the hit intensity" at all -- every one of those had to be

@@ -69,8 +69,13 @@ BUILD_SETTLE_S = 1.5
 ARM_S = 1.0            # 0.4 -> 1.0 (2026-09-17, run 7): the real rolls held 5.6 and 5.9 s; the
                        # hat blips that also cleared the thresholds lasted 0.2-0.9 s.
 # Density path (see the module docstring's second half).
-RATE_SLOW_TAU_S = 3.0      # baseline onset rate: the build's hats so far
-ROLL_MIN_RATE = 7.0        # onsets/s: 8th hats are ~4.3/s at 128 BPM (4.7 at 140), 16ths ~8.5 (9.3).
+RATE_SLOW_TAU_S = 8.0      # baseline onset rate: the build's hats so far (3 -> 8, run 12:
+                           # a roll that starts quietly lifted its own baseline 3.6 -> 4.7
+                           # before it could arm)
+ROLL_MIN_RATE = 6.0        # onsets/s: 8th hats are ~4.3/s at 128 BPM (4.7 at 140), 16ths ~8.5 (9.3).
+                           # 7 -> 6 (run 12, 2026-09-17): the roll's quiet first bars read 5-6/s
+                           # (the softer snares fall under the onset threshold; lowering THAT
+                           # makes noise risers count, so it stays at 2x). Cost: 1-2 s strays.
                            # 6 -> 7 on run 7 (2026-09-17, recordings/session-20260917-145419):
                            # the two real rolls read 8 and 7 against hats at 4.1; the stray
                            # blips read 5-6. With ARM_S 1.0 and ON_RATIO 2.5 that capture

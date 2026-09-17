@@ -1448,6 +1448,27 @@ class Metronome(threading.Thread):
             return None
         return max(v for _, v in self._inst_recent)
 
+    @property
+    def look_bucket(self) -> EnergyBucket:
+        """The bucket the SHOW renders (Josh, run 12, 2026-09-17: "the lights
+        turned completely white and slowly started increasing in brightness
+        ... we want the drop only to be armed by specific cues"). A BUILD the
+        loudness classifier guessed on its own is shown as the BREAK it came
+        from -- no Rising Tide, no wash ramp -- until a build CUE confirms
+        it: C, or core/build_rule.py's kick-level rule. Arming (D, a roll,
+        a strong rise) deliberately does NOT confirm it: arming must change
+        nothing on stage (run 10's roll cue turned the accent blue -> white
+        mid-roll; run 11's D turned the lights white) -- the pre-drop strobe
+        runs over whatever look is on. The classifier's own state is
+        untouched (`classifier_bucket` in the recorder)."""
+        if self._bucket_committed == EnergyBucket.BUILD and not self.build_confirmed:
+            return EnergyBucket.BREAK
+        return self._bucket_committed
+
+    @property
+    def build_confirmed(self) -> bool:
+        return self._build_cue_until is not None
+
     def _derive_palette(self) -> None:
         """Re-pick the phrase-frozen palette entries ONLY when a new
         PALETTE_PHRASE_BARS phrase starts or the bucket FAMILY changes
@@ -1456,7 +1477,7 @@ class Metronome(threading.Thread):
         A downward change (drop -> break) re-picks too, deliberately: leaving
         a break under blood_red until the next 16-bar boundary is not what a
         break should look like. See engines/palette.py."""
-        bucket = self._bucket_committed.value
+        bucket = self.look_bucket.value
         fam = palette_mod.family(bucket)
         family_changed = fam != self._palette_family or self._track_seed != self._palette_seed
         if family_changed:
@@ -1522,7 +1543,8 @@ class Metronome(threading.Thread):
             audio_high_flux=self._audio_high_flux,
             energy=self._energy,
             energy_norm=self._energy_norm,
-            bucket=self._bucket_committed.value,
+            bucket=self.look_bucket.value,
+            classifier_bucket=self._bucket_committed.value,
             drop_cycle=self.drop_cycle,
             drop_hit_intensity=self.drop_hit_intensity,
             drop_start_bar=self.drop_start_bar,

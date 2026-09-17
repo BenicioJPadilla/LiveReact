@@ -94,6 +94,11 @@ class ShowSnapshot:
     # so the reverse import would be circular) -- reconstruct via
     # EnergyBucket(snap.bucket) at call sites that already import it.
     bucket: str = "break"
+    # What the loudness classifier itself says (core/metronome.py's
+    # _bucket_committed). `bucket` above is the LOOK bucket: an unconfirmed
+    # BUILD guess renders as BREAK (2026-09-17, run 12) -- the two differ only
+    # then. Recorder/replay field; engines read `bucket`.
+    classifier_bucket: str = "break"
     # Bible-integration Phase 2 (2026-09-11): loud-to-quiet-to-loud drop
     # marker (core/metronome.py's `_derive_drop_marker`) -- a corroborating
     # signal alongside bucket classification, not a replacement for it.
