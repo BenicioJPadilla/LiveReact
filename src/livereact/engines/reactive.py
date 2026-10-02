@@ -42,10 +42,15 @@ from .envelope import NORMALIZE_TAU_S, BandEnvelope
 # then the par lights or the wash bar literally mimic the synths." While
 # `ManualParams.synth_sync` is on, the wash dimmer follows a BandEnvelope on
 # `audio_band_mid_abs` (250-2000 Hz, inputs/audio.py's MID_HZ -- where UKG
-# chord stabs and synth lines sit) instead of the bucket model, and every
-# automated strobe is suppressed (Josh's call: the synth OWNS the wash; two
-# signals must not fight one dimmer channel). Par + wash bar only; the
-# moving head keeps its own dimmer and color. Checked against real captures
+# chord stabs and synth lines sit) instead of the bucket model. Par + wash
+# bar only; the moving head keeps its own dimmer and color.
+# Originally every automated strobe was suppressed while on ("the synth OWNS
+# the wash"). Reversed 2026-09-19 after a few sets with it on: Josh keeps
+# Synth Sync on by default now ("more movement, more energy... more synced")
+# and wants a full set that way, so the build ramp / roll accent / drop-tail
+# strobes override the synth level while they run. Only the operator's
+# manual burst (merge.py apply_strobe_burst) was ever independent of this.
+# Checked against real captures
 # before building: inside a drop the mid band swings ~2x more than the low
 # band (p90/p50 2.7 vs 1.3), so there is contrast to show.
 #
@@ -613,11 +618,13 @@ class ReactiveLayerEngine:
                 and EnergyBucket(snap.bucket) in (EnergyBucket.BREAK, EnergyBucket.OUTRO)):
             wash_level = min(1.0, wash_level + BREAK_SYNTH_DEPTH * self.synth_level)  # see BREAK_SYNTH_DEPTH
         if self.synth_sync_active:
-            # The synth owns the wash: envelope-driven brightness, no strobe
-            # (a 0 here also resets the strobe clock). No real audio -> the
-            # normal bucket level above, never dark.
+            # The synth owns the wash LEVEL: envelope-driven brightness. The
+            # automated strobes (build ramp, roll accent, drop-tail burst) are
+            # NOT suppressed any more -- a strobe overrides the synth level
+            # while it runs, then the wash hands straight back (Josh,
+            # 2026-09-19). No real audio -> the normal bucket level above,
+            # never dark.
             wash_level = SYNTH_FLOOR + (SYNTH_CEILING - SYNTH_FLOOR) * self.synth_level
-            strobe = 0.0
         self.wash_level = wash_level
         self.strobe_level = strobe
 

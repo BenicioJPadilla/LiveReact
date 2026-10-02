@@ -22,7 +22,7 @@ from ..engines.color import laser_color_for_bands
 from ..fixtures.profiles import Par, WashBar
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
-from .base import EnergyBucket, Scene, paint_spots, paint_wash, scene_color, spot_color
+from .base import EnergyBucket, Scene, aim_spots, paint_spots, paint_wash, scene_color, spot_color
 
 
 # --- breakdown / low energy (lasers OFF, strobe OFF) -----------------------
@@ -443,7 +443,9 @@ class BreakSingleSpotSpecial(Scene):
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, self.SPOT_LEVEL * intensity)
         for fx in rig.by_role("spot"):
-            fx.set_position(c, 0.5, 0.70)  # dj_booth guess: centered, angled down -- see class docstring
+            # real geometry when the rig has a venue + a calibrated head
+            # (scenes/base.py's aim_spots, 2026-09-18); else the old guess.
+            aim_spots(c, rig, fx, "dj_booth", (0.5, 0.70))  # fallback: centered, angled down -- see class docstring
         return c
 
 
@@ -582,7 +584,7 @@ class OutroSingleBeam(Scene):
         for fx in spots:
             fx.set_intensity(c, self.DIM_LEVEL * intensity)
             fx.set_color(c, r, g, b)
-            fx.set_position(c, 0.5, 0.85)  # ceiling_bounce guess: centered, tilted up -- see class docstring
+            aim_spots(c, rig, fx, "ceiling_bounce", (0.5, 0.85))  # fallback: centered, tilted up -- see class docstring
         return c
 
 

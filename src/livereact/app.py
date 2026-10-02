@@ -95,7 +95,8 @@ class App:
         self.show_state = ShowState()
         self.metronome = Metronome(self.input_queue, self.show_state, self.clock, self.stop_event,
                                    seed_range=self._energy_norm_seed(),
-                                   range_callback=self._persist_energy_norm_range)
+                                   range_callback=self._persist_energy_norm_range,
+                                   control_callback=self._on_operator_control)
         self.sources = self._build_sources()
 
         # --- show pipeline (Phases 3-4): snapshot -> engines -> merge -> frame buffer ---
@@ -122,7 +123,7 @@ class App:
         self.phrase_engine = PhraseEngine(SceneCatalog(full=self.config.full_catalog))
         self.reactive_engine = ReactiveLayerEngine(self.clock, manual=self.manual,  # manual: Synth Sync toggle
                                                    roll_sink=self.metronome.note_roll)  # a roll arms the drop
-        self.laser_engine = LaserEngine(self.clock)
+        self.laser_engine = LaserEngine(self.clock, manual=self.manual)  # manual= : the operator's laser cue
         # Merge is LTP-by-priority per channel kind (merge/merge.py), so list
         # order is cosmetic: Reactive (25) base, Phrase (50) look, Laser (60)
         # owns the laser channels, Transition (100) lift.
@@ -167,6 +168,18 @@ class App:
             return
         seed = app_config.energy_norm_record(floor, ceiling, self._norm_fingerprint())
         app_config.save_from(self.manual, self.config.config_path, energy_norm=seed)
+
+    # MIDI controls learned into midi_map.json that are operator CUES rather
+    # than mixer intents (inputs/midi_map.py's DEFAULT_CC_MAP). Value is 0..1
+    # (CC/127): a knob past half-way, a switch, or a pad held reads as ON.
+    MIDI_CUE_THRESHOLD = 0.5
+
+    def _on_operator_control(self, control: str, value: float) -> None:
+        """Metronome's control_callback -- runs on the metronome thread, so
+        only plain attribute writes on ManualParams (the console refresh
+        mirrors them, see ui/console.py's refresh)."""
+        if control == "laser_cue":
+            self.manual.laser_cue = value >= self.MIDI_CUE_THRESHOLD
 
     def _setup_recording(self, session_dir: str) -> None:
         from .recorder import SessionRecorder, write_meta, write_notes_template

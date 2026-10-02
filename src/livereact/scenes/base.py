@@ -8,13 +8,18 @@ docs/08 §3).
 
 from __future__ import annotations
 
+import logging
 from enum import Enum
 
 from ..core.show_state import ShowSnapshot
 from ..engines.palette import rgb as palette_rgb
-from ..fixtures.profiles import Par, WashBar
+from ..fixtures.geometry import aim
+from ..fixtures.profiles import MovingHead, Par, WashBar
 from ..fixtures.rig import Rig
 from ..merge.merge import Contribution
+
+log = logging.getLogger(__name__)
+_aim_fallback_logged: set[tuple[str, str]] = set()
 
 
 class EnergyBucket(Enum):
@@ -187,3 +192,34 @@ def paint_spots(c: Contribution, rig: Rig, r: float, g: float, b: float, level: 
     for fx in rig.by_role("spot"):
         fx.set_intensity(c, level)
         fx.set_color(c, r, g, b)
+
+
+def aim_spots(c: Contribution, rig: Rig, fx, target_name: str, fallback: tuple[float, float]) -> bool:
+    """Point one spot at a NAMED venue target (LIGHTING_BIBLE.md §1.2's
+    `position_palette`, §6.3), computed from real geometry when the rig
+    has it -- 2026-09-18, the mechanism BreakSingleSpotSpecial's and
+    OutroSingleBeam's docstrings disclosed as missing.
+
+    Uses fixtures/geometry.py's `aim` when ALL of: the rig declares a venue,
+    the target exists, the fixture is placed, and its head has a captured
+    calibration. The result is written with `set_aim` (an absolute aim:
+    finalize skips the home remap for it). Otherwise falls back to the
+    scene's old hardcoded pan/tilt guess via `set_position`, exactly as
+    before -- rigs with no floor plan see zero behavior change. Returns
+    True when a real aim was used; logs the fallback once per (fixture,
+    target) so a missing calibration is visible, not silent."""
+    venue = rig.venue
+    target = venue.targets.get(target_name) if venue is not None else None
+    if (isinstance(fx, MovingHead) and target is not None and fx.position is not None
+            and fx.calibration.captured):
+        pan01, tilt01, _reachable = aim(fx.position, fx.facing_deg, target, fx.calibration,
+                                        fx.PAN_RANGE_DEG, fx.TILT_RANGE_DEG)
+        fx.set_aim(c, pan01, tilt01)
+        return True
+    key = (getattr(fx, "slot_id", fx.label), target_name)
+    if key not in _aim_fallback_logged:
+        _aim_fallback_logged.add(key)
+        log.info("aim_spots: %s has no geometry/calibration for '%s'; using the scene's fixed guess %s",
+                 fx.label, target_name, fallback)
+    fx.set_position(c, *fallback)
+    return False

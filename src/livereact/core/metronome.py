@@ -378,6 +378,19 @@ DROP_HIT_PATTERN_S = 0.6               # ... and it must be a PATTERN: two disti
                                        # 4.5 s after D passed the level tests and cut a
                                        # false drop. A 4/4 drop's second kick lands at
                                        # +0.47 s, so a real drop still cuts within a beat.
+# HARD CUT (Josh, 2026-09-19, recordings/session-20260919-104825): armed by D
+# at 223 s, the kick RE-ENTERED after a breakdown at 233 s at full drop level
+# in every band (low p90 7.1 vs the real drop's 7.8, mids and energy equal) --
+# a drop by every measure the system has, but not the drop; the arm was spent
+# 37 s before the real one and no strobe ran. The audio can't carry what the
+# DJ knows about the song, so: D while armed by D = the drop cuts on the NEXT
+# DOWNBEAT (the DJ counts it in), hit intensity 1.0. "Next" includes the
+# downbeat in progress if the press lands within its first
+# HARD_CUT_LATE_PHASE of a beat (a human presses ~0.1-0.3 s after the one);
+# later than that waits for the next bar. Without a live PDL grid the cut is
+# immediate. A third press cancels (arm and cut both). The exit is the
+# ordinary DROP -> BREAK confirmation.
+HARD_CUT_LATE_PHASE = 0.75
 RISE_AUTO_ARM = True                   # core/rise.py: a strong rise (RISE_ARM held
                                        # RISE_ARM_BARS) arms the drop by itself for
                                        # RISE_ARM_HOLD_BARS -- the autonomous path.
@@ -497,6 +510,7 @@ class Metronome(threading.Thread):
         log_interval: float = 1.0,
         seed_range: tuple[float, float] | None = None,
         range_callback=None,
+        control_callback=None,
     ) -> None:
         super().__init__(name="metronome", daemon=False)
         self.queue = input_queue
@@ -512,6 +526,11 @@ class Metronome(threading.Thread):
         # gets stopped under --visualize; a clean shutdown never happens live).
         self._range_callback = range_callback
         self._last_range_persist = clock.monotonic()
+        # Called with (control_name, value 0..1) for every MIDI control that
+        # is NOT one of the mixer intents in `_midi` below -- operator cue
+        # controls learned into midi_map.json (e.g. "laser_cue", 2026-09-30).
+        # Runs on this thread; keep it a plain attribute write.
+        self._control_callback = control_callback
 
         # --- authoritative working state (owned solely by this thread) ---
         self._bpm = 124.0
@@ -580,6 +599,7 @@ class Metronome(threading.Thread):
         self._hit_ref = 0.0
         self._drop_armed_until: float | None = None  # see DROP_ARM_HOLD_BARS: D key or a roll
         self._drop_arm_source = ""                    # "dj" / "roll" while armed
+        self._drop_cut_pending = False                # see HARD_CUT_LATE_PHASE: D again = cut on the downbeat
         self._roll_active = False                     # written by the reactive engine via note_roll
         self._roll_since: float | None = None         # when the current roll began (ROLL_ARM_MIN_S)
         self._kick_edges: deque[float] = deque()      # times of raw low-band rising edges (DROP_HIT_PATTERN_S)
@@ -720,11 +740,13 @@ class Metronome(threading.Thread):
 
     def _on_midi(self, msg: MidiControlMessage) -> None:
         self._last_midi_time = msg.timestamp
+        value = max(0.0, min(1.0, msg.value))
         if msg.control in self._midi:
-            value = max(0.0, min(1.0, msg.value))
             self._midi[msg.control] = value
             if msg.control == "crossfader":
                 self._note_crossfader(msg.timestamp, value)
+        elif self._control_callback is not None:
+            self._control_callback(msg.control, value)
 
     def _on_audio(self, msg: AudioLevelMessage) -> None:
         self._last_audio_time = msg.timestamp
@@ -947,21 +969,34 @@ class Metronome(threading.Thread):
         return self._drop_arm_source if self.drop_armed else ""
 
     def arm_drop(self) -> None:
-        """The DJ's "the drop is next" (D key). Toggle: arms the drop for
-        DROP_ARM_HOLD_BARS -- the next drop-level kick PATTERN commits it
-        instantly, and the strobe runs while the rise is on. Arming changes
-        NOTHING about the current look (run 11, 2026-09-17: D used to cue
-        the build look, "the lights turn white... D should just be
-        preparation"); C is the build cue. A second press disarms (a
-        roll-armed drop is upgraded, not cancelled). Console-thread safe:
-        plain attribute writes, like cue_build."""
+        """The DJ's "the drop is next" (D key), three states:
+          1. not armed -> ARMED for DROP_ARM_HOLD_BARS: the next drop-level
+             kick PATTERN commits it instantly, and the strobe runs while the
+             rise is on. Arming changes NOTHING about the current look (run
+             11, 2026-09-17: D used to cue the build look, "the lights turn
+             white... D should just be preparation"); C is the build cue. A
+             roll-/rise-armed drop is upgraded to a DJ arm, not cancelled.
+          2. armed by D -> HARD CUT pending (see HARD_CUT_LATE_PHASE): the
+             drop commits on the next downbeat whatever the audio says.
+          3. cut pending -> cancelled: disarmed, nothing pending.
+        Console-thread safe: plain attribute writes, like cue_build."""
         now = self.clock.monotonic()
         if self._drop_armed_until is not None and self._drop_arm_source == "dj":
-            self._drop_armed_until = None
-            self._drop_arm_source = ""
+            if self._drop_cut_pending:
+                self._drop_cut_pending = False
+                self._drop_armed_until = None
+                self._drop_arm_source = ""
+            else:
+                self._drop_cut_pending = True
             return
         self._drop_armed_until = now + DROP_ARM_HOLD_S
         self._drop_arm_source = "dj"
+        self._drop_cut_pending = False
+
+    @property
+    def drop_cut_pending(self) -> bool:
+        """True between the second D press and the downbeat that cuts the drop."""
+        return self._drop_cut_pending and self.drop_armed
 
     def note_roll(self, active: bool) -> None:
         """Called every tick by engines/reactive.py with the roll accent's
@@ -990,6 +1025,7 @@ class Metronome(threading.Thread):
         self._drop_commit_energy = self._energy_smooth if raw_energy is None else raw_energy
         self._drop_armed_until = None  # the drop it was armed for has landed
         self._drop_arm_source = ""
+        self._drop_cut_pending = False
         self._kick_edges.clear()
         self._rise.drop_landed()
         self._drop_kick_samples = []
@@ -1077,6 +1113,22 @@ class Metronome(threading.Thread):
         if self._drop_armed_until is not None and now >= self._drop_armed_until:
             self._drop_armed_until = None  # nothing landed: disarm
             self._drop_arm_source = ""
+            self._drop_cut_pending = False
+        # HARD CUT (see HARD_CUT_LATE_PHASE): the DJ counted it in -- commit on
+        # the downbeat, whatever the audio reads. Ahead of the kick-pattern
+        # path below so a hard cut is never turned into a kick-timed one.
+        if self._drop_cut_pending and self._drop_armed_until is not None:
+            if self._base_committed == EnergyBucket.DROP:
+                self._drop_cut_pending = False  # already there: nothing to cut
+            elif (not self._is_pdl_fresh(now)
+                  or (self._beat_in_bar == 1 and self._beat_phase < HARD_CUT_LATE_PHASE)):
+                self._bucket_candidate = None
+                self._bucket_candidate_since = None
+                self._bucket_candidate_bar = self._bar  # the downbeat is the phrase origin
+                log.info("Drop cut by the DJ on the downbeat (bar %d)", self._bar)
+                self._commit_drop(now, level=1.0, raw_energy=max(self._energy_smooth, self._energy))
+                self._apply_bucket_overlay(now)
+                return
         # Kick edges on the RAW low band (not the peak-hold), kept for the pattern window.
         ref = max(self._low_avg, DROP_HIT_LOW_FLOOR)
         low_now = self._low_recent[-1][1] if self._low_recent else 0.0
@@ -1551,6 +1603,7 @@ class Metronome(threading.Thread):
             build_cue=self.build_cue_active,
             drop_armed=self.drop_armed,
             drop_arm_source=self._drop_arm_source if self.drop_armed else "",
+            drop_cut_pending=self.drop_cut_pending,
             rising=self._rise.rising,
             rise_index=self._rise.index,
             build_cue_source=self._build_cue_source if self._build_cue_until is not None else "",

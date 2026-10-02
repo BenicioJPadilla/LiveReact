@@ -16,6 +16,14 @@ which is good independent evidence the numbers are real and not noise:
     deck B: fader=18, eq_high=7, eq_mid=8, eq_low=9
 
 Channels are 0-indexed (as mido reports them).
+
+Operator CUE controls (2026-09-30) -- not in the default map because the
+XDJ control to use is Josh's pick: run `--midi-monitor`, turn/press the
+knob or switch, and add its "channel:cc" to midi_map.json with one of these
+names. Value >= 50% reads as ON (app.py's MIDI_CUE_THRESHOLD):
+
+    "laser_cue"   hold the laser's dotted line, sweep speed from mids + highs
+                  (engines/laser.py MANUAL CUE; same as the console's K key)
 """
 
 from __future__ import annotations

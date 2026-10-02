@@ -1,15 +1,59 @@
 """Rig loader: instantiate fixture profiles from a JSON rig file and expose them
 by role/side, so scenes can say "all wash, both sides" instead of raw DMX indices
 (docs/04 §3.5). Validates that no two fixtures overlap and all fit in one universe.
+
+Also the ONE serializer back to JSON (``rig_to_dict``/``save_rig``, 2026-09-18):
+the console's layout save, the Rig Config tab and the fixture-test panel's
+home-position save used to each build their own slot dicts and each silently
+dropped the fields it didn't know about (a layout save deleted the laser's
+measured ``mount_height_m``, which fails that fixture closed on the next load).
+Every save path goes through here now, and keys the loader doesn't model are
+kept on ``Fixture.extra`` and re-emitted, so nothing is lost on a round trip.
+
+Rig JSON schema (all of ``venue`` and the per-slot geometry are optional; every
+pre-2026-09-18 rig file loads unchanged):
+
+    {
+      "name": "...", "description": "...",
+      "venue": {"width_m": 9.1, "length_m": 12.2, "height_m": 3.7,
+                "targets": {"dj_booth": {"x_m": 4.6, "y_m": 0.9, "z_m": 1.2}, ...}},
+      "slots": [
+        {"slot_id": "mh", "fixture_type": "shehds_180w_mh", "dmx_address": 36,
+         "label": "...", "role": "spot", "side": "left",
+         "x": 0.3, "y": 0.2,                       # legacy canvas position (0..1)
+         "home_pan": 0.55, "home_tilt": 0.42,      # calibrated home (0..1)
+         "position": {"x_m": 1.5, "y_m": 0.6, "z_m": 0.3}, "facing_deg": 0.0,
+         "calibration": {"target": "dj_booth", "pan01": .., "tilt01": ..,
+                         "pan_offset_deg": .., "tilt_offset_deg": ..,
+                         "invert_pan": false, "invert_tilt": false},
+         "mount_height_m": 0.9144, "safe_projection": {"min_beam_height_m": 3.0},
+         "beam": {"tilt_deg": 10.0, "fan_half_angle_deg": 30.0, "h_offset01": 0.5}}
+      ]
+    }
+
+See fixtures/geometry.py for the coordinate convention (meters; origin at the
+booth wall's stage-left corner; x to stage-right; y into the crowd; z up).
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 from importlib import resources
 
 from ..core.frame_buffer import UNIVERSE_SIZE
-from .profiles import FIXTURE_TYPES, ChannelKind, Fixture
+from .geometry import HeadCalibration, Point3, Venue, x_norm
+from .profiles import FIXTURE_TYPES, ChannelKind, Fixture, Laser, MovingHead
+
+log = logging.getLogger(__name__)
+
+# Slot keys the loader models; anything else rides along in Fixture.extra.
+_KNOWN_SLOT_KEYS = frozenset({
+    "slot_id", "label", "fixture_type", "dmx_address", "role", "side",
+    "x", "y", "home_pan", "home_tilt", "mount_height_m", "safe_projection",
+    "position", "facing_deg", "calibration", "beam",
+})
 
 
 class RigError(Exception):
@@ -19,9 +63,14 @@ class RigError(Exception):
 class Rig:
     """A loaded fixture layout: ordered fixtures + a precomputed channel-kind map."""
 
-    def __init__(self, name: str, fixtures: list[Fixture]) -> None:
+    def __init__(self, name: str, fixtures: list[Fixture], venue: Venue | None = None,
+                 description: str = "") -> None:
         self.name = name
+        self.description = description
         self.fixtures = fixtures
+        # The room (fixtures/geometry.py). None -> no floor plan declared;
+        # everything geometry-aware falls back to pre-2026-09-18 behavior.
+        self.venue = venue
         self._by_slot: dict[str, Fixture] = {}
         self._kinds = bytearray(UNIVERSE_SIZE)  # ChannelKind per channel (default OTHER=0)
         # Atmosphere density (LIGHTING_BIBLE.md §4.4, `min_atmosphere_density`
@@ -32,6 +81,7 @@ class Rig:
         # Revisit only if/when haze hardware is actually added.
         self.atm: float = 0.0
         self._validate_and_index()
+        self.refresh_geometry()
 
     def _validate_and_index(self) -> None:
         occupied: dict[int, str] = {}
@@ -51,6 +101,45 @@ class Rig:
                 occupied[ch] = fx.label
                 self._kinds[ch - 1] = int(kinds[local])
             self._by_slot[getattr(fx, "slot_id", fx.label)] = fx
+
+    def refresh_geometry(self) -> None:
+        """Derive each placed fixture's ``x_norm`` -- and from it its
+        ``side`` -- from its real position in the declared venue
+        (LIGHTING_BIBLE.md §1.2/§6.2: mirrored effects order fixtures by
+        ``x_norm``, never by a hand-typed label). Without a venue nothing
+        changes: ``side`` stays whatever the rig file declared, so rigs
+        with no floor plan behave exactly as before. Called at load and by
+        the Venue tab after every edit.
+
+        MOVE-03: if two or more fixtures of one role sit on the same side of
+        centre, a mirrored effect can't mirror -- warn, don't guess."""
+        if self.venue is None or self.venue.width_m <= 0:
+            for fx in self.fixtures:
+                fx.x_norm = None
+            return
+        for fx in self.fixtures:
+            if fx.position is None:
+                fx.x_norm = None
+                continue
+            fx.x_norm = x_norm(fx.position.x, self.venue.width_m)
+            if fx.x_norm < 0:
+                fx.side = "left"
+            elif fx.x_norm > 0:
+                fx.side = "right"
+        by_role: dict[str, list[Fixture]] = {}
+        for fx in self.fixtures:
+            if fx.x_norm is not None:
+                by_role.setdefault(fx.role, []).append(fx)
+        for role, fxs in by_role.items():
+            if len(fxs) < 2:
+                continue
+            signs = {(fx.x_norm > 0) - (fx.x_norm < 0) for fx in fxs}  # type: ignore[operator]
+            if len(signs) == 1 and 0 not in signs:
+                log.warning(
+                    "MOVE-03: all %d '%s' fixtures sit on the same side of centre (%s); "
+                    "mirrored effects will run in unison",
+                    len(fxs), role, ", ".join(fx.label for fx in fxs),
+                )
 
     # --- lookups ---
     def fixture(self, slot_id: str) -> Fixture:
@@ -112,6 +201,22 @@ def load_rig(path: str | None = None) -> Rig:
     return _rig_from_dict(json.loads(text))
 
 
+def _point(d: dict) -> Point3:
+    return Point3(float(d.get("x_m", 0.0)), float(d.get("y_m", 0.0)), float(d.get("z_m", 0.0)))
+
+
+def _venue_from_dict(d: dict | None) -> Venue | None:
+    if not d:
+        return None
+    try:
+        width, length = float(d["width_m"]), float(d["length_m"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RigError("venue needs numeric width_m and length_m") from exc
+    height = float(d["height_m"]) if d.get("height_m") is not None else None
+    targets = {str(k): _point(v) for k, v in (d.get("targets") or {}).items()}
+    return Venue(width_m=width, length_m=length, height_m=height, targets=targets)
+
+
 def _rig_from_dict(data: dict) -> Rig:
     try:
         slots = data["slots"]
@@ -146,5 +251,120 @@ def _rig_from_dict(data: dict) -> Rig:
             fx.mount_height_m = float(slot["mount_height_m"])
         if "safe_projection" in slot and "min_beam_height_m" in slot["safe_projection"]:
             fx.min_beam_height_m = float(slot["safe_projection"]["min_beam_height_m"])
+        # Real-world placement (2026-09-18) — see Fixture.position/facing_deg.
+        if isinstance(slot.get("position"), dict):
+            fx.position = _point(slot["position"])
+        fx.facing_deg = float(slot.get("facing_deg", 0.0))
+        if isinstance(fx, MovingHead) and isinstance(slot.get("calibration"), dict):
+            c = slot["calibration"]
+            fx.calibration = HeadCalibration(
+                pan_offset_deg=float(c.get("pan_offset_deg", 0.0)),
+                tilt_offset_deg=float(c.get("tilt_offset_deg", 0.0)),
+                invert_pan=bool(c.get("invert_pan", False)),
+                invert_tilt=bool(c.get("invert_tilt", False)),
+                target=c.get("target"),
+                pan01=float(c["pan01"]) if c.get("pan01") is not None else None,
+                tilt01=float(c["tilt01"]) if c.get("tilt01") is not None else None,
+            )
+        if isinstance(fx, Laser):
+            if isinstance(slot.get("beam"), dict):
+                b = slot["beam"]
+                fx.beam_tilt_deg = float(b.get("tilt_deg", fx.beam_tilt_deg))
+                fx.fan_half_angle_deg = float(b.get("fan_half_angle_deg", fx.fan_half_angle_deg))
+                fx.h_offset01 = float(b.get("h_offset01", fx.h_offset01))
+            # A laser's position height IS its mount height. Fill whichever
+            # is missing; if both are given and disagree, the safety-
+            # verified `mount_height_m` wins (it gates apply_safety).
+            if fx.position is not None:
+                if fx.mount_height_m is None:
+                    fx.mount_height_m = fx.position.z
+                elif abs(fx.mount_height_m - fx.position.z) > 1e-6:
+                    log.warning("%s: position.z_m (%.3f) != mount_height_m (%.3f); keeping mount_height_m",
+                                fx.label, fx.position.z, fx.mount_height_m)
+                    fx.position = Point3(fx.position.x, fx.position.y, fx.mount_height_m)
+        fx.extra = {k: v for k, v in slot.items() if k not in _KNOWN_SLOT_KEYS}
         fixtures.append(fx)
-    return Rig(name=data.get("name", "rig"), fixtures=fixtures)
+    return Rig(
+        name=data.get("name", "rig"),
+        fixtures=fixtures,
+        venue=_venue_from_dict(data.get("venue")),
+        description=str(data.get("description", "")),
+    )
+
+
+# ------------------------------------------------------------------ serialize
+
+def _point_dict(p: Point3) -> dict:
+    return {"x_m": round(p.x, 4), "y_m": round(p.y, 4), "z_m": round(p.z, 4)}
+
+
+def slot_to_dict(fx: Fixture) -> dict:
+    """One rig-file slot for ``fx``, every modeled field included when set,
+    plus whatever unknown keys it was loaded with."""
+    slot: dict = {
+        "slot_id": getattr(fx, "slot_id", fx.label),
+        "label": fx.label,
+        "fixture_type": fx.type_name,
+        "dmx_address": fx.address,
+        "role": fx.role,
+        "side": fx.side,
+    }
+    if fx.layout_x is not None and fx.layout_y is not None:
+        slot["x"], slot["y"] = round(fx.layout_x, 4), round(fx.layout_y, 4)
+    if fx.home_pan is not None and fx.home_tilt is not None:
+        slot["home_pan"], slot["home_tilt"] = round(fx.home_pan, 4), round(fx.home_tilt, 4)
+    if fx.position is not None:
+        slot["position"] = _point_dict(fx.position)
+    if fx.facing_deg:
+        slot["facing_deg"] = round(fx.facing_deg, 2)
+    if isinstance(fx, MovingHead) and fx.calibration.captured:
+        c = fx.calibration
+        slot["calibration"] = {
+            "target": c.target, "pan01": c.pan01, "tilt01": c.tilt01,
+            "pan_offset_deg": round(c.pan_offset_deg, 3), "tilt_offset_deg": round(c.tilt_offset_deg, 3),
+            "invert_pan": c.invert_pan, "invert_tilt": c.invert_tilt,
+        }
+    if fx.mount_height_m is not None:
+        slot["mount_height_m"] = fx.mount_height_m
+    if isinstance(fx, Laser):
+        slot["safe_projection"] = {"min_beam_height_m": fx.min_beam_height_m}
+        slot["beam"] = {
+            "tilt_deg": fx.beam_tilt_deg,
+            "fan_half_angle_deg": fx.fan_half_angle_deg,
+            "h_offset01": fx.h_offset01,
+        }
+    slot.update(fx.extra)
+    return slot
+
+
+def rig_to_dict(rig: Rig, description: str | None = None) -> dict:
+    """The whole rig as a JSON-ready dict -- the inverse of ``_rig_from_dict``."""
+    data: dict = {
+        "name": rig.name,
+        "description": description if description is not None else rig.description,
+    }
+    if rig.venue is not None:
+        v = rig.venue
+        data["venue"] = {
+            "width_m": round(v.width_m, 4),
+            "length_m": round(v.length_m, 4),
+            "height_m": round(v.height_m, 4) if v.height_m is not None else None,
+            "targets": {name: _point_dict(p) for name, p in v.targets.items()},
+        }
+    data["slots"] = [slot_to_dict(fx) for fx in rig.fixtures]
+    return data
+
+
+def save_rig(rig: Rig, path: str, description: str | None = None) -> dict:
+    """Validate (through the loader itself) and write ``rig`` to ``path``.
+    Returns the dict written. Raises RigError rather than writing a file the
+    loader would reject."""
+    data = rig_to_dict(rig, description)
+    _rig_from_dict(data)  # same overlap/overflow/unknown-type validation the loader uses
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+    log.info("Saved rig to %s", path)
+    return data

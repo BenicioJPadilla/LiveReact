@@ -376,3 +376,124 @@ def test_the_peak_escalation_itself_fires_when_its_block_is_unused():
     clock.advance(LASER_SWEEP_BARS * BAR_S + 0.1)
     eng.tick(_snap(bar=57, bucket="peak"), rig)   # ...and back, mid-block: no extra sweep
     assert not eng.active and eng.primed
+
+
+# --- manual cue (2026-09-30: the operator's taste-tuned option) ------------------
+
+def _cued_engine(clock, cue=True):
+    manual = ManualParams(laser_enable=True, laser_cue=cue)
+    return LaserEngine(clock, manual=manual), manual
+
+
+def test_manual_cue_lights_the_dotted_line_outside_any_peak():
+    """No PEAK, no drop, an ordinary BREAK: the held cue alone shows the line."""
+    rig = load_rig()
+    clock = FakeClock()
+    eng, _ = _cued_engine(clock)
+    c = eng.tick(_snap(bucket="break", drop_hit_intensity=0.0, drop_start_bar=None, bar=3), rig)
+    values, touched = _laser_channels(c, rig)
+    assert touched and eng.active and eng.source == "manual" and not eng.primed
+    assert values[0] == Laser.MANUAL_PATTERN_MODE
+    assert values[1] == Laser.PATTERN_A1_DOTTED_LINE
+    assert values[8] == Laser.SCALE_STATIC
+    assert values[10] == Laser.SCAN_DOTS
+    assert Laser.SWEEP_SPEED_MIN <= values[6] <= Laser.SWEEP_SPEED_MAX  # never the unverified static half
+
+
+def test_manual_cue_is_off_without_the_manual_params_or_with_the_flag_down():
+    rig = load_rig()
+    clock = FakeClock()
+    eng, manual = _cued_engine(clock, cue=False)
+    c = eng.tick(_snap(bucket="break", drop_hit_intensity=0.0, bar=3), rig)
+    _, touched = _laser_channels(c, rig)
+    assert not touched and not eng.active and eng.source == "" and not eng.manual_cued
+    manual.laser_cue = True
+    eng.tick(_snap(bucket="break", drop_hit_intensity=0.0, bar=3), rig)
+    assert eng.active and eng.manual_cued
+    assert not LaserEngine(clock).manual_cued
+
+
+def test_manual_cue_sweep_is_stationary_on_steady_mids_and_speeds_up_on_a_stab():
+    """Speed follows the mids + highs envelope: steady content reads as the
+    floor (CH7 128, the slowest confirmed sweep), a stab pushes it up and it
+    relaxes again. The low band is ignored on this path."""
+    from livereact.engines.laser import MANUAL_SWEEP_FLOOR
+    rig = load_rig()
+    clock = FakeClock()
+    eng, _ = _cued_engine(clock)
+    quiet = dict(bucket="break", drop_hit_intensity=0.0, bar=3,
+                 audio_band_low_abs=5.0, audio_band_mid_abs=2.0, audio_band_high_abs=1.0)
+    for _ in range(300):  # settle the baseline (6 s, like _settle) well past the 1 s warm-up
+        eng.tick(_snap(**quiet), rig)
+        clock.advance(0.02)
+    assert eng.sweep <= MANUAL_SWEEP_FLOOR + 0.05
+    steady_ch7 = eng._stab.level
+    for _ in range(3):   # a stab in the mids + highs
+        eng.tick(_snap(**dict(quiet, audio_band_mid_abs=8.0, audio_band_high_abs=4.0)), rig)
+        clock.advance(1 / 60)
+    stab_sweep = eng.sweep
+    assert stab_sweep > steady_ch7 + 0.3
+    c = eng.tick(_snap(**dict(quiet, audio_band_mid_abs=8.0, audio_band_high_abs=4.0)), rig)
+    values, _ = _laser_channels(c, rig)
+    assert values[6] > Laser.SWEEP_SPEED_MIN + 0.3 * 127
+    for _ in range(60):  # ...and it relaxes
+        eng.tick(_snap(**quiet), rig)
+        clock.advance(1 / 60)
+    assert eng.sweep < stab_sweep - 0.3
+    # a kick on its own (low band) does nothing to the manual sweep
+    before = eng.sweep
+    for _ in range(3):
+        eng.tick(_snap(**dict(quiet, audio_band_low_abs=30.0)), rig)
+        clock.advance(1 / 60)
+    assert abs(eng.sweep - before) < 0.05
+
+
+def test_manual_cue_dies_with_the_audio_but_survives_pdl_loss():
+    """LASER-12 on the manual path: no real audio means off at once; the cue
+    has no beat grid to lock to, so PDL alone is not required."""
+    rig = load_rig()
+    clock = FakeClock()
+    eng, _ = _cued_engine(clock)
+    eng.tick(_snap(bucket="break", drop_hit_intensity=0.0, bar=3, pdl_fresh=False), rig)
+    assert eng.active and eng.source == "manual"
+    c = eng.tick(_snap(bucket="break", drop_hit_intensity=0.0, bar=3, audio_fresh=False), rig)
+    _, touched = _laser_channels(c, rig)
+    assert not touched and not eng.active and eng.source == ""
+    assert eng.manual_cued  # the cue is still held; it lights again when audio returns
+
+
+def test_releasing_the_cue_returns_to_the_auto_path_with_its_block_state_intact():
+    rig = load_rig()
+    clock = FakeClock()
+    eng, manual = _cued_engine(clock)
+    eng.tick(_snap(bar=48), rig)                      # PEAK block boundary, but the cue owns it
+    assert eng.source == "manual"
+    manual.laser_cue = False
+    eng.tick(_snap(bar=48), rig)                      # auto path: this block still gets its sweep
+    assert eng.active and eng.source == "auto"
+    clock.advance(LASER_SWEEP_BARS * BAR_S + 0.1)
+    eng.tick(_snap(bar=50), rig)
+    assert eng.primed and not eng.active and eng.source == ""
+
+
+def test_end_to_end_the_manual_cue_lights_when_armed_and_stays_dark_when_not():
+    """The cue is musical; arming (and the geometry check / --testing) stays
+    the safety decision in finalize."""
+    for armed, expect_lit in ((True, True), (False, False)):
+        rig = load_rig()
+        for fx in rig.by_role("laser"):
+            fx.mount_height_m = 0.9
+            fx.safety_test_mode = True
+        clock = FakeClock()
+        state = ShowState()
+        state.publish(_snap(bucket="break", drop_hit_intensity=0.0, drop_start_bar=None, bar=3))
+        manual = ManualParams(laser_enable=armed, laser_cue=True)
+        laser = LaserEngine(clock, manual=manual)
+        eng = ShowEngine(state, rig, DmxFrameBuffer(), [ReactiveLayerEngine(clock, manual=manual), laser],
+                         manual, clock, threading.Event(), laser_engine=laser)
+        frame = eng.tick()
+        off = rig.fixture("laser_l").offset
+        assert laser.active and laser.source == "manual"
+        assert (frame[off] == Laser.MANUAL_PATTERN_MODE) is expect_lit
+        if expect_lit:
+            assert frame[off + 1] == Laser.PATTERN_A1_DOTTED_LINE

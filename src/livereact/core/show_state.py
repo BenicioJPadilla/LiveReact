@@ -135,6 +135,9 @@ class ShowSnapshot:
     # "dj" (D key) or "roll" (the snare-roll accent).
     drop_armed: bool = False
     drop_arm_source: str = ""
+    # True between a second D press and the downbeat that cuts the drop
+    # (core/metronome.py HARD_CUT_LATE_PHASE, 2026-09-19). Console/recorder only.
+    drop_cut_pending: bool = False
     # The rise phase (core/rise.py, 2026-09-17): `rising` while the high band's
     # level + onset density are climbing against the bars before; `rise_index`
     # is the intensity ratio (1.0 = no change). engines/reactive.py runs the

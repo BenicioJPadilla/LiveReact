@@ -160,6 +160,7 @@ class SessionRecorder(threading.Thread):
             "build_cue_src": snap.build_cue_source,         # "dj" (C key) / "auto" (core/build_rule.py) / "roll" / ""
             "drop_armed": snap.drop_armed,                  # core/metronome.py arm_drop / note_roll
             "drop_arm_src": snap.drop_arm_source,           # "dj" (D key) / "roll" / "rise" / ""
+            "drop_cut_pending": snap.drop_cut_pending,      # second D press, waiting for the downbeat (2026-09-19)
             "rising": snap.rising,                          # core/rise.py: intensity climbing
             "rise_index": round(snap.rise_index, 2),
             "norm_seeded": snap.norm_seeded,                # energy_norm still on last session's range
@@ -196,7 +197,9 @@ class SessionRecorder(threading.Thread):
         if self.laser_engine is not None:
             record["laser_on"] = self.laser_engine.active        # engines/laser.py: a block sweep is lit
             record["laser_primed"] = self.laser_engine.primed    # PEAK gate open, pattern held with CH1 off
-            record["laser_sweep"] = round(self.laser_engine.sweep, 3)  # the wub envelope driving CH7
+            record["laser_sweep"] = round(self.laser_engine.sweep, 3)  # the 0..1 CH7 sweep intensity sent
+            record["laser_source"] = self.laser_engine.source        # "auto" block sweep / "manual" operator cue / ""
+            record["laser_stab"] = round(self.laser_engine.stab, 3)   # the mids + highs envelope behind a manual cue
         if self.silence_detector is not None:
             record["silence_active"] = self.silence_detector.active
         if self.rig is not None:

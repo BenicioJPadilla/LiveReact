@@ -58,9 +58,12 @@ def _layout(fx) -> tuple[float, float, float, float]:
 class RigView(QtWidgets.QGraphicsView):
     """Draws the 8 fixtures, colored/brightness/positioned from the live universe."""
 
-    def __init__(self, rig: Rig) -> None:
+    def __init__(self, rig: Rig, editable: bool = True) -> None:
         super().__init__()
         self.rig = rig
+        # editable=False (the console's Show tab, 2026-09-18): a live view
+        # only -- nothing can be dragged mid-set by a stray click.
+        self.editable = editable
         self._scene = QtWidgets.QGraphicsScene(0, 0, _SCENE_W, _SCENE_H)
         self.setScene(self._scene)
         self.setBackgroundBrush(QtGui.QColor(12, 12, 16))
@@ -69,6 +72,14 @@ class RigView(QtWidgets.QGraphicsView):
         self._beams: dict[str, QtWidgets.QGraphicsLineItem] = {}
         self._labels: dict[str, QtWidgets.QGraphicsTextItem] = {}  # keep a Python ref — see _build_items
         self._build_items()
+        # Scale the fixed logical canvas to whatever pane it lands in (the
+        # console's mini-map is smaller than 820x540) instead of scrolling.
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self.fitInView(self._scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     def _build_items(self) -> None:
         pen = QtGui.QPen(QtGui.QColor(60, 60, 70))
@@ -87,8 +98,9 @@ class RigView(QtWidgets.QGraphicsView):
             # file). Beam/label positions are derived live from wherever the
             # body actually is on screen, not recomputed from the original
             # layout, so they track a drag automatically.
-            item.setFlag(movable, True)
-            item.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
+            if self.editable:
+                item.setFlag(movable, True)
+                item.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
             self._bodies[self._key(fx)] = item
             # Beam line for moving heads (shows pan/tilt).
             if isinstance(fx, MovingHead):

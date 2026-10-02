@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from livereact.core.show_state import ShowSnapshot
 from livereact.fixtures.rig import load_rig
 from livereact.scenes.base import SAFE_DEFAULT, EnergyBucket, Scene
@@ -815,3 +817,55 @@ def test_build_snare_accent_conflicts_with_drop_blackout_hit():
     from livereact.scenes.catalog import SceneCatalog
     from livereact.scenes.library import BuildSnareAccent
     assert SceneCatalog._conflicts(DropBlackoutHit(), BuildSnareAccent())
+
+
+# --- named targets via real geometry (2026-09-18) ------------------------------
+
+def _rig_with_calibrated_head():
+    from livereact.fixtures.geometry import HeadCalibration, Point3, Venue
+    from livereact.fixtures.rig import load_rig
+    rig = load_rig()
+    rig.venue = Venue(9.0, 12.0, 3.6, Venue.default_targets(9.0, 12.0, 3.6))
+    for mh in rig.by_role("spot"):
+        mh.position = Point3(1.5 if mh.side == "left" else 7.5, 0.6, 3.0)
+        mh.calibration = HeadCalibration(target="dj_booth", pan01=0.5, tilt01=0.5)
+    rig.refresh_geometry()
+    return rig
+
+
+def test_break_single_spot_special_without_a_venue_keeps_the_old_guess():
+    from livereact.fixtures.rig import load_rig
+    from livereact.scenes.library import BreakSingleSpotSpecial
+
+    rig = load_rig()
+    c = BreakSingleSpotSpecial().render(rig, ShowSnapshot(energy=0.3))
+    mh = rig.fixture("mh_l")
+    assert c.values[mh.offset + 0] == 128            # pan 0.5
+    assert c.values[mh.offset + 2] == int(0.70 * 65535) >> 8
+    assert not c.absolute_movement
+
+
+def test_break_single_spot_special_aims_at_the_real_dj_booth_when_calibrated():
+    from livereact.fixtures.geometry import aim
+    from livereact.fixtures.profiles import _read16
+    from livereact.scenes.library import BreakSingleSpotSpecial
+
+    rig = _rig_with_calibrated_head()
+    c = BreakSingleSpotSpecial().render(rig, ShowSnapshot(energy=0.3))
+    mh = rig.fixture("mh_l")
+    pan01, tilt01, ok = aim(mh.position, mh.facing_deg, rig.venue.targets["dj_booth"], mh.calibration,
+                            mh.PAN_RANGE_DEG, mh.TILT_RANGE_DEG)
+    assert ok
+    assert _read16(c.values, mh.offset + 0) == pytest.approx(pan01, abs=1e-4)
+    assert _read16(c.values, mh.offset + 2) == pytest.approx(tilt01, abs=1e-4)
+    assert mh.offset in c.absolute_movement           # finalize will skip the home remap
+
+
+def test_outro_single_beam_uses_the_ceiling_bounce_target_when_calibrated():
+    from livereact.scenes.library import OutroSingleBeam
+
+    rig = _rig_with_calibrated_head()
+    c = OutroSingleBeam().render(rig, ShowSnapshot(energy=0.2))
+    mh = rig.fixture("mh_l")
+    assert mh.offset in c.absolute_movement
+    assert c.values[mh.offset + 2] > 128              # the ceiling target is above a 3 m head: tilted up

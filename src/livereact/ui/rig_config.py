@@ -20,7 +20,7 @@ import os
 from PySide6 import QtWidgets
 
 from ..fixtures.profiles import FIXTURE_TYPES
-from ..fixtures.rig import RigError, Rig, _rig_from_dict
+from ..fixtures.rig import RigError, Rig, _rig_from_dict, rig_to_dict
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ _COLUMNS = ["Slot ID", "Label", "Fixture Type", "DMX Address", "Role", "Side"]
 class RigConfigTab(QtWidgets.QWidget):
     def __init__(self, rig: Rig, rig_path: str | None) -> None:
         super().__init__()
+        self.rig = rig
         self.rig_path = rig_path
 
         v = QtWidgets.QVBoxLayout(self)
@@ -127,6 +128,11 @@ class RigConfigTab(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------ save
     def _collect(self) -> dict:
+        """The table's rows as a rig dict. Rows that still match a loaded
+        slot start from the shared serializer's full slot (positions, home,
+        mount height, calibration, unknown keys all kept) and only the six
+        editable columns are overlaid; new rows get just those six."""
+        existing = {s["slot_id"]: s for s in rig_to_dict(self.rig)["slots"]}
         slots = []
         for row in range(self.table.rowCount()):
             slot_item = self.table.item(row, 0)
@@ -135,19 +141,22 @@ class RigConfigTab(QtWidgets.QWidget):
             addr_spin = self.table.cellWidget(row, 3)
             role_combo = self.table.cellWidget(row, 4)
             side_combo = self.table.cellWidget(row, 5)
-            slots.append({
-                "slot_id": (slot_item.text().strip() if slot_item else "") or f"slot_{row + 1}",
+            slot_id = (slot_item.text().strip() if slot_item else "") or f"slot_{row + 1}"
+            edited = {
+                "slot_id": slot_id,
                 "label": (label_item.text().strip() if label_item else "") or "Fixture",
                 "fixture_type": type_combo.currentText() if type_combo else "",
                 "dmx_address": addr_spin.value() if addr_spin else 1,
                 "role": role_combo.currentText() if role_combo else "wash",
                 "side": side_combo.currentText() if side_combo else "left",
-            })
-        return {
-            "name": "Custom rig (edited in console)",
-            "description": "Edited via the LiveReact console's Rig Config tab.",
-            "slots": slots,
-        }
+            }
+            base = existing.get(slot_id, {})
+            if base.get("fixture_type") != edited["fixture_type"]:
+                base = {}  # a different fixture class: its geometry/calibration no longer applies
+            slots.append({**base, **edited})
+        data = rig_to_dict(self.rig, "Edited via the LiveReact console's Rig Config tab.")
+        data["slots"] = slots
+        return data
 
     def _save(self) -> None:
         data = self._collect()

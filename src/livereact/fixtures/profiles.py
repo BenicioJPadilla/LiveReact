@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 
+from .geometry import HeadCalibration, Point3
+
 
 class ChannelKind(IntEnum):
     """How the merge layer should combine a channel across engine contributions."""
@@ -55,6 +57,23 @@ def _clamp8(value: float) -> int:
 def _to8(level01: float) -> int:
     """Map a 0..1 level to a 0-255 DMX byte."""
     return _clamp8(round(level01 * 255))
+
+
+def _to16_int(level01: float) -> int:
+    """Map a 0..1 level to a 16-bit DMX count (0..65535)."""
+    v = round(level01 * 65535)
+    return 0 if v <= 0 else 65535 if v >= 65535 else v
+
+
+def _to16(level01: float) -> tuple[int, int]:
+    """Map a 0..1 level to a (coarse, fine) DMX byte pair."""
+    v = _to16_int(level01)
+    return v >> 8, v & 0xFF
+
+
+def _read16(uni, i: int) -> float:
+    """Read a (coarse, fine) byte pair at ``i``/``i+1`` back to 0..1."""
+    return ((uni[i] << 8) | uni[i + 1]) / 65535
 
 
 # Dimmer/intensity-specific curve (LIGHTING_BIBLE.md §3.7, [VERIFIED]): budget
@@ -183,6 +202,20 @@ class Fixture:
         # variance status.
         self.mount_height_m: float | None = None
         self.min_beam_height_m: float = 3.0
+        # Real-world placement (2026-09-18 venue floor plan, fixtures/
+        # geometry.py's convention: meters, origin at the booth wall's
+        # stage-left corner, x to stage-right, y into the crowd, z up).
+        # None -> not placed; the floor plan then falls back to the old
+        # layout_x/layout_y canvas position or the role/side schematic.
+        # `facing_deg` is the yaw of the body's pan=0.5 direction (0 = into
+        # the crowd). `x_norm` (LIGHTING_BIBLE.md §1.2) is DERIVED by
+        # Rig.refresh_geometry() from position + venue width; None without a
+        # venue. `extra` keeps any rig-file keys the loader doesn't model
+        # (e.g. josh_rig.json's `mount_height_note`) so a save round-trips them.
+        self.position: Point3 | None = None
+        self.facing_deg: float = 0.0
+        self.x_norm: float | None = None
+        self.extra: dict = {}
         # Bench/testing session (Josh, 2026-09-15): "in the testing phase the
         # laser is always in a safe spot and there's no crowd." Set ONLY by
         # the `--testing` flag (app.py), never from a rig file or config, so
@@ -246,7 +279,7 @@ class Fixture:
     def apply_safety(self, uni: bytearray, laser_enabled: bool) -> None: ...
     def apply_color_bias(self, uni: bytearray, bias: float) -> None: ...
     def apply_strobe_burst(self, uni: bytearray, cap01: float) -> None: ...
-    def apply_home_position(self, uni: bytearray, bound: float = 0.20) -> None: ...
+    def apply_home_position(self, uni: bytearray, bound: float = 0.20, absolute: bool = False) -> None: ...
     def apply_slew_limit(self, uni: bytearray, dt: float) -> None: ...
     def apply_laser_gate(self, uni: bytearray, laser_on: bool) -> None: ...
 
@@ -280,10 +313,25 @@ class MovingHead(Fixture):
     PAN_MAX_DEG_PER_S = 260.0
     TILT_MAX_DEG_PER_S = 200.0
 
+    # 16-bit pan/tilt (2026-09-18, venue aiming): CH2/CH4 are the fine bytes
+    # in the 15CH map above but were never written before -- 8-bit pan over
+    # 540 deg is ~2.1 deg per step, too coarse to land a computed aim. Every
+    # pan/tilt read/write below goes through _read16/_write16 so the home
+    # remap and the slew limiter keep the fine resolution too. UNVERIFIED on
+    # hardware whether this unit honours the fine bytes in 15CH mode: if it
+    # ignores or jitters on them, flip this and the fine bytes are held at 0
+    # (the coarse byte is identical either way).
+    USE_FINE_CHANNELS = True
+
     def __init__(self, address: int, label: str, role: str, side: str) -> None:
         super().__init__(address, label, role, side)
         self._prev_pan_dmx: int | None = None
         self._prev_tilt_dmx: int | None = None
+        # One-point aim capture (fixtures/geometry.py): the pan/tilt offsets
+        # that make the trig model agree with where this head really points.
+        # Uncaptured (default) -> named-target aiming falls back to each
+        # scene's old hardcoded guess.
+        self.calibration = HeadCalibration()
 
     def channel_kinds(self) -> list[ChannelKind]:
         K = ChannelKind
@@ -304,8 +352,13 @@ class MovingHead(Fixture):
         return {"pan_tilt", "native_strobe_channel", "wheel_discrete"}
 
     def boot_defaults(self, buf: Buffer) -> None:
+        # Raw CENTRE, deliberately not the calibrated home: apply_home_position
+        # remaps raw 0.5 onto home at finalize, so an untouched pan already
+        # boots to home through that path (writing home here would apply twice).
         self._set(buf, 1, 128)   # pan center
+        self._set(buf, 2, 0)     # pan fine
         self._set(buf, 3, 80)    # tilt angled down
+        self._set(buf, 4, 0)     # tilt fine
         self._set(buf, 5, 128)   # movement speed mid
         self._set(buf, 6, 0)     # dimmer off
         self._set(buf, 13, 0)    # macro off (drive via DMX, not built-in macros)
@@ -318,8 +371,24 @@ class MovingHead(Fixture):
         self._set(buf, 8, slot)
 
     def set_position(self, buf: Buffer, pan01: float, tilt01: float) -> None:
-        self._set(buf, 1, _to8(pan01))
-        self._set(buf, 3, _to8(tilt01))
+        hi, lo = _to16(pan01)
+        self._set(buf, 1, hi)
+        self._set(buf, 2, lo if self.USE_FINE_CHANNELS else 0)
+        hi, lo = _to16(tilt01)
+        self._set(buf, 3, hi)
+        self._set(buf, 4, lo if self.USE_FINE_CHANNELS else 0)
+
+    def set_aim(self, buf: Buffer, pan01: float, tilt01: float) -> None:
+        """A FINAL pan/tilt (a computed aim at a real target, fixtures/
+        geometry.py), not a scene's raw 0.5-centred motion: marks the four
+        movement channels so finalize skips apply_home_position's +-10%
+        remap for them (a named target can be 90 deg from home). Slew
+        limiting still applies. Buffers without an `absolute_movement` set
+        (plain test buffers) just get the position."""
+        self.set_position(buf, pan01, tilt01)
+        marks = getattr(buf, "absolute_movement", None)
+        if marks is not None:
+            marks.update(range(self.offset, self.offset + 4))
 
     def set_strobe(self, buf: Buffer, rate01: float) -> None:
         self._set(buf, 7, _to8(rate01))
@@ -335,7 +404,7 @@ class MovingHead(Fixture):
     def apply_strobe_burst(self, uni: bytearray, cap01: float) -> None:
         uni[self.offset + 6] = _to8(cap01)  # ch7 strobe at the capped rate
 
-    def apply_home_position(self, uni: bytearray, bound: float = 0.20) -> None:
+    def apply_home_position(self, uni: bytearray, bound: float = 0.20, absolute: bool = False) -> None:
         """Remap whatever raw pan/tilt a scene/engine set (all of them assume a
         0.5-centered convention) around this fixture's calibrated "facing the
         stage" position, scaled into a bounded range — docs/14 §4. A no-op
@@ -346,15 +415,18 @@ class MovingHead(Fixture):
         scene's position math: it preserves each scene's relative motion
         *shape* (PeakFullRig's slow fan, PeakBeamSweep's fast triangle
         sweep, etc.) while re-centering and re-scaling the *output* uniformly.
+
+        ``absolute`` (2026-09-18): the winning contribution marked this
+        fixture's movement as a final aim (see set_aim) -- pass it through.
         """
-        if self.home_pan is None or self.home_tilt is None:
+        if absolute or self.home_pan is None or self.home_tilt is None:
             return
-        raw_pan = uni[self.offset + 0] / 255
-        raw_tilt = uni[self.offset + 2] / 255
+        raw_pan = _read16(uni, self.offset + 0)
+        raw_tilt = _read16(uni, self.offset + 2)
         new_pan = self.home_pan + (raw_pan - 0.5) * bound
         new_tilt = self.home_tilt + (raw_tilt - 0.5) * bound
-        uni[self.offset + 0] = _to8(max(0.0, min(1.0, new_pan)))
-        uni[self.offset + 2] = _to8(max(0.0, min(1.0, new_tilt)))
+        self._write16(uni, self.offset + 0, _to16_int(max(0.0, min(1.0, new_pan))))
+        self._write16(uni, self.offset + 2, _to16_int(max(0.0, min(1.0, new_tilt))))
 
     def apply_slew_limit(self, uni: bytearray, dt: float) -> None:
         """Clamp the commanded pan/tilt delta per frame so a scene switch or
@@ -365,6 +437,7 @@ class MovingHead(Fixture):
 
         First tick after construction (no prior commanded value yet) passes
         the command through unclamped — there's nothing to ramp from.
+        Works in 16-bit counts (the `_prev_*_dmx` references are 0..65535).
         """
         pan_i, tilt_i = self.offset + 0, self.offset + 2
         self._prev_pan_dmx = self._slew(uni, pan_i, self._prev_pan_dmx,
@@ -372,23 +445,26 @@ class MovingHead(Fixture):
         self._prev_tilt_dmx = self._slew(uni, tilt_i, self._prev_tilt_dmx,
                                           self.TILT_MAX_DEG_PER_S, self.TILT_RANGE_DEG, dt)
 
-    @staticmethod
-    def _slew(uni: bytearray, i: int, prev: int | None,
+    def _slew(self, uni: bytearray, i: int, prev: int | None,
               max_deg_per_s: float, range_deg: float, dt: float) -> int:
-        commanded = uni[i]
+        commanded = (uni[i] << 8) | uni[i + 1]
         if prev is None:
             return commanded
-        max_delta = max_deg_per_s * dt / range_deg * 255.0
+        max_delta = max_deg_per_s * dt / range_deg * 65535.0
         delta = max(-max_delta, min(max_delta, commanded - prev))
-        new_value = _clamp8(round(prev + delta))
-        uni[i] = new_value
+        new_value = max(0, min(65535, round(prev + delta)))
+        self._write16(uni, i, new_value)
         return new_value
+
+    def _write16(self, uni: bytearray, i: int, v16: int) -> None:
+        uni[i] = v16 >> 8
+        uni[i + 1] = (v16 & 0xFF) if self.USE_FINE_CHANNELS else 0
 
     def visual_state(self, uni: bytes) -> VisualState:
         dim = uni[self.offset + 5] / 255
         r, g, b = color_wheel_to_rgb(uni[self.offset + 7])
-        pan = uni[self.offset + 0] / 255
-        tilt = uni[self.offset + 2] / 255
+        pan = _read16(uni, self.offset + 0)
+        tilt = _read16(uni, self.offset + 2)
         return VisualState(self.label, self.role, self.side, r, g, b, dim, pan, tilt, dim > 0)
 
 
@@ -416,7 +492,9 @@ class Laser(Fixture):
       CH3  "Pattern A 2": sub-pattern within whichever CH2 group is selected.
            Held at 0 throughout — not otherwise explored for CH2's dotted-
            line group.
-      CH7  horizontal sweep — 0-127 static position (untested), 128-255 =
+      CH7  horizontal sweep — 0-127 static position (UNTESTED as of
+           2026-09-18; `set_static_line` writes it, probe it from the
+           console's Venue tab and record the result here), 128-255 =
            sweep speed (confirmed). Speed now driven by audio intensity.
       CH9  "scale" per the file (claimed a plain static 0-255 zoom level) —
            WRONG. Confirmed on hardware: any nonzero value makes the pattern
@@ -452,6 +530,18 @@ class Laser(Fixture):
     COLOR_CYAN = 43
     COLOR_BLUE = 51
     COLOR_PURPLE = 59
+
+    def __init__(self, address: int, label: str, role: str, side: str) -> None:
+        super().__init__(address, label, role, side)
+        # Physical beam geometry for the floor plan (2026-09-18): this unit
+        # has no pan/tilt, so where its fan goes is set by how it's mounted.
+        # `beam_tilt_deg` (elevation of the fan's centre, +up), the fan's
+        # half-angle, and `h_offset01` -- the CH7 0-127 static horizontal
+        # position, UNVERIFIED on hardware (only the 128-255 sweep-speed half
+        # is confirmed; see the class docstring). 0.5 = centred.
+        self.beam_tilt_deg: float = 0.0
+        self.fan_half_angle_deg: float = 30.0
+        self.h_offset01: float = 0.5
 
     def channel_kinds(self) -> list[ChannelKind]:
         return [ChannelKind.LASER] * self.channel_count
@@ -489,6 +579,28 @@ class Laser(Fixture):
         intensity = max(0.0, min(1.0, intensity))
         span = self.SWEEP_SPEED_MAX - self.SWEEP_SPEED_MIN
         return int(self.SWEEP_SPEED_MIN + intensity * span)
+
+    STATIC_POS_MAX = 127            # CH7 — top of the (UNVERIFIED) static-position sub-range
+
+    def set_static_line(self, buf: Buffer, color: int, h_pos01: float) -> None:
+        """The dotted line held STILL at a horizontal position (2026-09-18).
+
+        UNVERIFIED ON HARDWARE: writes CH7 in its 0-127 half, which the QLC+
+        fixture file calls a static horizontal position -- never probed on
+        this unit (only the 128-255 sweep-speed half is confirmed; see the
+        class docstring). CH7 is one byte, so a fan cannot be both statically
+        positioned and sweeping: while engines/laser.py sweeps, CH7 is the
+        speed and `h_offset01` is NOT applied. Used by the Venue tab's bench
+        probe (needs the laser armed AND --testing on the real 0.9 m mount);
+        static-line scenes could use it once the probe says what it does.
+        Never writes CH7 >= 128, so a bad guess can't turn into a sweep."""
+        self._set(buf, 1, self.MANUAL_PATTERN_MODE)
+        self._set(buf, 2, self.PATTERN_A1_DOTTED_LINE)
+        self._set(buf, 3, self.PATTERN_A2_DEFAULT)
+        self._set(buf, 7, min(self.STATIC_POS_MAX, int(round(max(0.0, min(1.0, h_pos01)) * self.STATIC_POS_MAX))))
+        self._set(buf, 9, self.SCALE_STATIC)
+        self._set(buf, 11, self.SCAN_DOTS)
+        self._set(buf, 12, _clamp8(color))
 
     def apply_safety(self, uni: bytearray, laser_enabled: bool) -> None:
         # Fail-safe: unless explicitly enabled this run, the entire fixture is zeroed

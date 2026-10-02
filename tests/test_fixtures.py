@@ -3,6 +3,8 @@ brightness scaling, strobe cap, and the laser safety fail-safe."""
 
 from __future__ import annotations
 
+import pytest
+
 from livereact.core.frame_buffer import UNIVERSE_SIZE
 from livereact.fixtures.profiles import (
     DIMMER_FLOOR_DMX,
@@ -320,3 +322,82 @@ def test_visual_state_reads_back_color_and_brightness():
     vs = par.visual_state(bytes(uni))
     assert vs.r == 255 and vs.g == 0 and vs.b == 0
     assert vs.active and vs.brightness == 1.0
+
+
+# --- 16-bit pan/tilt + laser static line (2026-09-18 venue aiming) -------------
+
+def test_set_position_writes_fine_bytes():
+    from livereact.merge.merge import Contribution
+    mh = MovingHead(1, "MH", "spot", "left")
+    c = Contribution()
+    mh.set_position(c, 0.5, 0.5)
+    assert (c.values[0], c.values[1]) == (128, 0)      # 32768 -> coarse 128, fine 0
+    assert (c.values[2], c.values[3]) == (128, 0)
+    mh.set_position(c, 300 / 65535, 1.0)
+    assert (c.values[0], c.values[1]) == (1, 44)       # 300 = 1*256 + 44
+    assert (c.values[2], c.values[3]) == (255, 255)
+
+
+def test_visual_state_reads_16_bit():
+    mh = MovingHead(1, "MH", "spot", "left")
+    uni = _uni()
+    uni[0], uni[1] = 128, 128   # 32896/65535
+    uni[2], uni[3] = 0, 0
+    vs = mh.visual_state(bytes(uni))
+    assert vs.pan == pytest.approx(32896 / 65535)
+    assert vs.tilt == 0.0
+
+
+def test_slew_limit_has_sub_8bit_resolution():
+    """A ramp toward a far target advances in 16-bit counts: the fine byte
+    is nonzero mid-ramp (789 counts/frame at 40 Hz = coarse 3, fine 21)."""
+    mh = MovingHead(1, "MH", "spot", "left")
+    uni = _uni()
+    mh.apply_slew_limit(uni, dt=0.025)  # prev = 0
+    uni[0], uni[1] = 255, 255
+    mh.apply_slew_limit(uni, dt=0.025)
+    assert (uni[0], uni[1]) == (3, 21)  # round(260*0.025/540*65535) = 789 = 3*256 + 21
+
+
+def test_home_remap_preserves_fine_precision():
+    mh = MovingHead(1, "MH", "spot", "left")
+    mh.home_pan, mh.home_tilt = 0.7, 0.3
+    uni = _uni()
+    uni[0], uni[1] = 128, 0      # raw centre
+    mh.apply_home_position(uni, bound=0.20)
+    pan16 = (uni[0] << 8) | uni[1]
+    assert pan16 == pytest.approx(0.7 * 65535, abs=2)
+    assert uni[1] != 0           # the fine byte carries real precision
+
+
+def test_home_remap_is_skipped_for_an_absolute_aim():
+    mh = MovingHead(1, "MH", "spot", "left")
+    mh.home_pan, mh.home_tilt = 0.7, 0.3
+    uni = _uni()
+    uni[0], uni[2] = 255, 0
+    mh.apply_home_position(uni, bound=0.20, absolute=True)
+    assert (uni[0], uni[2]) == (255, 0)
+
+
+def test_fine_channels_can_be_switched_off():
+    from livereact.merge.merge import Contribution
+    mh = MovingHead(1, "MH", "spot", "left")
+    mh.USE_FINE_CHANNELS = False
+    c = Contribution()
+    mh.set_position(c, 300 / 65535, 0.5)
+    assert (c.values[0], c.values[1]) == (1, 0)
+
+
+def test_laser_static_line_never_writes_the_sweep_half_of_ch7():
+    from livereact.fixtures.profiles import Laser
+    from livereact.merge.merge import Contribution
+    laser = Laser(1, "L", "laser", "left")
+    for h in (0.0, 0.5, 1.0, 7.0, -3.0):
+        c = Contribution()
+        laser.set_static_line(c, Laser.COLOR_GREEN, h)
+        assert 0 <= c.values[6] <= 127          # CH7 static half only
+        assert c.values[0] == Laser.MANUAL_PATTERN_MODE
+        assert c.values[1] == Laser.PATTERN_A1_DOTTED_LINE
+    c = Contribution()
+    laser.set_static_line(c, Laser.COLOR_GREEN, 0.5)
+    assert c.values[6] == 64

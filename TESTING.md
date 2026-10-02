@@ -301,6 +301,16 @@ python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json
 > launch (not saved in config.json any more), press **L** (or tick "Arm lasers") for the tune
 > you want it on. Once armed it sweeps once per 8-bar block in PEAK only, one bar per sweep
 > (`engines/laser.py`), and never at a show with this flag.
+>
+> **Manual laser cue (2026-09-30):** with the laser armed, hold **CUE LASER (K)** on the
+> console (a toggle — press again to release) and the dotted line shows at once, in any
+> bucket, with its sweep speed following the mids + highs (synth stabs / hats): quiet
+> passages leave the line all but still, a stab pushes it to full speed. Releasing hands the
+> laser back to the automated PEAK sweeps. To drive it from the XDJ instead: run
+> `--midi-monitor`, turn/press the control you want, and add its `"channel:cc"` to
+> `midi_map.json` as `"laser_cue"` — past half-way = cued, back below = released. First live
+> check: does the idle read stationary enough, and does the speed track the stabs? Read
+> `laser_source` / `laser_stab` / `laser_sweep` off `state.jsonl`.
 
 Play a track on the XDJ-XZ.
 
@@ -365,7 +375,15 @@ Play a set: a track, a build, a drop, then mix into another track.
   drop by itself; so does a strong rise once the hats/snares clearly thicken (console: "DROP
   ARMED (intensity rising)"). Neither changes the look until the drop cuts. Unarmed, the loudness
   classifier still commits a drop, but only after two full bars of drop-level sound — late rather
-  than wrong. A loudness-guessed BUILD gets its wash ramp and look but no strobe. D again disarms.
+  than wrong. A loudness-guessed BUILD gets its wash ramp and look but no strobe.
+- **hard cut (D again)** (2026-09-19, after a kick re-entry that was a drop by every measure spent
+  the arm 37 s before the real drop): press **D a second time** while armed and the drop cuts on
+  the **next downbeat** whatever the audio says — count it in like a DJ. A press within the first
+  three quarters of beat 1 counts as that downbeat; later waits for the next bar. Console shows
+  "DROP CUT — lands on the next downbeat". A third press cancels both the cut and the arm. Use
+  this on riser-only tracks where the build has no kick or snare markers; for the pre-drop strobe
+  on those tracks, use the manual STROBE BURST in the last bar. Without Pro DJ Link the cut is
+  immediate.
 - after the set's first drop, a build the loudness can't see may cue ITSELF (2026-09-17,
   `core/build_rule.py`): once a drop has set the track's kick level, four bars of the kick back at
   30-65 % of it while the classifier still says BREAK raises the same held BUILD (console shows
@@ -380,9 +398,10 @@ Play a set: a track, a build, a drop, then mix into another track.
   audio block rate) is what the density path reads — expect ~2-5 on a groove, ~8-9 on
   16th-note hats, higher on a roll. **First run with this column tunes it**: note the time
   of every real roll you hear, then compare `onset_rate` there against the bars before it.
-- press **S** (or tick "Synth Sync") on a garage track: the par + wash bar stop following the
-  bucket model and pulse with the synth stabs instead; strobes pause while it's on. Press S again
-  to hand the wash back to the automation. Off at every startup.
+- **Synth Sync is ON at every startup** (Josh, 2026-09-19): the par + wash bar pulse with the
+  synth stabs instead of following the bucket model. The automated strobes (build ramp, roll
+  accent, drop-tail burst) cut through it and hand the wash straight back afterward. Press **S**
+  (or untick "Synth Sync") when you want the mellower bucket-model look; press S again to return.
 - crossfading into the next track is detected (console shows TRANSITION) and the
   show settles into a new look afterward
 - the operator controls (brightness, blackout, freeze, skip) all respond
@@ -411,7 +430,7 @@ misbehaving) in `NOTES.md`.
 | "No DJ-Link device seen" | Static IP `169.254.50.50/16`, Link on, firewall UDP 50000–50002 |
 | Beat not locking | `state.jsonl` — is `bpm` right and `pdl_fresh` true? Else network/PDL issue |
 | MIDI does nothing | `--midi-monitor` — do controls show up? Enable Utility→MIDI on the XZ |
-| Lasers won't light | Arm them (**L**) — disarmed at every launch; they only sweep on 8-bar boundaries in PEAK, with `--testing` on this rig |
+| Lasers won't light | Arm them (**L**) — disarmed at every launch; they only sweep on 8-bar boundaries in PEAK, with `--testing` on this rig. **K** (CUE LASER) shows the line by hand at any time once armed |
 
 ---
 
@@ -424,3 +443,47 @@ For any issue, the most useful bundle is:
 3. for MIDI: the `midi-monitor.txt` capture
 
 Then just say: *"analyze this session and tell me what's wrong / fix it."*
+
+## Test 5 — Venue floor plan + moving-head aim calibration (2026-09-18)
+
+The console's **Venue** tab draws the rig on a scaled floor plan (you type
+feet; the rig file stores meters) and calibrates a moving head so scenes can
+aim it at real places (the DJ booth, the dance-floor centre). Nothing is
+written to disk until you click **Save rig…**.
+
+Launch as usual, with the head connected:
+
+```
+python -m livereact --hardware --visualize --testing --rig rigs/josh_rig.json
+```
+
+1. **Venue** tab → type the room's Width / Length (ft). Drag the orange
+   `dj_booth` diamond to where the booth really is (its Height box is the
+   tabletop, ~4 ft).
+2. Pick the moving head in **Fixture → Select**. Type its X (along the booth
+   wall), Y (out into the crowd), Height (lens above the floor) and Facing
+   (0 if the body points straight into the crowd).
+3. Tick **Jog live** (Freeze must be off). Slide Pan/Tilt until the real beam
+   sits on the booth. It moves through the normal slew limit, so it glides.
+4. Target = `dj_booth` → click **SET AIM**. The label under it shows the
+   captured offsets.
+5. Target = `dancefloor_centre` → click **Aim at target**. The head should
+   land on the floor centre within about a foot. Swings the wrong way → tick
+   **Invert pan** (or tilt), SET AIM again on the booth, re-verify.
+   Consistently short or long on every target → the profile's
+   `PAN_RANGE_DEG`/`TILT_RANGE_DEG` placeholders are wrong for this unit
+   (note by how much).
+6. Optional: **Set home = target** with `dancefloor_centre` so every other
+   scene's ±10 % motion is centred on the floor. Untick Jog live. **Save rig…**
+
+Also worth checking while the head is pinned: nudge Pan by the smallest
+slider step and watch for jitter. If the unit ignores or twitches on the
+fine channels (CH2/CH4), set `MovingHead.USE_FINE_CHANNELS = False` in
+`src/livereact/fixtures/profiles.py` and say so in the session notes.
+
+**Laser CH7 probe** (bench only, no crowd, `--testing`, Arm lasers on):
+select the laser, tick **Probe static line live**, sweep **H offset** 0 → 127.
+Record which of these happens: the line moves sideways (0-127 really is a
+static position), it stays put (it isn't), or it starts sweeping (both halves
+are speed). Untick, let a real sweep fire on a drop, and note whether the
+sweep's centre moved. Put the answer in `Laser`'s docstring.

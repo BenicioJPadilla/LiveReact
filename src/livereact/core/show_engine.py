@@ -20,7 +20,9 @@ from ..merge.merge import (
     ManualParams,
     finalize,
     merge_contributions,
+    merge_contributions_ex,
 )
+from .frame_buffer import UNIVERSE_SIZE
 from ..scenes.base import SAFE_DEFAULT
 from .frame_buffer import DmxFrameBuffer
 from .show_state import ShowState
@@ -116,7 +118,22 @@ class ShowEngine(threading.Thread):
         safe_default_frame = None
         if self.bible_failsafe_enabled and auto_blackout:
             safe_default_frame = merge_contributions([SAFE_DEFAULT.render(self.rig, snap, 1.0)], self.rig)
-        frame = finalize(merge_contributions(contributions, self.rig), self.rig, self.manual,
-                          auto_blackout, laser_on, dt, safe_default_frame, snap.drop_pending)
+        merged, absolute = merge_contributions_ex(contributions, self.rig)
+        # Venue-tab calibration pins (merge/merge.py's CalibrationPins,
+        # 2026-09-18): overwrite the merged frame BEFORE finalize, so every
+        # safety clamp and the slew limit still apply to a pinned fixture.
+        pins = self.manual.calibration
+        if pins is not None:
+            for ch, value in pins.channels.items():
+                if 1 <= ch <= UNIVERSE_SIZE:
+                    merged[ch - 1] = 0 if value < 0 else 255 if value > 255 else int(value)
+            for slot in pins.absolute_slots:
+                try:
+                    absolute = absolute | {self.rig.fixture(slot).offset}
+                except KeyError:
+                    pass
+            laser_on = laser_on or pins.laser_open
+        frame = finalize(merged, self.rig, self.manual, auto_blackout, laser_on, dt,
+                         safe_default_frame, snap.drop_pending, absolute_movement=absolute)
         self.frame_buffer.publish(frame)
         return frame

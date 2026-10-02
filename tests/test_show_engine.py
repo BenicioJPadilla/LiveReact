@@ -96,3 +96,59 @@ def test_real_audio_confirms_playing_prevents_auto_blackout():
     frame = eng.tick()
     assert any(frame)
     assert eng.silence.active is False
+
+
+# --- Venue-tab calibration pins (2026-09-18) ----------------------------------
+
+def _pins(**kw):
+    from livereact.merge.merge import CalibrationPins
+    return CalibrationPins(**kw)
+
+
+def test_pins_reach_the_published_frame_and_are_still_slew_limited():
+    state = ShowState()
+    state.publish(ShowSnapshot(energy=0.8, fader_a=1.0, eq_low_a=1.0))
+    manual = ManualParams()
+    eng, fb, _ = _engine([ReactiveLayerEngine(FakeClock())], manual=manual, state=state)
+    mh = eng.rig.fixture("mh_l")  # address 1: CH1/2 pan, CH3/4 tilt, CH6 dimmer
+    manual.calibration = _pins(channels={1: 0, 2: 0, 6: 255})
+    eng.tick()                     # establishes the slew reference at pan 0
+    manual.calibration = _pins(channels={1: 255, 2: 255, 6: 255})
+    eng.clock.advance(0.025)       # one 40 Hz frame of real time for the slew limiter
+    frame = eng.tick()
+    assert frame[mh.offset + 5] == 255            # the pinned dimmer got through
+    assert 0 < frame[mh.offset + 0] < 255         # the pan jump was ramped, not slammed
+    manual.calibration = None
+    eng.tick()                                     # unpinned: the engines own the channel again
+
+
+def test_pinned_laser_stays_dark_unless_armed_and_geometry_safe():
+    from livereact.fixtures.profiles import Laser
+    state = ShowState()
+    state.publish(ShowSnapshot(energy=0.8, fader_a=1.0, eq_low_a=1.0))
+    manual = ManualParams()
+    eng, fb, _ = _engine([ReactiveLayerEngine(FakeClock())], manual=manual, state=state)
+    laser = eng.rig.fixture("laser_l")
+    ch1 = laser.address
+    pins = _pins(channels={ch1: Laser.MANUAL_PATTERN_MODE, ch1 + 1: Laser.PATTERN_A1_DOTTED_LINE}, laser_open=True)
+
+    manual.calibration = pins                      # not armed
+    assert eng.tick()[laser.offset] == 0
+    manual.laser_enable = True                     # armed, but mount height undeclared -> fails closed
+    assert eng.tick()[laser.offset] == 0
+    laser.mount_height_m = 3.0                     # armed + safe geometry + gate opened by the pin
+    assert eng.tick()[laser.offset] == Laser.MANUAL_PATTERN_MODE
+    manual.calibration = _pins(channels={ch1: Laser.MANUAL_PATTERN_MODE}, laser_open=False)
+    assert eng.tick()[laser.offset] == 0           # pinned but the gate is closed
+
+
+def test_pinned_head_skips_the_home_remap():
+    state = ShowState()
+    state.publish(ShowSnapshot(energy=0.8, fader_a=1.0, eq_low_a=1.0))
+    manual = ManualParams()
+    eng, fb, _ = _engine([ReactiveLayerEngine(FakeClock())], manual=manual, state=state)
+    mh = eng.rig.fixture("mh_l")
+    mh.home_pan, mh.home_tilt = 0.7, 0.3
+    manual.calibration = _pins(channels={1: 255, 2: 255, 3: 0, 4: 0}, absolute_slots=frozenset({"mh_l"}))
+    frame = eng.tick()                             # first tick: no slew reference yet -> passes through
+    assert frame[mh.offset + 0] == 255 and frame[mh.offset + 2] == 0

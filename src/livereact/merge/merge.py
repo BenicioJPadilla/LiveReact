@@ -40,11 +40,32 @@ class Contribution(Buffer):
         # one on a tie (matters for tests/render_universe's one-shot use
         # that construct a bare Contribution directly).
         self.priority = 0
+        # 0-based channel indices whose MOVEMENT value is a FINAL aim
+        # (MovingHead.set_aim, 2026-09-18), not raw 0.5-centred scene motion:
+        # finalize skips apply_home_position's remap for those fixtures when
+        # this contribution wins the LTP merge. Empty for every ordinary scene.
+        self.absolute_movement: set[int] = set()
 
     def set(self, channel_1based: int, value: int) -> None:
         i = channel_1based - 1
         self.values[i] = 0 if value < 0 else 255 if value > 255 else value
         self.touched[i] = 1
+
+
+@dataclass(frozen=True)
+class CalibrationPins:
+    """Channels the Venue tab pins into the merged frame while the operator
+    jogs a real fixture (2026-09-18 aim calibration). Applied by
+    core/show_engine.py AFTER the merge and BEFORE finalize, so a pin can
+    never bypass apply_safety (the laser arm switch + LASER-09 geometry) or
+    the movement slew limit -- the head glides to the jogged position and
+    a disarmed laser stays dark no matter what is pinned. Frozen: the UI
+    REPLACES ``manual.calibration`` wholesale (an atomic swap read once per
+    show-engine tick), never mutates one in place."""
+
+    channels: dict[int, int]                          # 1-based DMX channel -> byte
+    absolute_slots: frozenset[str] = frozenset()      # slot_ids whose pan/tilt skip the home remap
+    laser_open: bool = False                          # open the laser gate (armed + safe still required)
 
 
 @dataclass
@@ -54,8 +75,10 @@ class ManualParams:
     `synth_sync` (Josh, 2026-09-15) is the one operator-chosen REACTIVITY
     mode: while on, the par + wash bar dimmer follows the mid band (synths/
     stabs -- the prominent sound in UK garage) via engines/reactive.py's
-    Synth Sync path, and automated strobes are suppressed. Per-set, never
-    persisted (config.py's _PERSIST leaves it out) -- off at every start."""
+    Synth Sync path; the automated strobes override it while they run
+    (2026-09-19). ON at every start (Josh, 2026-09-19: "leave synth sync on
+    and take it off when I want it more mellow"); never persisted (config.py's
+    _PERSIST leaves it out), so a per-set switch-off doesn't stick."""
 
     master_brightness: float = 1.0   # 0..1 scales dimmers / par color
     strobe_cap: float = 1.0          # 0..1 max strobe-rate channel value
@@ -64,7 +87,25 @@ class ManualParams:
     strobe_burst: bool = False       # momentary operator strobe (within the cap)
     blackout: bool = False           # hard: zero everything
     freeze: bool = False             # hard: hold last frame (handled by show engine)
-    synth_sync: bool = False         # wash follows the synths/stabs (engines/reactive.py)
+    synth_sync: bool = True          # wash follows the synths/stabs (engines/reactive.py); on by default
+    # Manual laser cue (Josh, 2026-09-30): while held, the laser shows the
+    # dotted line with its sweep speed following the mids + highs -- the
+    # operator's taste-tuned alternative to engines/laser.py's automated
+    # PEAK sweeps. Console button / K key / a MIDI-learned "laser_cue"
+    # control. Still behind `laser_enable` (the arm switch) and every
+    # geometry check in Laser.apply_safety. Never persisted.
+    laser_cue: bool = False
+    # Venue-tab calibration pins (see CalibrationPins). None = nothing pinned.
+    # Never persisted (config.py's _PERSIST leaves it out); cleared whenever
+    # the operator leaves the Venue tab or unticks "Jog live".
+    calibration: CalibrationPins | None = None
+
+
+def merge_contributions_ex(contributions: list[Contribution], rig: Rig) -> tuple[bytearray, frozenset[int]]:
+    """``merge_contributions`` plus the set of 0-based channel indices whose
+    MOVEMENT winner marked itself absolute (Contribution.absolute_movement)."""
+    out, absolute = _merge(contributions, rig)
+    return out, frozenset(absolute)
 
 
 def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearray:
@@ -98,9 +139,14 @@ def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearra
     practical outcome as before for this specific case -- see
     docs/bible_integration/RULES_MATRIX.md's MERGE-05 row.
     """
+    return _merge(contributions, rig)[0]
+
+
+def _merge(contributions: list[Contribution], rig: Rig) -> tuple[bytearray, set[int]]:
     out = rig.boot_universe()
+    absolute: set[int] = set()
     if not contributions:
-        return out
+        return out, absolute
 
     for ch in range(UNIVERSE_SIZE):
         touched = [c for c in contributions if c.touched[ch]]
@@ -110,14 +156,23 @@ def merge_contributions(contributions: list[Contribution], rig: Rig) -> bytearra
         if kind in (ChannelKind.DIMMER, ChannelKind.STROBE):
             out[ch] = max(c.values[ch] for c in touched)  # HTP
         else:  # COLOR, MOVEMENT, LASER, OTHER -> LTP by priority
-            out[ch] = max(touched, key=lambda c: c.priority).values[ch]
-    return out
+            winner = max(touched, key=lambda c: c.priority)
+            out[ch] = winner.values[ch]
+            if kind == ChannelKind.MOVEMENT and ch in winner.absolute_movement:
+                absolute.add(ch)
+    return out, absolute
 
 
 def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: bool = False,
              laser_on: bool = False, dt: float = 1.0 / 60.0,
-             safe_default_frame: bytes | None = None, drop_pending: bool = False) -> bytes:
+             safe_default_frame: bytes | None = None, drop_pending: bool = False,
+             absolute_movement: frozenset[int] = frozenset()) -> bytes:
     """Apply manual biases/caps + safety clamps and return the wire-ready universe.
+
+    ``absolute_movement`` (2026-09-18, from ``merge_contributions_ex``): the
+    0-based channel indices whose pan/tilt is a final computed aim -- their
+    fixture skips apply_home_position's bounded remap (slew still applies).
+    Default empty = every existing caller unchanged.
 
     ``freeze`` is intentionally not handled here — holding the last frame is the
     show engine's job (it simply doesn't publish a new frame). ``blackout`` (the
@@ -180,7 +235,7 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
         fx.cap_strobe(out, manual.strobe_cap)              # safety: always cap
         fx.cap_brightness_while_strobing(out)               # safety: never full-bright while strobing (Josh, 2026-09-14)
         fx.apply_safety(out, manual.laser_enable)          # laser fail-safe
-        fx.apply_home_position(out)                        # docs/14 §4: bound around a calibrated home
+        fx.apply_home_position(out, absolute=fx.offset in absolute_movement)  # docs/14 §4: bound around a calibrated home
         fx.apply_slew_limit(out, dt)                        # LIGHTING_BIBLE.md §6.6: protect motors from instant jumps
         fx.apply_laser_gate(out, laser_on)                  # engines/laser.py: only during a laser moment
     return bytes(out)

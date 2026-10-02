@@ -56,6 +56,20 @@ HOW it moves -- CH7 sweep speed follows a "wub" envelope: the low band's
 COLOR -- the phrase-frozen palette entry (`snap.palette`), snapped to the
 nearest CH12 macro, so the laser matches the wash.
 
+MANUAL CUE (Josh, 2026-09-30: "a taste tuned manual option" instead of
+relying only on the automation) -- `ManualParams.laser_cue`, held by the
+console's CUE LASER button / K key / a MIDI-learned "laser_cue" control.
+While it is held and real audio is fresh, this layer ignores the PEAK gate
+and the block counter and shows the dotted line lit, with CH7's sweep
+speed following a mids + highs envelope (the synth stabs and hats, not the
+kick): quiet = the slowest sweep the confirmed 128-255 half offers (the
+line all but stands still), loud = full speed. Releasing the cue hands
+the channels straight back to the automated path above, whose block state
+is untouched by a manual cue. It does NOT bypass the arm switch or the
+geometry check (finalize's apply_safety) -- the cue is a musical decision,
+arming is the safety one. LASER-12 for the manual path: audio loss forces
+off; PDL is not required, the cue has no beat grid to lock to.
+
 Safety is NOT here: `Laser.apply_safety` (arm switch + LASER-09 geometry, or
 the operator's `--testing` mode) and `apply_laser_gate` run in
 merge/merge.py's finalize() on every frame regardless of what this layer
@@ -69,7 +83,7 @@ from ..core.show_state import ShowSnapshot
 from .envelope import NORMALIZE_TAU_S, BandEnvelope
 from ..fixtures.profiles import Laser
 from ..fixtures.rig import Rig
-from ..merge.merge import Contribution
+from ..merge.merge import Contribution, ManualParams
 from ..scenes.base import EnergyBucket
 
 # The held hit must land in the top quarter of core/metronome.py's
@@ -90,6 +104,14 @@ FLASH_MIN_ENERGY = 1e-6
 # fan now idles there and the wub envelope -- self-normalized, see
 # engines/envelope.py's NORMALIZE_* -- adds speed on top.
 LASER_SWEEP_BASE = 0.5
+
+# Manual cue: CH7 sweep = MANUAL_SWEEP_FLOOR + (1 - MANUAL_SWEEP_FLOOR) * stab,
+# where `stab` is the self-normalized mids + highs envelope. 0.0 = CH7 128,
+# the bottom of the confirmed speed band, which read as "static, slowly
+# moving" on the first live laser run -- the stationary line Josh asked for
+# as the set-up, without touching CH7's UNVERIFIED 0-127 static half
+# (Laser.set_static_line). Raise this if the idle reads too dead live.
+MANUAL_SWEEP_FLOOR = 0.0
 
 # engines/palette.py names -> Laser.COLOR_* macros (fixtures/profiles.py).
 PALETTE_TO_LASER: dict[str, int] = {
@@ -130,11 +152,14 @@ class LaserEngine:
     priority = 60
 
     def __init__(self, clock: Clock, block_bars: int = LASER_BLOCK_BARS,
-                 sweep_bars: float = LASER_SWEEP_BARS) -> None:
+                 sweep_bars: float = LASER_SWEEP_BARS, manual: ManualParams | None = None) -> None:
         self.clock = clock
         self.block_bars = block_bars
         self.sweep_bars = sweep_bars
+        self.manual = manual  # optional: the operator's laser_cue (see the module docstring)
         self._wub = BandEnvelope(clock, normalize_tau_s=NORMALIZE_TAU_S)
+        # Manual cue speed source: the mids + highs together (stabs + hats).
+        self._stab = BandEnvelope(clock, normalize_tau_s=NORMALIZE_TAU_S)
         self._sweep_until = 0.0
         self._entry_bar: int | None = None   # phrase origin fallback when the snapshot has none
         self._last_origin: int | None = None  # the origin _last_block counts from
@@ -146,8 +171,15 @@ class LaserEngine:
         self.active = False          # exposed for the console/recorder/finalize gate: a sweep is open
         self.primed = False          # gate open, pattern written with CH1 off, waiting for the next block
         self.wub = 0.0               # this tick's normalized 0..1 wub envelope
-        self.sweep = 0.0             # this tick's 0..1 CH7 sweep intensity (base + wub), what is sent
+        self.stab = 0.0              # this tick's normalized 0..1 mids + highs envelope (manual cue speed)
+        self.sweep = 0.0             # this tick's 0..1 CH7 sweep intensity, what is sent
+        self.source = ""             # "auto" (block sweep), "manual" (operator cue), "" (off)
         self.color = Laser.COLOR_WHITE
+
+    @property
+    def manual_cued(self) -> bool:
+        """The operator's cue is held (whether or not audio is fresh enough to light it)."""
+        return bool(self.manual is not None and self.manual.laser_cue)
 
     @property
     def name(self) -> str:
@@ -159,13 +191,27 @@ class LaserEngine:
         self._gate_was_open = False
         self.active = False
         self.primed = False
+        self.source = ""
 
     def tick(self, snap: ShowSnapshot, rig: Rig) -> Contribution:
         c = Contribution()
         now = self.clock.monotonic()
         self.wub = self._wub.update(snap.audio_band_low_abs, snap.audio_fresh)
+        self.stab = self._stab.update(snap.audio_band_mid_abs + snap.audio_band_high_abs, snap.audio_fresh)
         self.sweep = LASER_SWEEP_BASE + (1.0 - LASER_SWEEP_BASE) * self.wub
         self.color = laser_color_for_palette(snap.palette)
+        if self.manual_cued and snap.audio_fresh:
+            # Operator cue (module docstring, MANUAL CUE): lit now, speed from
+            # the mids + highs. The automated block state is left as it is so
+            # releasing the cue resumes the auto path exactly where it was.
+            self.sweep = MANUAL_SWEEP_FLOOR + (1.0 - MANUAL_SWEEP_FLOOR) * self.stab
+            self._sweep_until = now
+            self.active = True
+            self.primed = False
+            self.source = "manual"
+            for fx in rig.by_role("laser"):
+                fx.set_dotted_line_sweep(c, color=self.color, sweep_intensity=self.sweep, lit=True)
+            return c
         # LASER-12: any signal loss -> off now, never a held value.
         if not (snap.audio_fresh and snap.pdl_fresh) or not laser_wanted(snap):
             self._close(now)
@@ -192,6 +238,7 @@ class LaserEngine:
         self._gate_was_open = True
         self.active = bool(now < self._sweep_until)
         self.primed = not self.active
+        self.source = "auto" if self.active else ""
         for fx in rig.by_role("laser"):
             fx.set_dotted_line_sweep(c, color=self.color, sweep_intensity=self.sweep, lit=self.active)
         return c

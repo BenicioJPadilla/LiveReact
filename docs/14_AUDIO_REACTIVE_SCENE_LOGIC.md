@@ -294,6 +294,26 @@ Two options, not mutually exclusive:
 directions" with a same-session-sized change, and doesn't block B later if
 precise aiming turns out to matter.
 
+**Status 2026-09-18: B is built** (Josh's venue floor-plan request). The rig
+JSON now carries an optional `venue` block (width/length/height in meters,
+named `targets`) and per-fixture `position`/`facing_deg`/`calibration`/`beam`
+— schema in `src/livereact/fixtures/rig.py`'s docstring, coordinate
+convention and the trig in `src/livereact/fixtures/geometry.py`. The console's
+**Venue tab** (`ui/venue_tab.py`, drawing in `ui/floorplan.py`) is the scaled
+floor plan: the operator types feet, drags fixtures and targets, then
+calibrates a moving head by jogging the real unit onto the `dj_booth` target
+and clicking SET AIM (one-point capture solves the pan/tilt offsets). Scenes
+reach named targets through `scenes/base.py`'s `aim_spots` — the two
+hardcoded guesses (`BreakSingleSpotSpecial`'s `dj_booth`, `OutroSingleBeam`'s
+`ceiling_bounce`) now compute the real aim when the rig has geometry and fall
+back to the old guess otherwise. Option A's `home_pan`/`home_tilt` still
+exists (the ±10 % bounded motion for every other scene) and the Venue tab can
+set it from a target ("Set home = target"). Pan/tilt went 16-bit for this
+(`MovingHead.USE_FINE_CHANNELS`). Unverified on hardware as of this writing:
+the fine channels, the one-point capture landing on a second target, and
+the laser's CH7 0-127 static half (`Laser.set_static_line`, probe from the
+Venue tab).
+
 ---
 
 ## 5. Suggested build order

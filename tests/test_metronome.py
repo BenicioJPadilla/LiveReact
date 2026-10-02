@@ -1081,19 +1081,110 @@ def test_a_roll_arms_the_drop_without_touching_the_look():
     assert m._base_committed == EnergyBucket.DROP
 
 
-def test_arming_times_out_and_a_second_d_press_disarms():
+def test_arming_times_out_and_a_third_d_press_cancels():
     from livereact.core.metronome import DROP_ARM_HOLD_S
     clock = FakeClock()
     m = _build_with_kickless_bars(clock)
     m.arm_drop()
-    m.arm_drop()
-    assert not m.drop_armed
+    m.arm_drop()           # second press: hard cut pending (see below), still armed
+    assert m.drop_armed and m.drop_cut_pending
+    m.arm_drop()           # third press: everything off
+    assert not m.drop_armed and not m.drop_cut_pending
     m.arm_drop()
     clock.advance(DROP_ARM_HOLD_S + 0.1)
     m._derive_bucket(clock.monotonic())
     assert not m.drop_armed
     _kicks(m, clock, 4)  # kicks now are just kicks
     assert m._base_committed == EnergyBucket.BUILD
+
+
+# --- Hard cut (Josh, 2026-09-19, recordings/session-20260919-104825): a kick
+# re-entry at full drop level spent the arm 37 s before the real drop. D while
+# armed by D cuts the drop on the next downbeat, whatever the audio says.
+
+def _grid(m, clock, beat, phase):
+    """Put the metronome on a live PDL grid at this beat/phase."""
+    m._last_beat_time = clock.monotonic()
+    m._beat_in_bar = beat
+    m._beat_phase = phase
+
+
+def test_a_second_d_press_cuts_the_drop_on_the_next_downbeat():
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    m._bar = 130
+    _grid(m, clock, beat=3, phase=0.2)
+    m.arm_drop()
+    m.arm_drop()
+    assert m.drop_armed and m.drop_cut_pending
+    for beat, phase in ((3, 0.6), (4, 0.1), (4, 0.9)):
+        clock.advance(0.2)
+        _grid(m, clock, beat, phase)
+        m._derive_bucket(clock.monotonic())
+        assert m._base_committed == EnergyBucket.BUILD  # nothing until the one
+    clock.advance(0.2)
+    m._bar = 131
+    _grid(m, clock, beat=1, phase=0.05)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+    assert m.drop_hit_intensity >= 0.99  # a counted-in drop is a full hit
+    assert m.drop_start_bar == 131
+    assert not m.drop_armed and not m.drop_cut_pending
+
+
+def test_a_press_early_in_beat_one_is_that_downbeat_and_a_late_one_waits():
+    from livereact.core.metronome import HARD_CUT_LATE_PHASE
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    _grid(m, clock, beat=1, phase=HARD_CUT_LATE_PHASE + 0.1)  # late in the one
+    m.arm_drop(); m.arm_drop()
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BUILD  # too late: next bar
+    clock.advance(0.3)
+    _grid(m, clock, beat=2, phase=0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.BUILD
+    # a fresh engine, pressed just after the one: cuts on that downbeat
+    clock2 = FakeClock()
+    m2 = _build_with_kickless_bars(clock2)
+    _grid(m2, clock2, beat=1, phase=0.2)
+    m2.arm_drop(); m2.arm_drop()
+    m2._derive_bucket(clock2.monotonic())
+    assert m2._base_committed == EnergyBucket.DROP
+
+
+def test_a_hard_cut_without_a_pdl_grid_is_immediate():
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    m._last_beat_time = None
+    m._beat_in_bar = 3
+    m.arm_drop(); m.arm_drop()
+    m._derive_bucket(clock.monotonic())
+    assert m._base_committed == EnergyBucket.DROP
+
+
+def test_d_upgrades_a_roll_arm_instead_of_cutting():
+    from livereact.core.metronome import ROLL_ARM_MIN_S
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    m.note_roll(True)
+    m._derive_bucket(clock.monotonic())
+    clock.advance(ROLL_ARM_MIN_S + 0.1)
+    m._derive_bucket(clock.monotonic())
+    assert m.drop_armed and m._drop_arm_source == "roll"
+    m.arm_drop()  # first D on a roll arm: a DJ arm, not a cut
+    assert m.drop_armed and m._drop_arm_source == "dj" and not m.drop_cut_pending
+    m.arm_drop()
+    assert m.drop_cut_pending
+
+
+def test_a_hard_cut_shows_in_the_snapshot():
+    clock = FakeClock()
+    m = _build_with_kickless_bars(clock)
+    _grid(m, clock, beat=2, phase=0.5)
+    assert m._build_snapshot(clock.monotonic()).drop_cut_pending is False
+    m.arm_drop(); m.arm_drop()
+    assert m._build_snapshot(clock.monotonic()).drop_cut_pending is True
 
 
 def test_d_changes_nothing_but_the_arming():
@@ -1366,3 +1457,20 @@ def test_an_unconfirmed_build_renders_as_the_break_it_came_from():
     m.arm_drop()  # disarm
     m.cue_build()
     assert m._build_snapshot(clock.monotonic()).bucket == "build"  # C confirms the build look
+
+
+def test_unmapped_operator_controls_reach_the_control_callback_not_the_mixer_intent():
+    """2026-09-30: MIDI controls learned as operator cues ("laser_cue") are
+    handed to control_callback; mixer intents keep driving energy as before."""
+    from livereact.core.show_state import ShowState
+    import threading
+    seen = []
+    clock = FakeClock()
+    m = Metronome(queue.Queue(), ShowState(), clock, threading.Event(), hz=60.0,
+                  control_callback=lambda name, v: seen.append((name, v)))
+    m.queue.put(MidiControlMessage(0.0, "laser_cue", 1.0))
+    m.queue.put(MidiControlMessage(0.0, "laser_cue", 1.5))   # clamped like every control
+    m.queue.put(MidiControlMessage(0.0, "fader_a", 1.0))
+    m.tick()
+    assert seen == [("laser_cue", 1.0), ("laser_cue", 1.0)]
+    assert m._midi["fader_a"] == 1.0

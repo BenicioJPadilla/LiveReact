@@ -279,3 +279,44 @@ def test_one_engine_movement_does_not_clobber_another_engines_color():
     merged = merge_contributions([color_engine, move_engine], rig)
     assert merged[mh.offset + 7] != 0   # color wheel preserved
     assert merged[mh.offset + 0] == 255  # movement applied
+
+
+# --- absolute aims + calibration pins (2026-09-18 venue aiming) ----------------
+
+def test_absolute_aim_skips_the_home_remap_but_ordinary_motion_still_remaps():
+    from livereact.merge.merge import merge_contributions_ex
+    rig = _rig()
+    mh_l, mh_r = rig.fixture("mh_l"), rig.fixture("mh_r")
+    for mh in (mh_l, mh_r):
+        mh.home_pan, mh.home_tilt = 0.7, 0.3
+    c = Contribution()
+    mh_l.set_aim(c, 1.0, 0.0)        # a computed aim: final
+    mh_r.set_position(c, 1.0, 0.0)   # a scene's raw sweep: remapped
+    merged, absolute = merge_contributions_ex([c], rig)
+    assert mh_l.offset in absolute and mh_r.offset not in absolute
+    out = finalize(merged, rig, ManualParams(), absolute_movement=absolute)
+    assert out[mh_l.offset + 0] == 255 and out[mh_l.offset + 2] == 0
+    assert out[mh_r.offset + 0] == round((0.7 + 0.5 * 0.20) * 255)
+    assert out[mh_r.offset + 2] == round((0.3 - 0.5 * 0.20) * 255)
+
+
+def test_finalize_default_ignores_absolute_marks_so_old_callers_are_unchanged():
+    rig = _rig()
+    mh = rig.fixture("mh_l")
+    mh.home_pan, mh.home_tilt = 0.7, 0.3
+    c = Contribution()
+    mh.set_aim(c, 1.0, 0.0)
+    out = render_universe([c], rig, ManualParams())  # no absolute set passed
+    assert out[mh.offset + 0] == round((0.7 + 0.5 * 0.20) * 255)
+
+
+def test_absolute_mark_only_counts_when_that_contribution_wins():
+    from livereact.merge.merge import merge_contributions_ex
+    rig = _rig()
+    mh = rig.fixture("mh_l")
+    low, high = Contribution(), Contribution()
+    low.priority, high.priority = 25, 50
+    mh.set_aim(low, 1.0, 1.0)         # absolute, but outranked
+    mh.set_position(high, 0.0, 0.0)   # ordinary, wins
+    _, absolute = merge_contributions_ex([low, high], rig)
+    assert mh.offset not in absolute

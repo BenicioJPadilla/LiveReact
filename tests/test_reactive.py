@@ -723,7 +723,7 @@ def test_outro_fades_down_from_bar_position_not_audio():
     assert abs(full - 0.15) < 1e-9  # OUTRO_LOW, after a full fade (OUTRO_FADE_BARS=16)
 
 
-# --- Synth Sync (Josh, 2026-09-15): wash follows the mid band, strobes pause ---
+# --- Synth Sync (Josh, 2026-09-15): wash follows the mid band; strobes override it (2026-09-19) ---
 # See engines/reactive.py's SYNTH_* block.
 
 from livereact.engines.reactive import SYNTH_CEILING, SYNTH_FLOOR  # noqa: E402
@@ -768,15 +768,24 @@ def test_synth_sync_a_stab_lifts_the_wash_toward_the_ceiling():
     assert c.values[par.offset] > 120  # the dimmer byte actually moved (gamma curve, see _intensity_to8)
 
 
-def test_synth_sync_suppresses_the_build_strobe_and_the_drop_tail_burst():
+def test_synth_sync_lets_the_build_strobe_and_the_drop_tail_burst_override_it():
+    # Josh, 2026-09-19: Synth Sync stays on for whole sets now, so the
+    # automated strobes must cut through it (they used to be zeroed).
     rig = load_rig()
     eng, _ = _synth_engine()
-    # armed + rising: the sustained pre-drop strobe would otherwise run
-    eng.tick(_mid_snap(1.0, bucket="build", energy=0.5, drop_armed=True, rising=True, rise_index=1.8), rig)
-    assert eng.strobe_level == 0 and not eng.strobe_on
-    # DROP phrase tail (bar 7 of the phrase, beat 3): the ambient burst would fire
+    plain = ReactiveLayerEngine(FakeClock())
+    # armed + rising: the sustained pre-drop strobe runs, same rate as without Synth Sync
+    build = dict(bucket="build", energy=0.5, drop_armed=True, rising=True, rise_index=1.8)
+    a = eng.tick(_mid_snap(1.0, **build), rig)
+    plain.tick(_mid_snap(1.0, **build), rig)
+    assert eng.synth_sync_active
+    assert eng.strobe_level > 0 and eng.strobe_level == plain.strobe_level
+    par = rig.fixture("par_l")
+    # the wash dimmer is on the strobe clock (flash byte or 0), not the synth envelope
+    assert a.values[par.offset] in (0, eng.strobe_flash_dmx)
+    # DROP phrase tail (bar 7 of the phrase, beat 3): the ambient burst fires too
     eng.tick(_mid_snap(1.0, bucket="drop", bar=7, beat_in_bar=3, drop_start_bar=0), rig)
-    assert eng.strobe_level == 0 and not eng.strobe_on
+    assert eng.strobe_level > 0
 
 
 def test_synth_sync_off_is_byte_identical_to_an_engine_that_never_had_it():
