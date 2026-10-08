@@ -228,3 +228,50 @@ def test_recorder_writes_onset_rate_and_roll_path(tmp_path):
     row = json.loads((tmp_path / "state.jsonl").read_text().strip())
     assert row["onset_rate"] == 8.5 and row["high_flux"] == 0.31
     assert row["roll_path"] == "density" and row["roll_rate_base"] == 4.3
+
+
+def test_recorder_captures_the_feature_profiles_mood_and_colors(tmp_path):
+    """2026-10-01, the bar's feature profile (engines/laser_feature.py): the
+    mood, the un-eased target and the per-side CH12 macros are recorded so a
+    set can be replayed and judged offline. The accent engine has no mood, so
+    accent rows carry none of these keys."""
+    import threading
+
+    from livereact.engines.laser_feature import LaserFeatureEngine
+    from livereact.fixtures.rig import _rig_from_dict
+
+    rig = _rig_from_dict({"name": "bar", "laser_profile": "feature", "slots": [
+        {"slot_id": "laser_l", "fixture_type": "shehds_3w_laser", "dmx_address": 1,
+         "role": "laser", "side": "left"},
+        {"slot_id": "laser_r", "fixture_type": "shehds_3w_laser", "dmx_address": 13,
+         "role": "laser", "side": "right"},
+    ]})
+    snap = ShowSnapshot(bpm=128.0, bar=12, audio_fresh=True, bucket="break")
+    state = ShowState()
+    state.publish(snap)
+    clock = FakeClock()
+    laser = LaserFeatureEngine(clock)
+    laser.tick(snap, rig)
+    fb = DmxFrameBuffer()
+    fb.publish(rig.boot_universe())
+    rec = SessionRecorder(state, fb, clock, threading.Event(), str(tmp_path), laser_engine=laser, rig=rig)
+    rec.open()
+    rec.tick()
+    rec.close()
+    row = json.loads((tmp_path / "state.jsonl").read_text().strip())
+    assert row["laser_mood"] == "calm"
+    assert row["laser_on"] is True
+    assert row["laser_source"] == "feature"
+    assert row["laser_target"] == 0.0
+    assert row["laser_color_l"] == laser.color_l and row["laser_color_r"] == laser.color_r
+    assert row["laser_color_l"] != row["laser_color_r"]  # one palette step apart in calm
+
+    accent = LaserEngine(clock)
+    (tmp_path / "accent").mkdir()
+    rec2 = SessionRecorder(state, fb, clock, threading.Event(), str(tmp_path / "accent"),
+                           laser_engine=accent, rig=rig)
+    rec2.open()
+    rec2.tick()
+    rec2.close()
+    row2 = json.loads((tmp_path / "accent" / "state.jsonl").read_text().strip())
+    assert "laser_mood" not in row2 and "laser_color_l" not in row2

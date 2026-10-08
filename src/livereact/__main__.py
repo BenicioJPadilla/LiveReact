@@ -56,11 +56,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                         "when set, the no-music auto-blackout failsafe fades to a real safe_default "
                         "look (LIGHTING_BIBLE.md LOOK-08) instead of an instant hard blackout. "
                         "The operator's own manual blackout switch is unaffected either way.")
-    p.add_argument("--testing", action="store_true",
-                   help="Bench/testing session: no crowd, laser beam path confirmed safe by you. "
-                        "Lets the laser fire regardless of the rig's declared mount height "
-                        "(LASER-09's 3 m rule) for this run only -- never persisted. Lasers "
-                        "still need to be armed (config/console). Never use this at a show.")
     p.add_argument("--no-norm-seed", action="store_true",
                    help="Cold-start the energy normalizer instead of seeding it from the last "
                         "session's saved range (new venue / re-gained mixer).")
@@ -179,7 +174,6 @@ def main(argv: list[str] | None = None) -> int:
     config = AppConfig(demo=demo, dmx_rate_hz=args.rate, duration=args.duration,
                        pdl_interface=args.pdl_interface, rig_path=args.rig,
                        audio_device=args.audio_device,
-                       testing=args.testing,
                        norm_seed=not args.no_norm_seed,
                        bible_failsafe_enabled=args.bible_failsafe,
                        full_catalog=args.full_catalog,

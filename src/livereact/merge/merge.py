@@ -57,7 +57,7 @@ class CalibrationPins:
     """Channels the Venue tab pins into the merged frame while the operator
     jogs a real fixture (2026-09-18 aim calibration). Applied by
     core/show_engine.py AFTER the merge and BEFORE finalize, so a pin can
-    never bypass apply_safety (the laser arm switch + LASER-09 geometry) or
+    never bypass apply_safety (the laser arm switch) or
     the movement slew limit -- the head glides to the jogged position and
     a disarmed laser stays dark no matter what is pinned. Frozen: the UI
     REPLACES ``manual.calibration`` wholesale (an atomic swap read once per
@@ -95,6 +95,12 @@ class ManualParams:
     # control. Still behind `laser_enable` (the arm switch) and every
     # geometry check in Laser.apply_safety. Never persisted.
     laser_cue: bool = False
+    # One-shot laser moment (2026-10-06, the trigger profile's "manual scene
+    # button"): the console's LASER HIT / J key / a MIDI-learned "laser_hit"
+    # control INCREMENTS this; engines/laser_trigger.py fires a MOMENT_BARS
+    # moment on every change. A counter, not a flag, so two presses in one
+    # tick are not lost and nothing has to be reset. Behind the arm switch.
+    laser_hit: int = 0
     # Venue-tab calibration pins (see CalibrationPins). None = nothing pinned.
     # Never persisted (config.py's _PERSIST leaves it out); cleared whenever
     # the operator leaves the Venue tab or unticks "Jog live".

@@ -2,10 +2,29 @@
   "name": "Josh's rig, wash bar excluded (2026-09-14)",
   "description": "Same as josh_rig.json (laser@1, par@21, moving head@36) with the wash bar slot removed -- the real OK-103 unit is showing unpatterned strobe-channel flicker with the software confirmed sending a clean zero (session-20260914-171223), pointing to a hardware/DMX-line issue (missing/loose 120 Ohm terminator, marginal cable, or the fixture itself) rather than a software bug. Use this rig temporarily while that fixture is out of the chain for repair; switch back to josh_rig.json once it's fixed.",
   "slots": [
-    {"slot_id": "laser", "fixture_type": "shehds_3w_laser", "dmx_address": 1,  "label": "Laser",       "role": "laser", "side": "left",
-     "mount_height_m": 0.9144,
-     "mount_height_note": "Real measured height, 2026-09-09: 3 ft (0.9144 m). BELOW the LASER-09 3.0 m minimum, so apply_safety's geometry check correctly forces this fixture off by default. Testing with it live requires the --testing flag (session-scoped bench mode, not a config change) -- see spec/conformance.md LASER-09/10/11 and CLAUDE.md before raising this number for real."},
-    {"slot_id": "par",   "fixture_type": "rgb_par",         "dmx_address": 21, "label": "Par",         "role": "wash",  "side": "left"},
-    {"slot_id": "mh",    "fixture_type": "shehds_180w_mh",  "dmx_address": 36, "label": "Moving Head", "role": "spot",  "side": "left"}
+    {
+      "slot_id": "laser",
+      "fixture_type": "shehds_3w_laser",
+      "dmx_address": 1,
+      "label": "Laser",
+      "role": "laser",
+      "side": "left"
+    },
+    {
+      "slot_id": "par",
+      "fixture_type": "rgb_par",
+      "dmx_address": 21,
+      "label": "Par",
+      "role": "wash",
+      "side": "left"
+    },
+    {
+      "slot_id": "mh",
+      "fixture_type": "shehds_180w_mh",
+      "dmx_address": 36,
+      "label": "Moving Head",
+      "role": "spot",
+      "side": "left"
+    }
   ]
 }

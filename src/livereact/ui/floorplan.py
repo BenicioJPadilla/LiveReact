@@ -12,8 +12,27 @@ Two uses (2026-09-18 UI redesign):
 Drawing: the booth wall (y = 0) is at the BOTTOM of the view, the crowd
 extends upward, x runs to the right (the DJ's right). Moving heads draw the
 beam where the current pan/tilt actually lands on the floor (via the head's
-captured calibration); lasers draw their fan wedge and turn it red when the
-fan would pass below the LASER-09 minimum beam height anywhere over the floor.
+captured calibration); lasers draw their fan wedge.
+
+Legibility (2026-10-03, Josh's garage plan -- pars on the booth directly
+under the heads, two targets on one spot, captions piling up on the booth
+row):
+
+  * every fixture type has its own glyph (head = disc with a facing tick,
+    par = rounded square, wash bar = long rectangle, laser = triangle whose
+    apex points the way the fan goes, target = diamond; a ceiling target is
+    a larger hollow diamond), so a pile is still readable;
+  * fixtures drawn on one spot form a STACK: the highest-mounted one keeps
+    its glyph on top, each one beneath it is a progressively larger dashed
+    outline around it -- all of them stay visible and clickable;
+  * captions (title + muted "@address · height" line) are separate items
+    laid out by ``_layout_labels``: each
+    starts under its body and moves to the nearest free slot around it when
+    it would overlap a body, another caption or the axis text, with a
+    dotted leader back to its body when it had to move away.
+
+Body positions are never nudged for looks: a drag still writes exactly the
+snapped position of the body, and ``item_position_m`` reads it back.
 
 All geometry math is in fixtures/geometry.py; this module only paints.
 """
@@ -30,7 +49,6 @@ from ..fixtures.geometry import (
     Venue,
     beam_floor_hit,
     ft_to_m,
-    laser_min_beam_height,
     m_to_ft,
     pan_tilt_to_angles,
     ray_to_rect_edge,
@@ -42,20 +60,30 @@ PX_PER_M = 40.0                 # scene pixels per meter
 SNAP_M = ft_to_m(0.5)           # drag snap: half a foot
 DEFAULT_VENUE_FT = (30.0, 40.0, 12.0)   # width, length, ceiling -- when no venue is declared
 _MARGIN = 28                    # scene margin around the room for edge labels
+_LEGEND_H = 16                  # extra band above the room for the glyph legend
 
 # Where an unplaced fixture is drawn, as fractions of the room (x by side, y
 # by kind: everything hugs the booth wall until the operator places it).
 _ROW_Y_FRAC = {"spot": 0.16, "laser": 0.26, "par": 0.36, "bar": 0.46}
-_BODY_R_M = 0.35                # drawn fixture radius (m)
+_BODY_R_M = 0.35                # drawn head radius (m)
+_PAR_W_M = 0.55                 # par: rounded square side (m)
+_LASER_W_M = 0.70               # laser: triangle footprint (m)
 _BAR_W_M, _BAR_H_M = 1.2, 0.25  # wash bar footprint (m)
+_TARGET_W_M = 0.45              # target diamond (m)
+_CEILING_TARGET_W_M = 0.62      # a ceiling target: bigger and hollow, so it reads under a floor target
+_STACK_RADIUS_M = 0.3           # bodies closer than this are drawn as one stack
+_STACK_STEP = 0.45              # each layer beneath the top one grows by this much
 
 _GRID_LIGHT = QtGui.QColor(34, 38, 46)
 _GRID_BOLD = QtGui.QColor(52, 58, 70)
 _ROOM_EDGE = QtGui.QColor(120, 128, 140)
 _TEXT = QtGui.QColor(150, 155, 165)
+_TITLE = QtGui.QColor(222, 226, 234)
+_LEADER = QtGui.QColor(120, 126, 138)
 _IDLE = QtGui.QColor(60, 60, 70)
-_UNSAFE = QtGui.QColor(224, 65, 58)
 _TARGET = QtGui.QColor(245, 166, 35)
+
+_LEGEND = "○ head    □ par    ▭ wash bar    ▲ laser    ◆ target    ◇ ceiling target    dashed ring = fixture underneath"
 
 
 def _default_venue() -> Venue:
@@ -63,59 +91,153 @@ def _default_venue() -> Venue:
     return Venue(w, l, h, Venue.default_targets(w, l, h))
 
 
+def _scaled(p: QtCore.QPointF, k: float) -> QtCore.QPointF:
+    return QtCore.QPointF(p.x() * k, p.y() * k)
+
+
 class PlanItem(QtWidgets.QGraphicsObject):
     """A fixture body or a target marker: paints itself as one object so it
-    moves as one, and reports drops back to the view."""
+    moves as one, and reports drops back to the view. Its caption is a
+    separate ``_Caption`` (laid out by the view), not part of this item."""
 
-    def __init__(self, key: str, kind: str, label: str, w_m: float, h_m: float) -> None:
+    def __init__(self, key: str, kind: str, label: str, w_m: float, h_m: float,
+                 shape: str = "head") -> None:
         super().__init__()
         self.key = key
         self.kind = kind            # "fixture" | "target"
         self.label = label
+        self.glyph = shape          # head | par | bar | laser | target | ceiling_target
         self.w_px, self.h_px = w_m * PX_PER_M, h_m * PX_PER_M
+        # > 1.0 for the lower member(s) of a stack: the glyph becomes a bigger
+        # dashed outline around the one drawn on top of it.
+        self.glyph_scale = 1.0
         self.facing_deg = 0.0
         self.fill = QtGui.QColor(0, 0, 0)
         self.edge = _IDLE
         self.edge_w = 1.0
         self.setZValue(10)
 
+    def glyph_rect(self) -> QtCore.QRectF:
+        w, h = self.w_px * self.glyph_scale, self.h_px * self.glyph_scale
+        return QtCore.QRectF(-w / 2, -h / 2, w, h)
+
+    def set_glyph_scale(self, k: float) -> None:
+        if k != self.glyph_scale:
+            self.prepareGeometryChange()
+            self.glyph_scale = k
+            self.update()
+
     def boundingRect(self) -> QtCore.QRectF:  # noqa: N802 (Qt override)
-        pad = 4
-        return QtCore.QRectF(-self.w_px / 2 - pad, -self.h_px / 2 - pad,
-                             self.w_px + 2 * pad, self.h_px + 2 * pad + 16)
+        pad = 6
+        return self.glyph_rect().adjusted(-pad, -pad, pad, pad)
 
     def paint(self, painter: QtGui.QPainter, option, widget=None) -> None:  # noqa: ARG002
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        rect = QtCore.QRectF(-self.w_px / 2, -self.h_px / 2, self.w_px, self.h_px)
-        painter.setPen(QtGui.QPen(self.edge, self.edge_w))
+        rect = self.glyph_rect()
+        pen = QtGui.QPen(self.edge, self.edge_w)
+        if self.glyph_scale > 1.0:
+            pen.setStyle(QtCore.Qt.PenStyle.DashLine)
+        painter.setPen(pen)
         painter.setBrush(QtGui.QBrush(self.fill))
-        if self.kind == "target":
+        r = rect.width() / 2
+        a = math.radians(self.facing_deg)
+        # screen y is flipped, so "into the crowd" (az 0) is straight UP
+        fwd = QtCore.QPointF(math.sin(a), -math.cos(a))
+        right = QtCore.QPointF(-fwd.y(), fwd.x())
+        if self.glyph in ("target", "ceiling_target"):
             path = QtGui.QPainterPath()
-            r = self.w_px / 2
             path.moveTo(0, -r); path.lineTo(r, 0); path.lineTo(0, r); path.lineTo(-r, 0); path.closeSubpath()
+            if self.glyph == "ceiling_target":
+                hollow = QtGui.QPen(self.edge, self.edge_w)
+                hollow.setStyle(QtCore.Qt.PenStyle.DashLine)
+                painter.setPen(hollow)
+                painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             painter.drawPath(path)
-        elif self.w_px > self.h_px * 1.5:
+        elif self.glyph == "bar":
             painter.drawRect(rect)
+        elif self.glyph == "par":
+            painter.drawRoundedRect(rect, 3, 3)
+        elif self.glyph == "laser":
+            apex = _scaled(fwd, r * 1.15)
+            base = _scaled(fwd, -r * 0.75)
+            wing = _scaled(right, r * 0.85)
+            path = QtGui.QPainterPath()
+            path.moveTo(apex); path.lineTo(base + wing); path.lineTo(base - wing); path.closeSubpath()
+            painter.drawPath(path)
         else:
             painter.drawEllipse(rect)
-            # facing tick: which way the body's pan=0.5 points (screen y is
-            # flipped, so "into the crowd" (az 0) is straight UP).
-            a = math.radians(self.facing_deg)
-            r = self.w_px / 2
+            # facing tick: which way the body's pan=0.5 points
             painter.setPen(QtGui.QPen(_TEXT, 2))
-            painter.drawLine(QtCore.QPointF(0, 0), QtCore.QPointF(math.sin(a) * r * 1.4, -math.cos(a) * r * 1.4))
+            painter.drawLine(QtCore.QPointF(0, 0), _scaled(fwd, r * 1.4))
         if self.isSelected():
             painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 1, QtCore.Qt.PenStyle.DashLine))
             painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             painter.drawRect(rect.adjusted(-3, -3, 3, 3))
-        painter.setPen(_TEXT)
-        painter.setFont(QtGui.QFont("Arial", 8))
-        painter.drawText(QtCore.QRectF(-60, self.h_px / 2 + 1, 120, 14),
-                         QtCore.Qt.AlignmentFlag.AlignHCenter, self.label)
+
+
+class _Caption:
+    """A body's caption: a title line and a muted sub-line, plus a dotted
+    leader used when the caption had to move away from its body.
+    Positioned by ``FloorPlanView._layout_labels``."""
+
+    def __init__(self, scene: QtWidgets.QGraphicsScene, item: PlanItem) -> None:
+        self.item = item
+        self.title = scene.addSimpleText("")
+        self.title.setFont(QtGui.QFont("Arial", 8, QtGui.QFont.Weight.DemiBold))
+        self.title.setBrush(_TITLE)
+        self.sub = scene.addSimpleText("")
+        self.sub.setFont(QtGui.QFont("Arial", 7))
+        self.sub.setBrush(_TEXT)
+        for t in (self.title, self.sub):
+            t.setZValue(12)
+        self.leader = scene.addLine(0, 0, 0, 0, QtGui.QPen(_LEADER, 1, QtCore.Qt.PenStyle.DotLine))
+        self.leader.setZValue(8)
+        self.leader.setVisible(False)
+
+    def set_text(self, title: str, sub: str = "") -> None:
+        self.title.setText(title)
+        self.sub.setText(sub)
+        self.sub.setVisible(bool(sub))
+
+    def _lines(self) -> list[QtWidgets.QGraphicsSimpleTextItem]:
+        return [t for t in (self.title, self.sub) if t.text()]
+
+    def size(self) -> tuple[float, float]:
+        lines = self._lines()
+        w = max((t.boundingRect().width() for t in lines), default=0.0)
+        h = sum(t.boundingRect().height() for t in lines) + max(0, len(lines) - 1)
+        return w + 4, h + 2
+
+    def place(self, rect: QtCore.QRectF) -> None:
+        y = rect.top() + 1
+        cx = rect.center().x()
+        for t in self._lines():
+            br = t.boundingRect()
+            t.setPos(cx - br.width() / 2, y)
+            y += br.height() + 1
+
+    def leader_to(self, rect: QtCore.QRectF | None) -> None:
+        """Dotted line from the body's centre to the nearest point of the
+        caption's rectangle; hidden when the caption sits next to its body."""
+        if rect is None:
+            self.leader.setVisible(False)
+            return
+        a = self.item.pos()
+        bx = min(max(a.x(), rect.left()), rect.right())
+        by = min(max(a.y(), rect.top()), rect.bottom())
+        self.leader.setLine(a.x(), a.y(), bx, by)
+        self.leader.setVisible(True)
 
 
 class FloorPlanView(QtWidgets.QGraphicsView):
     fixture_selected = QtCore.Signal(str)   # slot_id, or "" when nothing is selected
+
+    # Caption slots around a body, tried in order: (dx, dy) in units of
+    # "one caption away", y positive = below (screen). The first eight hug
+    # the body; the rest step further out and get a leader line.
+    _SLOTS = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (-1, 1), (1, -1), (-1, -1),
+              (0, 2), (0, -2), (1, 2), (-1, 2), (1, -2), (-1, -2), (2, 0), (-2, 0),
+              (2, 1), (-2, 1), (2, -1), (-2, -1), (0, 3), (0, -3)]
 
     def __init__(self, rig: Rig, editable: bool = False,
                  on_changed: Callable[[], None] | None = None) -> None:
@@ -134,7 +256,8 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         self._targets: dict[str, PlanItem] = {}
         self._beams: dict[str, QtWidgets.QGraphicsLineItem] = {}
         self._wedges: dict[str, QtWidgets.QGraphicsPolygonItem] = {}
-        self._warnings: dict[str, QtWidgets.QGraphicsSimpleTextItem] = {}
+        self._captions: dict[str, _Caption] = {}
+        self._layout_dirty = False
         self._dragging: set[str] = set()
         self._scene.selectionChanged.connect(self._on_selection)
         self.refresh_layout()
@@ -171,8 +294,18 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         if fx.position is not None:
             return fx.position
         x, y = self._fallback_xy(fx)
-        z = fx.mount_height_m if fx.mount_height_m is not None else 1.0
-        return Point3(x, y, z)
+        return Point3(x, y, 1.0)
+
+    @staticmethod
+    def _glyph(fx) -> tuple[str, float, float]:
+        """(shape, width_m, height_m) of a fixture's body glyph."""
+        if isinstance(fx, MovingHead):
+            return "head", _BODY_R_M * 2, _BODY_R_M * 2
+        if isinstance(fx, Laser):
+            return "laser", _LASER_W_M, _LASER_W_M
+        if isinstance(fx, WashBar):
+            return "bar", _BAR_W_M, _BAR_H_M
+        return "par", _PAR_W_M, _PAR_W_M
 
     # ------------------------------------------------------------ build
     def refresh_layout(self) -> None:
@@ -181,10 +314,11 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         self._scene.blockSignals(True)
         self._scene.clear()
         self._grid.clear(); self._bodies.clear(); self._targets.clear()
-        self._beams.clear(); self._wedges.clear(); self._warnings.clear()
+        self._beams.clear(); self._wedges.clear(); self._captions.clear()
         v = self.venue()
         w_px, l_px = v.width_m * PX_PER_M, v.length_m * PX_PER_M
-        self._scene.setSceneRect(-_MARGIN, -_MARGIN, w_px + 2 * _MARGIN, l_px + 2 * _MARGIN)
+        self._scene.setSceneRect(-_MARGIN, -_MARGIN - _LEGEND_H,
+                                 w_px + 2 * _MARGIN, l_px + 2 * _MARGIN + _LEGEND_H)
 
         # grid: every foot light, every 5 ft bold
         step = ft_to_m(1.0) * PX_PER_M
@@ -208,31 +342,46 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         self._scene.addRect(0, 0, w_px, l_px, QtGui.QPen(_ROOM_EDGE, 2))
         booth = self._scene.addSimpleText("DJ BOOTH WALL")
         booth.setBrush(_ROOM_EDGE); booth.setPos(w_px / 2 - 44, l_px + 14)
+        legend = self._scene.addSimpleText(_LEGEND)
+        legend.setFont(QtGui.QFont("Arial", 7)); legend.setBrush(_TEXT)
+        legend.setPos(0, -_MARGIN - _LEGEND_H + 2)
 
         movable = (QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable
                    | QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
 
         # named targets
+        ceiling = v.height_m if v.height_m is not None else 3.6
         for name, p in v.targets.items():
-            item = PlanItem(name, "target", f"{name} · {m_to_ft(p.z):.0f}′", 0.45, 0.45)
+            is_ceiling = name.startswith("ceiling") or p.z >= ceiling - 0.05
+            size = _CEILING_TARGET_W_M if is_ceiling else _TARGET_W_M
+            item = PlanItem(name, "target", name, size, size,
+                            shape="ceiling_target" if is_ceiling else "target")
             item.fill = QtGui.QColor(0, 0, 0); item.edge = _TARGET; item.edge_w = 2
             item.setPos(self.to_scene(p.x, p.y))
-            item.setZValue(5)
+            item.setZValue(4.5 if is_ceiling else 5)      # the hollow ceiling diamond sits under a floor one
+            item.setToolTip(f"{name}\n{m_to_ft(p.x):.1f} ft along the booth wall, "
+                            f"{m_to_ft(p.y):.1f} ft out, {m_to_ft(p.z):.1f} ft up")
             if self.editable:
                 item.setFlags(movable)
                 item.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
             self._scene.addItem(item)
             self._targets[name] = item
+            cap = _Caption(self._scene, item)
+            cap.set_text(name, f"{m_to_ft(p.z):.0f}′ up")
+            self._captions["target:" + name] = cap
 
         # fixtures
         for fx in self.rig.fixtures:
             key = self._key(fx)
-            is_bar = isinstance(fx, WashBar)
-            item = PlanItem(key, "fixture", fx.label,
-                            _BAR_W_M if is_bar else _BODY_R_M * 2, _BAR_H_M if is_bar else _BODY_R_M * 2)
+            shape, w_m, h_m = self._glyph(fx)
+            item = PlanItem(key, "fixture", fx.label, w_m, h_m, shape=shape)
             item.facing_deg = fx.facing_deg
             o = self.fixture_origin(fx)
+            placed = fx.position is not None
             item.setPos(self.to_scene(o.x, o.y))
+            where = (f"{m_to_ft(o.x):.1f} ft along the booth wall, {m_to_ft(o.y):.1f} ft out, "
+                     f"{m_to_ft(o.z):.1f} ft up" if placed else "not placed yet -- drag it to where it hangs")
+            item.setToolTip(f"{fx.label}\n{fx.type_name} @ DMX {fx.address}\n{where}")
             if self.editable:
                 item.setFlags(movable | QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
                 item.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
@@ -247,16 +396,130 @@ class FloorPlanView(QtWidgets.QGraphicsView):
                                                QtGui.QBrush(QtGui.QColor(60, 60, 70, 40)))
                 wedge.setZValue(2)
                 self._wedges[key] = wedge
-                warn = self._scene.addSimpleText("")
-                warn.setBrush(_UNSAFE); warn.setZValue(12)
-                self._warnings[key] = warn
+            cap = _Caption(self._scene, item)
+            cap.set_text(fx.label, f"@{fx.address} · {m_to_ft(o.z):.0f}′ up" if placed
+                         else f"@{fx.address} · not placed yet")
+            self._captions[key] = cap
+        self._mark_stacks()
         self._scene.blockSignals(False)
+        self._layout_dirty = True
         self._fit()
         self.update_from_universe(self.rig.boot_universe())
 
     @staticmethod
     def _key(fx) -> str:
         return getattr(fx, "slot_id", fx.label)
+
+    def _mark_stacks(self) -> None:
+        """Fixtures drawn within ``_STACK_RADIUS_M`` of each other (a par on
+        the booth right under a head, say) would hide one another as
+        look-alike discs. The highest-mounted one keeps its normal glyph on
+        top; each one beneath it becomes a progressively larger dashed
+        outline around it, so every member of the pile stays visible and
+        clickable. Positions are untouched."""
+        entries = [(self._key(fx), self.fixture_origin(fx)) for fx in self.rig.fixtures]
+        for key, _o in entries:
+            item = self._bodies.get(key)
+            if item is not None:
+                item.set_glyph_scale(1.0)
+                item.setZValue(10)
+        grouped: set[str] = set()
+        for i, (ki, oi) in enumerate(entries):
+            if ki in grouped:
+                continue
+            group = [(ki, oi)]
+            for kj, oj in entries[i + 1:]:
+                if kj not in grouped and math.hypot(oi.x - oj.x, oi.y - oj.y) < _STACK_RADIUS_M:
+                    group.append((kj, oj))
+            if len(group) < 2:
+                continue
+            group.sort(key=lambda e: -e[1].z)
+            for rank, (k, _o) in enumerate(group):
+                grouped.add(k)
+                item = self._bodies[k]
+                item.set_glyph_scale(1.0 + _STACK_STEP * rank)
+                item.setZValue(10 - 0.1 * rank)
+
+    def _layout_labels(self) -> None:
+        """Keep every caption legible: each starts centred under its body and
+        moves to the first free slot around it (``_SLOTS`` order) when it
+        would overlap a body, an already-placed caption, the axis numbers or
+        the legend. Captions that end up away from their body get a dotted
+        leader. Greedy and deterministic (bodies sorted along the booth wall)."""
+        self._layout_dirty = False
+        v = self.venue()
+        w_px, l_px = v.width_m * PX_PER_M, v.length_m * PX_PER_M
+        scene_rect = self._scene.sceneRect()
+        reserved = [
+            QtCore.QRectF(-_MARGIN, l_px + 1, w_px + 2 * _MARGIN, _MARGIN + 40),     # x axis + "DJ BOOTH WALL"
+            QtCore.QRectF(-_MARGIN - 2, -_MARGIN - _LEGEND_H, _MARGIN + 1, l_px + 2 * _MARGIN + _LEGEND_H),  # y axis
+            QtCore.QRectF(-_MARGIN, -_MARGIN - _LEGEND_H, w_px + 2 * _MARGIN, _LEGEND_H - 1),            # legend
+        ]
+        obstacles = [c.item.sceneBoundingRect() for c in self._captions.values()]
+        placed: list[QtCore.QRectF] = []
+        order = sorted(self._captions.values(), key=lambda c: (c.item.pos().x(), c.item.pos().y()))
+        gap = 4.0
+        for cap in order:
+            a = cap.item.pos()
+            br = cap.item.boundingRect()
+            bw, bh = br.width() / 2, br.height() / 2
+            lw, lh = cap.size()
+
+            def slot_rect(sx: int, sy: int) -> QtCore.QRectF:
+                if sx == 0:
+                    x = a.x() - lw / 2
+                elif sx > 0:
+                    x = a.x() + bw + gap + (sx - 1) * lw * 0.6
+                else:
+                    x = a.x() - bw - gap - lw - (-sx - 1) * lw * 0.6
+                if sy == 0:
+                    y = a.y() - lh / 2
+                elif sy > 0:
+                    y = a.y() + bh + gap + (sy - 1) * (lh + 6)
+                else:
+                    y = a.y() - bh - gap - lh - (-sy - 1) * (lh + 6)
+                return QtCore.QRectF(x, y, lw, lh)
+
+            def free(r: QtCore.QRectF) -> bool:
+                if not scene_rect.contains(r):
+                    return False
+                return not any(r.intersects(o) for o in obstacles + placed + reserved)
+
+            chosen: QtCore.QRectF | None = None
+            far = True
+            for sx, sy in self._SLOTS:
+                r = slot_rect(sx, sy)
+                if free(r):
+                    chosen = r
+                    far = abs(sx) + abs(sy) >= 2
+                    break
+            if chosen is None:
+                # nothing fits in the near slots: widen the search to every
+                # slot within a few caption-widths/heights, nearest first,
+                # still refusing the bodies, the captions already placed AND
+                # the reserved axis / wall-title / legend bands. (A body
+                # hugging the booth wall -- the wash bar -- has no room
+                # below, and the booth's centre line is crowded above, so
+                # the caption steps sideways.) A leader points back.
+                far = True
+                ring = [(sx, sy) for sx in range(-6, 7) for sy in range(-8, 9)
+                        if (sx, sy) not in self._SLOTS and (sx or sy)]
+                ring.sort(key=lambda p_: (slot_rect(*p_).center() - a).manhattanLength())
+                for sx, sy in ring:
+                    r = slot_rect(sx, sy)
+                    if free(r):
+                        chosen = r
+                        break
+            if chosen is None:
+                # last resort (room smaller than its labels): below, ignoring the bands
+                chosen = slot_rect(0, 1)
+                for _ in range(40):
+                    if not any(chosen.intersects(o) for o in obstacles + placed):
+                        break
+                    chosen.translate(0, lh + 4)
+            cap.place(chosen)
+            cap.leader_to(chosen if far else None)
+            placed.append(chosen.adjusted(-3, -2, 3, 2))
 
     def _fit(self) -> None:
         self.fitInView(self._scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
@@ -292,6 +555,8 @@ class FloorPlanView(QtWidgets.QGraphicsView):
                 changed |= self._commit_target_drop(name, item)
         if changed:
             self.rig.refresh_geometry()
+            self._mark_stacks()
+            self._layout_labels()
             if self.on_changed is not None:
                 self.on_changed()
 
@@ -305,11 +570,13 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         fx = self.rig.fixture(key)
         x_m, y_m = self._snap(*self.from_scene(item.pos()))
         old = fx.position
-        z = old.z if old is not None else (fx.mount_height_m if fx.mount_height_m is not None else 1.0)
+        z = old.z if old is not None else 1.0
         fx.position = Point3(x_m, y_m, z)
-        if isinstance(fx, Laser) and fx.mount_height_m is None:
-            fx.mount_height_m = z
         item.setPos(self.to_scene(x_m, y_m))
+        cap = self._captions.get(key)
+        if cap is not None:
+            cap.set_text(fx.label, f"@{fx.address} · {m_to_ft(z):.0f}′ up")
+        self._layout_dirty = True
         return old != fx.position
 
     def _commit_target_drop(self, name: str, item: PlanItem) -> bool:
@@ -321,6 +588,7 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         z = old.z if old is not None else 1.0
         v.targets[name] = Point3(x_m, y_m, z)
         item.setPos(self.to_scene(x_m, y_m))
+        self._layout_dirty = True
         return old != v.targets[name]
 
     def set_fixture_position(self, slot_id: str, p: Point3) -> None:
@@ -328,6 +596,11 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         item = self._bodies.get(slot_id)
         if item is not None:
             item.setPos(self.to_scene(p.x, p.y))
+            cap = self._captions.get(slot_id)
+            if cap is not None:
+                cap.set_text(cap.title.text(), f"@{self.rig.fixture(slot_id).address} · {m_to_ft(p.z):.0f}′ up")
+            self._mark_stacks()
+            self._layout_labels()
 
     # ------------------------------------------------------------ live frame
     def update_from_universe(self, uni: bytes) -> None:
@@ -377,31 +650,13 @@ class FloorPlanView(QtWidgets.QGraphicsView):
                     dx, dy = math.sin(math.radians(az)), math.cos(math.radians(az))
                     pts.append(self.to_scene(origin.x + dx * throw, origin.y + dy * throw))
                 wedge.setPolygon(QtGui.QPolygonF(pts))
-                lowest = laser_min_beam_height(origin, centre_az, fx.beam_tilt_deg, fx.fan_half_angle_deg,
-                                               v.width_m, v.length_m)
-                unsafe = fx.mount_height_m is None or lowest < fx.min_beam_height_m
-                if unsafe:
-                    wedge.setPen(QtGui.QPen(_UNSAFE, 1))
-                    wedge.setBrush(QtGui.QBrush(QtGui.QColor(224, 65, 58, 70), QtCore.Qt.BrushStyle.BDiagPattern))
-                else:
-                    fill = QtGui.QColor(color) if vs.active else QtGui.QColor(60, 60, 70)
-                    fill.setAlpha(70 if vs.active else 40)
-                    wedge.setPen(QtGui.QPen(QtGui.QColor(vs.r, vs.g, vs.b) if vs.active else _IDLE, 1))
-                    wedge.setBrush(QtGui.QBrush(fill))
-                warn = self._warnings.get(key)
-                if warn is not None:
-                    if fx.mount_height_m is None:
-                        warn.setText("NO MOUNT HEIGHT")
-                    elif unsafe:
-                        warn.setText(f"BELOW {fx.min_beam_height_m:.1f} m")
-                    else:
-                        warn.setText("")
-                    warn.setPos(center.x() - 40, center.y() - self._bodies[key].h_px / 2 - 16)
+                fill = QtGui.QColor(color) if vs.active else QtGui.QColor(60, 60, 70)
+                fill.setAlpha(70 if vs.active else 40)
+                wedge.setPen(QtGui.QPen(QtGui.QColor(vs.r, vs.g, vs.b) if vs.active else _IDLE, 1))
+                wedge.setBrush(QtGui.QBrush(fill))
+        if self._layout_dirty:
+            self._layout_labels()
 
     # ------------------------------------------------------------ queries (tests / panel)
     def item_position_m(self, slot_id: str) -> tuple[float, float]:
         return self.from_scene(self._bodies[slot_id].pos())
-
-    def laser_unsafe(self, slot_id: str) -> bool:
-        warn = self._warnings.get(slot_id)
-        return bool(warn is not None and warn.text())

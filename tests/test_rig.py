@@ -72,15 +72,11 @@ def test_rig_to_dict_round_trips_every_loaded_field():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     rig = load_rig(os.path.join(here, "rigs", "josh_rig.json"))
     laser = rig.fixture("laser")
-    assert laser.mount_height_m == pytest.approx(0.9144)
-    assert "mount_height_note" in laser.extra
 
     data = rig_to_dict(rig)
     again = _rig_from_dict(data)
     laser2 = again.fixture("laser")
-    assert laser2.mount_height_m == pytest.approx(0.9144)
-    assert laser2.min_beam_height_m == laser.min_beam_height_m
-    assert laser2.extra["mount_height_note"] == laser.extra["mount_height_note"]
+    assert laser2.extra == laser.extra
     assert [f.address for f in again.fixtures] == [f.address for f in rig.fixtures]
     assert again.description == rig.description
     assert data.get("venue") is None  # josh_rig.json has no floor plan yet
@@ -116,7 +112,6 @@ def test_rig_round_trips_layout_home_and_venue_geometry():
     assert mh.calibration.captured and mh.calibration.invert_pan is True
     assert mh.calibration.pan_offset_deg == pytest.approx(-3.2)
     laser = rig.fixture("laser")
-    assert laser.mount_height_m == pytest.approx(0.9144)  # filled from position.z_m
     assert laser.fan_half_angle_deg == 25.0 and laser.h_offset01 == 0.4
     assert laser.extra == {"custom_note": "kept"}
 
@@ -208,3 +203,50 @@ def test_unknown_fixture_type_raises():
     bad = {"name": "bad", "slots": [{"slot_id": "a", "fixture_type": "nope", "dmx_address": 1}]}
     with pytest.raises(RigError):
         _rig_from_dict(bad)
+
+
+# --- laser_profile (2026-10-01) ------------------------------------------------------
+
+def test_laser_profile_defaults_to_accent_and_old_files_still_load():
+    from livereact.fixtures.rig import DEFAULT_LASER_PROFILE
+
+    assert DEFAULT_LASER_PROFILE == "accent"
+    assert load_rig().laser_profile == "accent"
+    rig = _rig_from_dict({"name": "old", "slots": []})
+    assert rig.laser_profile == "accent"
+
+
+def test_laser_profile_feature_loads_and_round_trips():
+    from livereact.fixtures.rig import rig_to_dict
+
+    data = {"name": "bar", "laser_profile": "feature", "slots": [
+        {"slot_id": "laser_l", "fixture_type": "shehds_3w_laser", "dmx_address": 1,
+         "role": "laser", "side": "left"},
+    ]}
+    rig = _rig_from_dict(data)
+    assert rig.laser_profile == "feature"
+    out = rig_to_dict(rig)
+    assert out["laser_profile"] == "feature"
+    assert _rig_from_dict(out).laser_profile == "feature"
+
+
+def test_unknown_laser_profile_raises():
+    with pytest.raises(RigError, match="laser_profile"):
+        _rig_from_dict({"name": "x", "laser_profile": "disco", "slots": []})
+
+
+def test_bar_rig_file_loads_as_the_feature_profile_with_two_lasers():
+    """rigs/bar_rig.json (2026-10-01): two lasers, the wash bar, no venue yet."""
+    import os
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rig = load_rig(os.path.join(here, "rigs", "bar_rig.json"))
+    assert rig.laser_profile == "feature"
+    lasers = rig.by_role("laser")
+    assert [fx.side for fx in lasers] == ["left", "right"]
+    for fx in lasers:
+        assert fx.beam_tilt_deg == 0.0
+    assert rig.venue is None
+    # Josh, 2026-10-01: a fresh rig, channels laid out in order
+    assert [fx.address for fx in rig.fixtures] == [1, 7, 19]
+    assert [fx.offset + fx.channel_count for fx in rig.fixtures] == [6, 18, 30]  # 1-6, 7-18, 19-30

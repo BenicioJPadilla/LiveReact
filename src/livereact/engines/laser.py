@@ -70,8 +70,8 @@ geometry check (finalize's apply_safety) -- the cue is a musical decision,
 arming is the safety one. LASER-12 for the manual path: audio loss forces
 off; PDL is not required, the cue has no beat grid to lock to.
 
-Safety is NOT here: `Laser.apply_safety` (arm switch + LASER-09 geometry, or
-the operator's `--testing` mode) and `apply_laser_gate` run in
+Safety is NOT here: `Laser.apply_safety` (the arm switch) and
+`apply_laser_gate` run in
 merge/merge.py's finalize() on every frame regardless of what this layer
 writes.
 """

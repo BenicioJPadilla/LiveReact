@@ -9,8 +9,6 @@ docs/14_AUDIO_REACTIVE_SCENE_LOGIC.md §4 "Option B"):
 
   * Units are METERS in code and in rig JSON. The operator types FEET in the
     UI; ``ft_to_m``/``m_to_ft`` convert at that boundary and nowhere else.
-    (The laser's ``mount_height_m`` and LIGHTING_BIBLE.md §8.6's 3.0 m rule
-    were already metric.)
   * Origin: the stage-left corner of the wall behind the DJ booth, on the
     floor.
   * ``x``: along the booth wall, increasing to stage-RIGHT (the DJ's right
@@ -212,25 +210,6 @@ def ray_to_rect_edge(origin_xy: tuple[float, float], az_abs_deg: float,
         ts += [(0.0 - oy) / dy, (length_m - oy) / dy]
     ahead = [t for t in ts if t > 1e-9]
     return min(ahead) if ahead else 0.0
-
-
-def laser_min_beam_height(origin: Point3, facing_deg: float, beam_tilt_deg: float,
-                          fan_half_angle_deg: float, width_m: float, length_m: float,
-                          samples: int = 9) -> float:
-    """The lowest point (m above floor) any ray of a laser fan reaches over
-    standable floor before leaving the room -- LIGHTING_BIBLE.md §8.6's
-    "compute mount height, tilt and throw" check. A downward tilt that meets
-    the floor inside the room reads as 0.0."""
-    lowest = origin.z
-    tan_tilt = math.tan(math.radians(beam_tilt_deg))
-    n = max(1, samples)
-    for i in range(n):
-        frac = 0.0 if n == 1 else i / (n - 1)
-        az = facing_deg + (2 * frac - 1) * fan_half_angle_deg
-        throw = ray_to_rect_edge((origin.x, origin.y), az, width_m, length_m)
-        end_height = origin.z + throw * tan_tilt
-        lowest = min(lowest, max(0.0, end_height))
-    return lowest
 
 
 def x_norm(x_m: float, width_m: float) -> float:

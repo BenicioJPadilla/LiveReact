@@ -74,10 +74,9 @@ being applied live the way it is in the replay/test harness).
 
 ## Safety items unrelated to Phase 5 content, but worth re-confirming while hardware's connected
 
-- Laser should stay forced off unless `rigs/josh_rig.json` has a real
-  measured `mount_height_m` ≥ 3.0m (see `CLAUDE.md`/`spec/conformance.md`
-  LASER-08/09/10/11) — if it fires, that's not a Phase 5 regression, but
-  it means the height config changed and needs re-checking.
+- Laser stays forced off until armed (L); the beam-height gate that used
+  to sit alongside the arm switch was removed on 2026-10-03 at Josh's
+  request.
 - The strobe Hz-safety gap (see `[[livereact-lighting-bible]]` memory) is
   still unresolved and still deprioritized per Josh's 2026-09-09 call —
   not something this checklist is asking you to fix, just don't mistake a

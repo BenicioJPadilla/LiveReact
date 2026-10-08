@@ -134,9 +134,7 @@ def test_pinned_laser_stays_dark_unless_armed_and_geometry_safe():
 
     manual.calibration = pins                      # not armed
     assert eng.tick()[laser.offset] == 0
-    manual.laser_enable = True                     # armed, but mount height undeclared -> fails closed
-    assert eng.tick()[laser.offset] == 0
-    laser.mount_height_m = 3.0                     # armed + safe geometry + gate opened by the pin
+    manual.laser_enable = True                     # armed + gate opened by the pin
     assert eng.tick()[laser.offset] == Laser.MANUAL_PATTERN_MODE
     manual.calibration = _pins(channels={ch1: Laser.MANUAL_PATTERN_MODE}, laser_open=False)
     assert eng.tick()[laser.offset] == 0           # pinned but the gate is closed
@@ -152,3 +150,28 @@ def test_pinned_head_skips_the_home_remap():
     manual.calibration = _pins(channels={1: 255, 2: 255, 3: 0, 4: 0}, absolute_slots=frozenset({"mh_l"}))
     frame = eng.tick()                             # first tick: no slew reference yet -> passes through
     assert frame[mh.offset + 0] == 255 and frame[mh.offset + 2] == 0
+
+
+def test_calibration_pins_hold_off_the_no_music_auto_blackout():
+    """2026-10-05: an operator jogging a real head in the Venue tab (no music
+    playing) must be able to SEE it -- the pins suppress the silence
+    failsafe; the manual blackout switch still wins; the failsafe re-engages
+    the instant the pins clear."""
+    state = ShowState()
+    state.publish(ShowSnapshot(energy=1.0, fader_a=1.0, eq_low_a=1.0, pdl_fresh=False, audio_fresh=False))
+    manual = ManualParams()
+    eng, fb, _ = _engine([ReactiveLayerEngine(FakeClock())], manual=manual, state=state)
+    mh = eng.rig.fixture("mh_l")
+    eng.silence.hold_s = 0.05
+    manual.calibration = _pins(channels={mh.offset + 6: 255})  # ch6 dimmer (1-based = offset+6)
+    eng.tick()
+    eng.clock.advance(0.1)
+    frame = eng.tick()
+    assert eng.silence.active is True              # the detector still knows there is no music
+    assert frame[mh.offset + 5] == 255             # ...but the pinned head is lit
+    manual.blackout = True
+    assert eng.tick() == bytes(UNIVERSE_SIZE)      # the operator's kill switch still wins
+    manual.blackout = False
+    manual.calibration = None
+    eng.clock.advance(0.025)
+    assert eng.tick() == bytes(UNIVERSE_SIZE)      # pins gone: the failsafe is back

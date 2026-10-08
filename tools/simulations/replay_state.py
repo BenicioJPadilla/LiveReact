@@ -84,7 +84,12 @@ def cue_times_from_env(first_t: float) -> list[float]:
 
 
 def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = False,
-           seed: tuple[float, float] | None = None, replay_cues: bool = True) -> dict:
+           seed: tuple[float, float] | None = None, replay_cues: bool = True,
+           on_snapshot=None) -> dict:
+    """``on_snapshot(row, snap)``, when given, is called once per recorded row
+    with the snapshot the engines would have seen at that instant (after the
+    roll/arm bookkeeping below, same as live) -- replay_laser.py ticks an
+    engine on it. No effect on anything printed here."""
     rows = load_rows(session_dir)
     if not rows:
         print(f"{session_dir}: empty")
@@ -183,6 +188,8 @@ def replay(session_dir: Path, *, csv_path: Path | None = None, quiet: bool = Fal
             if snap.build_cue_source != prev_src and "auto" in (snap.build_cue_source, prev_src):
                 auto_cues.append((t, snap.bar, "fired" if snap.build_cue_source == "auto" else "released"))
             prev_src = snap.build_cue_source
+            if on_snapshot is not None:
+                on_snapshot(row, snap)
             if warm_at is None and m.norm_warm:
                 warm_at = t
             if first_norm_at is None and snap.energy_norm > 0.0 and row.get("audio_fresh"):

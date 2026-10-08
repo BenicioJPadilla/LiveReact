@@ -171,7 +171,7 @@ def test_all_shortcuts_present(qapp):
     app = _app()
     win = ConsoleWindow(app)
     keys = {sc.key().toString() for sc in win.findChildren(QtGui.QShortcut)}
-    expected = {"B", "F", "T", "S", "L", "K", "C", "D",
+    expected = {"B", "F", "T", "S", "L", "K", "C", "D", "J",  # J = LASER HIT (2026-10-06, trigger profile)
                 QtGui.QKeySequence(QtCore.Qt.Key.Key_Right).toString(),
                 QtGui.QKeySequence(QtCore.Qt.Key.Key_Space).toString()}
     assert keys == expected
@@ -245,7 +245,14 @@ def test_jog_live_pins_the_head_and_unticking_clears_them(qapp):
     tab.s_pan.setValue(65535)
     assert app.manual.calibration.channels[mh.address] == 255
     tab.cb_jog.setChecked(False)
+    # 2026-10-05: unticking Jog releases pan/tilt but the calibration beam
+    # stays while "Light" is ticked (selecting a head lights it); unticking
+    # Light too clears every pin
+    pins = app.manual.calibration
+    assert pins is not None and mh.address not in pins.channels and pins.channels[mh.address + 5] == 255
+    tab.cb_light.setChecked(False)
     assert app.manual.calibration is None
+    tab.cb_light.setChecked(True)
     # leaving the tab also clears pins
     win.tabs.setCurrentWidget(tab)
     tab.cb_jog.setChecked(True)
@@ -335,3 +342,117 @@ def test_laser_cue_banner_tells_josh_when_the_cue_is_not_armed(qapp):
     app.manual.laser_cue = True
     win.refresh()
     assert "not armed" in win.l_laser_flash.text()
+
+
+# --- the bar's feature laser profile (2026-10-01) ------------------------------------
+
+_FEATURE_RIG = {
+    "name": "bar-test", "laser_profile": "feature", "slots": [
+        {"slot_id": "laser_l", "fixture_type": "shehds_3w_laser", "dmx_address": 1,
+         "role": "laser", "side": "left"},
+        {"slot_id": "laser_r", "fixture_type": "shehds_3w_laser", "dmx_address": 13,
+         "role": "laser", "side": "right"},
+        {"slot_id": "bar", "fixture_type": "ok103_wash_bar", "dmx_address": 69,
+         "role": "wash", "side": "left"},
+    ],
+}
+
+
+def _feature_app(tmp_path) -> App:
+    import json
+
+    path = tmp_path / "bar.json"
+    path.write_text(json.dumps(_FEATURE_RIG))
+    return App(AppConfig(demo=True, config_path=None, rig_path=str(path)))
+
+
+def test_the_rig_file_picks_the_laser_engine(qapp, tmp_path):
+    from livereact.engines.laser import LaserEngine
+    from livereact.engines.laser_feature import LaserFeatureEngine
+
+    assert isinstance(_app().laser_engine, LaserEngine)            # packaged default: accent
+    app = _feature_app(tmp_path)
+    assert isinstance(app.laser_engine, LaserFeatureEngine)
+    assert app.show_engine.laser_engine is app.laser_engine        # the finalize gate reads the same object
+    assert app.laser_engine.manual is app.manual                   # K cue reaches it
+
+
+def test_console_shows_the_laser_profile_and_mood(qapp, tmp_path):
+    from livereact.core.show_state import ShowSnapshot
+    from livereact.ui.console import ConsoleWindow
+
+    win = ConsoleWindow(_app())
+    win.refresh()
+    assert win.l_laser.text() == "ACCENT"
+
+    app = _feature_app(tmp_path)
+    win = ConsoleWindow(app)
+    app.manual.laser_enable = True
+    # no real audio yet (the metronome isn't running): OFF, and the banner says why
+    app.laser_engine.tick(app.show_state.snapshot(), app.rig)
+    win.refresh()
+    assert win.l_laser.text() == "FEATURE · OFF"
+    assert "waiting for real audio" in win.l_laser_flash.text()
+    # a calm break with fresh audio
+    snap = ShowSnapshot(bpm=128.0, bar=8, audio_fresh=True, bucket="break")
+    app.show_state.publish(snap)
+    app.laser_engine.tick(snap, app.rig)
+    win.refresh()
+    assert win.l_laser.text() == "FEATURE · CALM"
+    assert win.l_laser_flash.text().startswith("● LASER CALM")
+    assert "blue / cyan" in win.l_laser_flash.text()
+    # the K cue forces the fan and the banner says so
+    app.manual.laser_cue = True
+    app.laser_engine.tick(snap, app.rig)
+    win.refresh()
+    assert win.l_laser.text() == "FEATURE · FAN"
+    assert "K forcing the fan" in win.l_laser_flash.text()
+    app.manual.laser_cue = False
+    # disarmed is the loudest banner in this profile
+    app.manual.laser_enable = False
+    app.laser_engine.tick(snap, app.rig)
+    win.refresh()
+    assert "NOT ARMED" in win.l_laser_flash.text()
+
+
+def test_venue_tab_selecting_a_head_lights_it_and_jog_adds_pan_tilt(qapp):
+    """2026-10-05 (Josh): 'when I go to the moving head, I should be able to
+    turn on the light just by clicking on it so that I can calibrate it.'"""
+    from livereact.merge.merge import CalibrationPins
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    tab = win.venue_tab
+    mh = app.rig.fixture("mh_l")
+    a = mh.address
+    tab._load_fixture("mh_l")
+    pins = app.manual.calibration
+    assert isinstance(pins, CalibrationPins)
+    assert pins.channels[a + 5] == 255 and pins.channels[a + 6] == 0 and pins.channels[a + 7] == 0  # dimmer full, strobe off, open white
+    assert a not in pins.channels and not pins.absolute_slots                                      # pan/tilt untouched until Jog
+    tab.cb_jog.setChecked(True)
+    pins = app.manual.calibration
+    assert a in pins.channels and a + 2 in pins.channels and pins.absolute_slots == frozenset({"mh_l"})
+    assert pins.channels[a + 5] == 255
+    tab.cb_light.setChecked(False)                                                                  # jog without the beam
+    pins = app.manual.calibration
+    assert a in pins.channels and a + 5 not in pins.channels
+    tab.cb_jog.setChecked(False)
+    assert app.manual.calibration is None                                                           # nothing ticked = no pins
+    tab.cb_light.setChecked(True)
+    assert app.manual.calibration.channels[a + 5] == 255
+    tab._load_fixture("par_l")
+    assert app.manual.calibration is None                                                           # leaving the head clears it
+
+
+def test_laser_hit_button_and_j_key_count_moments(qapp):
+    """2026-10-06: the trigger profile's manual laser button is a counter on ManualParams."""
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    assert app.manual.laser_hit == 0
+    win.b_laser_hit.click()
+    win.b_laser_hit.click()
+    assert app.manual.laser_hit == 2

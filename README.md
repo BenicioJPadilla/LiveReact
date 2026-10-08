@@ -36,6 +36,18 @@ python -m livereact --doctor                 # environment + detected-devices re
 procedure plus a recording system (`--record`, `--doctor`) that captures logs,
 state, and your notes into a session folder you can hand back for analysis.
 
+**Which rig, which show?** `--rig rigs/<file>.json` picks the fixtures AND the
+laser profile: `rigs/testing_setup.json` (the garage truss rig, `laser_profile:
+trigger` — the lasers are punctuation: dark by default, 2-bar moments on the
+drop hit / each 8-bar block of a sustained peak / a big low-end hit, spaced 8
+bars apart and capped at 10 % of any 2 minutes, plus **J** = one moment now and
+**K** = hold; `engines/laser_trigger.py`), `rigs/josh_rig.json` (the old home
+layout, `laser_profile: accent` — one sweep per 8-bar block in a peak) or
+`rigs/bar_rig.json` (the bar residency, `laser_profile: feature` — two lasers as
+the main light, lit for the whole set; `engines/laser_feature.py`, TESTING.md
+Test 6). After a drop the moving heads run `scenes/movement.py`'s tempo-locked
+shapes around the calibrated crowd aim (Venue tab, TESTING.md Test 5).
+
 Watch it live (the full pipeline driving the rig view):
 
 ```bash

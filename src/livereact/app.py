@@ -22,6 +22,8 @@ from .core.metronome import Metronome
 from .core.show_engine import ShowEngine
 from .core.show_state import ShowState
 from .engines.laser import LaserEngine
+from .engines.laser_feature import LaserFeatureEngine
+from .engines.laser_trigger import LaserTriggerEngine
 from .engines.phrase import PhraseEngine
 from .engines.reactive import ReactiveLayerEngine
 from .engines.transition import TransitionEngine
@@ -54,13 +56,6 @@ class AppConfig:
         # docs/bible_integration/ and /Users/joshuaracimora/.claude/plans/adaptive-squishing-pebble.md.
     full_catalog: bool = False  # rotate ALL_SCENES instead of the one-look-per-bucket
         # CORE_SCENES default (scenes/library.py, 2026-09-15) -- see --full-catalog.
-    testing: bool = False  # SESSION-SCOPED bench/testing mode (`--testing`, Josh 2026-09-15:
-        # "in the testing phase the laser is always in a safe spot and there's no
-        # crowd"). Bypasses ONLY the LASER-09 mount-height check in
-        # fixtures/profiles.py's Laser.apply_safety (the arm switch still applies).
-        # Never persisted -- typed every run -- so a real show can't inherit it. It
-        # does not change the fixture's physical safety, only what the software checks;
-        # the operator owns the beam path for that session.
     norm_seed: bool = True  # seed the energy normalizer from the last real session's
         # persisted range (config.py energy_norm, 2026-09-17); `--no-norm-seed` for a
         # cold start (new venue, re-gained mixer). Demo mode never reads or writes it.
@@ -101,17 +96,6 @@ class App:
 
         # --- show pipeline (Phases 3-4): snapshot -> engines -> merge -> frame buffer ---
         self.rig: Rig = load_rig(self.config.rig_path)
-        if self.config.testing:
-            for fx in self.rig.by_role("laser"):
-                fx.safety_test_mode = True
-                real = fx.mount_height_m
-                log.warning(
-                    "TESTING MODE: laser %s may fire this session regardless of its "
-                    "declared mount height (%s; LASER-09 needs >= %.1f m). No crowd, "
-                    "beam path confirmed safe -- that's on the operator. Not saved anywhere.",
-                    fx.slot_id, f"{real:.2f} m" if real is not None else "undeclared",
-                    fx.min_beam_height_m,
-                )
         self.manual = ManualParams()
         if self.config.config_path:
             app_config.load_into(self.manual, self.config.config_path)
@@ -123,7 +107,22 @@ class App:
         self.phrase_engine = PhraseEngine(SceneCatalog(full=self.config.full_catalog))
         self.reactive_engine = ReactiveLayerEngine(self.clock, manual=self.manual,  # manual: Synth Sync toggle
                                                    roll_sink=self.metronome.note_roll)  # a roll arms the drop
-        self.laser_engine = LaserEngine(self.clock, manual=self.manual)  # manual= : the operator's laser cue
+        # Which laser engine: the rig file's `laser_profile` (fixtures/rig.py).
+        # "accent" (the home rig): one sweep per 8-bar block in PEAK, verified
+        # live. "feature" (the bar, 2026-10-01): the lasers are the main light,
+        # lit for the whole set -- engines/laser_feature.py. Both take manual=
+        # for the operator's K cue; both sit behind the same arm switch and
+        # geometry gate in finalize.
+        # "trigger" (2026-10-06, Josh: "a specific trigger... used more
+        # sparingly"): dark by default, 2-bar moments on the drop hit / PEAK
+        # blocks / a big wub, plus the J hit and the K cue -- engines/laser_trigger.py.
+        self._midi_hit_down = False  # MIDI "laser_hit" rising-edge state
+        if self.rig.laser_profile == "feature":
+            self.laser_engine = LaserFeatureEngine(self.clock, manual=self.manual)
+        elif self.rig.laser_profile == "trigger":
+            self.laser_engine = LaserTriggerEngine(self.clock, manual=self.manual)
+        else:
+            self.laser_engine = LaserEngine(self.clock, manual=self.manual)
         # Merge is LTP-by-priority per channel kind (merge/merge.py), so list
         # order is cosmetic: Reactive (25) base, Phrase (50) look, Laser (60)
         # owns the laser channels, Transition (100) lift.
@@ -180,6 +179,10 @@ class App:
         mirrors them, see ui/console.py's refresh)."""
         if control == "laser_cue":
             self.manual.laser_cue = value >= self.MIDI_CUE_THRESHOLD
+        elif control == "laser_hit":
+            if value >= self.MIDI_CUE_THRESHOLD and not self._midi_hit_down:
+                self.manual.laser_hit += 1
+            self._midi_hit_down = value >= self.MIDI_CUE_THRESHOLD
 
     def _setup_recording(self, session_dir: str) -> None:
         from .recorder import SessionRecorder, write_meta, write_notes_template
@@ -190,7 +193,6 @@ class App:
             "dmx_rate_hz": self.config.dmx_rate_hz,
             "pdl_interface": self.config.pdl_interface,
             "rig_path": self.config.rig_path,
-            "testing": self.config.testing,
             "full_catalog": self.config.full_catalog,
         })
         self.recorder = SessionRecorder(

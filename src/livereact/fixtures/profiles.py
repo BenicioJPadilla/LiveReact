@@ -188,20 +188,6 @@ class Fixture:
         # fixture-test panel's "Save as Home Position" button.
         self.home_pan: float | None = None
         self.home_tilt: float | None = None
-        # Laser beam-height safety geometry (LIGHTING_BIBLE.md §8.6,
-        # LASER-08/09/10/11 -- Stage 6 audit fix, 2026-09-09). Generic on the
-        # base class (same pattern as home_pan/home_tilt) though only `Laser`
-        # currently checks it in apply_safety(). Fail-closed on undeclared
-        # geometry, matching the spec literally: `mount_height_m is None`
-        # (never configured) forces the laser off, same as a declared height
-        # below `min_beam_height_m`. `fda_variance_on_file` is deliberately
-        # NOT modeled or enforced here: Josh has explicitly deprioritized
-        # that paperwork for solo/no-audience testing (see
-        # [[livereact-lighting-bible]] memory) -- this is a real eye-safety
-        # geometry check, not a compliance gate, so it doesn't depend on
-        # variance status.
-        self.mount_height_m: float | None = None
-        self.min_beam_height_m: float = 3.0
         # Real-world placement (2026-09-18 venue floor plan, fixtures/
         # geometry.py's convention: meters, origin at the booth wall's
         # stage-left corner, x to stage-right, y into the crowd, z up).
@@ -211,17 +197,11 @@ class Fixture:
         # the crowd). `x_norm` (LIGHTING_BIBLE.md §1.2) is DERIVED by
         # Rig.refresh_geometry() from position + venue width; None without a
         # venue. `extra` keeps any rig-file keys the loader doesn't model
-        # (e.g. josh_rig.json's `mount_height_note`) so a save round-trips them.
+        # (e.g. a rig file's free-text notes) so a save round-trips them.
         self.position: Point3 | None = None
         self.facing_deg: float = 0.0
         self.x_norm: float | None = None
         self.extra: dict = {}
-        # Bench/testing session (Josh, 2026-09-15): "in the testing phase the
-        # laser is always in a safe spot and there's no crowd." Set ONLY by
-        # the `--testing` flag (app.py), never from a rig file or config, so
-        # a real show can't inherit it; while True, `Laser.apply_safety`
-        # skips the LASER-09 geometry check. The arm switch still applies.
-        self.safety_test_mode: bool = False
 
     # --- geometry ---
     @property
@@ -508,6 +488,19 @@ class Laser(Fixture):
            shape's outline into dots. SCAN_DOTS=190 verified good.
       CH12 color — confirmed, matches the file's named bands exactly
            (spot-checked: Green 32-39 in the file matched a real green output).
+
+    The unit's 12-channel mode is the first 12 channels of that QLC+ file's
+    25-channel definition (2026-10-01, read from the file): CH4 rotation
+    (0-127 static angle), CH5/CH6 horizontal/vertical flip, CH8 vertical
+    move (0-127 position), CH10 "painting" speed, and CH12's upper bands
+    (64-127 colour auto-change speed, 128-191 line rainbow). All UNVERIFIED
+    -- see PROBE_CANDIDATES below and docs/laser_findings.md.
+
+    Two engines drive this fixture, picked by the rig file's `laser_profile`
+    (fixtures/rig.py): engines/laser.py (accent, the home rig: one sweep per
+    8-bar block in PEAK) and engines/laser_feature.py (feature, the bar: lit
+    for the whole set). Both write only set_dotted_line_sweep; both sit
+    behind apply_safety below (the operator's arm switch).
     """
 
     type_name = "shehds_3w_laser"
@@ -530,6 +523,25 @@ class Laser(Fixture):
     COLOR_CYAN = 43
     COLOR_BLUE = 51
     COLOR_PURPLE = 59
+
+    # Bench-probe candidates (2026-10-01), NONE verified: what the QLC+
+    # 25-channel definition claims the other channels of the 12-channel mode
+    # do. The feature profile wants a solid line, a curvy line, a still line
+    # and colours that drift on their own; `tools/laser_probe.py --candidate
+    # NAME` holds each on the bench (TESTING.md Test 6). name -> (channel,
+    # value, the file's claim). A value graduates to a real constant above
+    # only with a docs/laser_findings.md row saying what it actually did --
+    # the file's names were wrong before ("Circle Part Fan" drew a star).
+    PROBE_CANDIDATES: dict[str, tuple[int, int, str]] = {
+        "solid_line":   (11, 0,   "CH11 0-127 'scan speed': the outline without the dot lattice?"),
+        "curve_sub":    (3, 16,   "CH3 sub-pattern 2 of 16 inside the CH2=118 line group (sweep 0..240 step 16)"),
+        "still_line":   (7, 64,   "CH7 0-127 'horizontal move position': the line held still, centred?"),
+        "rotate_line":  (4, 32,   "CH4 0-127 'rotate angle': a tilted line?"),
+        "raise_line":   (8, 96,   "CH8 0-127 'vertical move position': the line higher in the frame -- BEAM HEIGHT, real mount only"),
+        "colour_drift": (12, 72,  "CH12 64-127 'colour auto change speed': colours cycling on their own, slowly?"),
+        "rainbow_line": (12, 140, "CH12 128-191 'line rainbow colour speed': a rainbow along the line?"),
+        "painting":     (10, 128, "CH10 'painting speed': the line drawn progressively?"),
+    }
 
     def __init__(self, address: int, label: str, role: str, side: str) -> None:
         super().__init__(address, label, role, side)
@@ -591,7 +603,7 @@ class Laser(Fixture):
         class docstring). CH7 is one byte, so a fan cannot be both statically
         positioned and sweeping: while engines/laser.py sweeps, CH7 is the
         speed and `h_offset01` is NOT applied. Used by the Venue tab's bench
-        probe (needs the laser armed AND --testing on the real 0.9 m mount);
+        probe (needs the laser armed);
         static-line scenes could use it once the probe says what it does.
         Never writes CH7 >= 128, so a bad guess can't turn into a sweep."""
         self._set(buf, 1, self.MANUAL_PATTERN_MODE)
@@ -605,24 +617,10 @@ class Laser(Fixture):
     def apply_safety(self, uni: bytearray, laser_enabled: bool) -> None:
         # Fail-safe: unless explicitly enabled this run, the entire fixture is zeroed
         # (CH1=0 => laser off). Drop-scene gating is layered on top in Phase 4.
-        #
-        # Beam-height geometry check (LIGHTING_BIBLE.md §8.6, LASER-08/09/10/11
-        # -- Stage 6 audit fix, 2026-09-09, Josh's explicit call): this unit
-        # has no pan/tilt (channel_kinds() is all ChannelKind.LASER, confirmed
-        # in the conformance audit) -- its beam trajectory is fixed by
-        # physical installation, not DMX-controllable, so this is a one-time
-        # installation-time check, not a per-tick dynamic clamp. Fails closed
-        # on undeclared geometry, matching the spec literally: `mount_height_m
-        # is None` (never configured in the rig manifest) forces off, same as
-        # a declared height below `min_beam_height_m`. Deliberately does NOT
-        # check `fda_variance_on_file` -- see `__init__`'s comment on why.
-        # `safety_test_mode` (the `--testing` flag, see Fixture.__init__)
-        # bypasses ONLY the geometry half: bench sessions with no crowd and
-        # a confirmed-safe beam path, Josh's explicit call 2026-09-15.
-        geometry_unsafe = not self.safety_test_mode and (
-            self.mount_height_m is None or self.mount_height_m < self.min_beam_height_m
-        )
-        if not laser_enabled or geometry_unsafe:
+        # (The beam-height rule that used to sit here was removed on
+        # 2026-10-03 at Josh's request -- he is replacing it by hand. The arm
+        # switch is the only software gate on this fixture now.)
+        if not laser_enabled:
             for i in range(self.offset, self.offset + self.channel_count):
                 uni[i] = 0
 

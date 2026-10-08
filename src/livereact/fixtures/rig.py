@@ -5,8 +5,8 @@ by role/side, so scenes can say "all wash, both sides" instead of raw DMX indice
 Also the ONE serializer back to JSON (``rig_to_dict``/``save_rig``, 2026-09-18):
 the console's layout save, the Rig Config tab and the fixture-test panel's
 home-position save used to each build their own slot dicts and each silently
-dropped the fields it didn't know about (a layout save deleted the laser's
-measured ``mount_height_m``, which fails that fixture closed on the next load).
+dropped the fields it didn't know about (a layout save could silently drop
+a slot's hand-written notes).
 Every save path goes through here now, and keys the loader doesn't model are
 kept on ``Fixture.extra`` and re-emitted, so nothing is lost on a round trip.
 
@@ -15,6 +15,10 @@ pre-2026-09-18 rig file loads unchanged):
 
     {
       "name": "...", "description": "...",
+      "laser_profile": "accent",                 # or "feature" (2026-10-01) / "trigger" (2026-10-06): which laser
+                                                 # engine app.py builds -- see engines/laser.py
+                                                 # (accent, the home rig) and
+                                                 # engines/laser_feature.py (the bar)
       "venue": {"width_m": 9.1, "length_m": 12.2, "height_m": 3.7,
                 "targets": {"dj_booth": {"x_m": 4.6, "y_m": 0.9, "z_m": 1.2}, ...}},
       "slots": [
@@ -26,7 +30,6 @@ pre-2026-09-18 rig file loads unchanged):
          "calibration": {"target": "dj_booth", "pan01": .., "tilt01": ..,
                          "pan_offset_deg": .., "tilt_offset_deg": ..,
                          "invert_pan": false, "invert_tilt": false},
-         "mount_height_m": 0.9144, "safe_projection": {"min_beam_height_m": 3.0},
          "beam": {"tilt_deg": 10.0, "fan_half_angle_deg": 30.0, "h_offset01": 0.5}}
       ]
     }
@@ -48,10 +51,19 @@ from .profiles import FIXTURE_TYPES, ChannelKind, Fixture, Laser, MovingHead
 
 log = logging.getLogger(__name__)
 
+# Which laser engine a rig asks for (2026-10-01, Josh's bar residency).
+# "accent": engines/laser.py -- one sweep per 8-bar block in PEAK, the home
+# rig's verified behaviour. "feature": engines/laser_feature.py -- the lasers
+# are the main light, lit for (almost) the whole set. A rig file picks this
+# because the choice is a property of the venue and its mount, not of a
+# session; app.py reads it, nothing else does.
+LASER_PROFILES = ("accent", "feature", "trigger")
+DEFAULT_LASER_PROFILE = "accent"
+
 # Slot keys the loader models; anything else rides along in Fixture.extra.
 _KNOWN_SLOT_KEYS = frozenset({
     "slot_id", "label", "fixture_type", "dmx_address", "role", "side",
-    "x", "y", "home_pan", "home_tilt", "mount_height_m", "safe_projection",
+    "x", "y", "home_pan", "home_tilt",
     "position", "facing_deg", "calibration", "beam",
 })
 
@@ -64,10 +76,13 @@ class Rig:
     """A loaded fixture layout: ordered fixtures + a precomputed channel-kind map."""
 
     def __init__(self, name: str, fixtures: list[Fixture], venue: Venue | None = None,
-                 description: str = "") -> None:
+                 description: str = "", laser_profile: str = DEFAULT_LASER_PROFILE) -> None:
         self.name = name
         self.description = description
         self.fixtures = fixtures
+        # See LASER_PROFILES above; validated by the loader, defaulted here so
+        # a Rig built in code (tests, the visualizer demo) is the home profile.
+        self.laser_profile = laser_profile
         # The room (fixtures/geometry.py). None -> no floor plan declared;
         # everything geometry-aware falls back to pre-2026-09-18 behavior.
         self.venue = venue
@@ -245,12 +260,6 @@ def _rig_from_dict(data: dict) -> Rig:
         if "home_pan" in slot and "home_tilt" in slot:
             fx.home_pan = float(slot["home_pan"])
             fx.home_tilt = float(slot["home_tilt"])
-        # Optional laser beam-height safety geometry (LIGHTING_BIBLE.md §8.6,
-        # LASER-08/09/10/11 -- Stage 6 audit fix) — see Fixture.mount_height_m.
-        if "mount_height_m" in slot:
-            fx.mount_height_m = float(slot["mount_height_m"])
-        if "safe_projection" in slot and "min_beam_height_m" in slot["safe_projection"]:
-            fx.min_beam_height_m = float(slot["safe_projection"]["min_beam_height_m"])
         # Real-world placement (2026-09-18) — see Fixture.position/facing_deg.
         if isinstance(slot.get("position"), dict):
             fx.position = _point(slot["position"])
@@ -272,23 +281,17 @@ def _rig_from_dict(data: dict) -> Rig:
                 fx.beam_tilt_deg = float(b.get("tilt_deg", fx.beam_tilt_deg))
                 fx.fan_half_angle_deg = float(b.get("fan_half_angle_deg", fx.fan_half_angle_deg))
                 fx.h_offset01 = float(b.get("h_offset01", fx.h_offset01))
-            # A laser's position height IS its mount height. Fill whichever
-            # is missing; if both are given and disagree, the safety-
-            # verified `mount_height_m` wins (it gates apply_safety).
-            if fx.position is not None:
-                if fx.mount_height_m is None:
-                    fx.mount_height_m = fx.position.z
-                elif abs(fx.mount_height_m - fx.position.z) > 1e-6:
-                    log.warning("%s: position.z_m (%.3f) != mount_height_m (%.3f); keeping mount_height_m",
-                                fx.label, fx.position.z, fx.mount_height_m)
-                    fx.position = Point3(fx.position.x, fx.position.y, fx.mount_height_m)
         fx.extra = {k: v for k, v in slot.items() if k not in _KNOWN_SLOT_KEYS}
         fixtures.append(fx)
+    profile = str(data.get("laser_profile", DEFAULT_LASER_PROFILE))
+    if profile not in LASER_PROFILES:
+        raise RigError(f"unknown laser_profile {profile!r} (known: {list(LASER_PROFILES)})")
     return Rig(
         name=data.get("name", "rig"),
         fixtures=fixtures,
         venue=_venue_from_dict(data.get("venue")),
         description=str(data.get("description", "")),
+        laser_profile=profile,
     )
 
 
@@ -324,10 +327,7 @@ def slot_to_dict(fx: Fixture) -> dict:
             "pan_offset_deg": round(c.pan_offset_deg, 3), "tilt_offset_deg": round(c.tilt_offset_deg, 3),
             "invert_pan": c.invert_pan, "invert_tilt": c.invert_tilt,
         }
-    if fx.mount_height_m is not None:
-        slot["mount_height_m"] = fx.mount_height_m
     if isinstance(fx, Laser):
-        slot["safe_projection"] = {"min_beam_height_m": fx.min_beam_height_m}
         slot["beam"] = {
             "tilt_deg": fx.beam_tilt_deg,
             "fan_half_angle_deg": fx.fan_half_angle_deg,
@@ -342,6 +342,7 @@ def rig_to_dict(rig: Rig, description: str | None = None) -> dict:
     data: dict = {
         "name": rig.name,
         "description": description if description is not None else rig.description,
+        "laser_profile": rig.laser_profile,
     }
     if rig.venue is not None:
         v = rig.venue

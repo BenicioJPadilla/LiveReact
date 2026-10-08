@@ -300,13 +300,10 @@ def test_active_is_a_plain_python_bool_even_from_numpy_inputs():
 
 # --- end to end through the real ShowEngine + finalize --------------------------------
 
-def _show(snap: ShowSnapshot, testing: bool, after_sweep: bool = False):
+def _show(snap: ShowSnapshot, after_sweep: bool = False):
     """One ShowEngine tick on `snap`; with after_sweep, first spend bar 48's
     sweep so `snap` lands between sweeps."""
     rig = load_rig()
-    for fx in rig.by_role("laser"):
-        fx.mount_height_m = 0.9  # like Josh's real rig: below LASER-09's 3 m
-        fx.safety_test_mode = testing
     clock = FakeClock()
     state = ShowState()
     state.publish(snap)
@@ -323,36 +320,26 @@ def _show(snap: ShowSnapshot, testing: bool, after_sweep: bool = False):
     return frame[off], frame[off + 1], laser
 
 
-def test_end_to_end_the_laser_lights_on_a_peak_block_boundary_under_testing_mode():
-    ch1, ch2, laser = _show(_snap(bar=48), testing=True)
+def test_end_to_end_the_laser_lights_on_a_peak_block_boundary():
+    ch1, ch2, laser = _show(_snap(bar=48))
     assert laser.active
     assert ch1 == Laser.MANUAL_PATTERN_MODE and ch2 == Laser.PATTERN_A1_DOTTED_LINE
 
 
 def test_end_to_end_primed_keeps_ch1_off_but_the_pattern_channels_set():
-    ch1, ch2, laser = _show(_snap(bar=50), testing=True, after_sweep=True)
+    ch1, ch2, laser = _show(_snap(bar=50), after_sweep=True)
     assert laser.primed and not laser.active
     assert ch1 == 0 and ch2 == Laser.PATTERN_A1_DOTTED_LINE
 
 
-def test_end_to_end_the_geometry_gate_still_wins_without_testing_mode():
-    """The layer says on, but a 0.9 m mount without --testing is forced off
-    by Laser.apply_safety -- the bench override is the ONLY bypass."""
-    ch1, ch2, laser = _show(_snap(bar=48), testing=False)
-    assert laser.active
-    assert ch1 == 0 and ch2 == 0
-
-
-def test_end_to_end_a_drop_never_lights_the_laser_even_in_testing_mode():
-    ch1, ch2, laser = _show(_snap(bar=48, bucket="drop"), testing=True)
+def test_end_to_end_a_drop_never_lights_the_laser():
+    ch1, ch2, laser = _show(_snap(bar=48, bucket="drop"))
     assert not laser.active and not laser.primed
     assert ch1 == 0 and ch2 == 0
 
 
 def test_show_engine_without_a_laser_engine_keeps_the_gate_closed():
     rig = load_rig()
-    for fx in rig.by_role("laser"):
-        fx.safety_test_mode = True
     clock = FakeClock()
     state = ShowState()
     state.publish(_snap(bar=48))
@@ -477,13 +464,9 @@ def test_releasing_the_cue_returns_to_the_auto_path_with_its_block_state_intact(
 
 
 def test_end_to_end_the_manual_cue_lights_when_armed_and_stays_dark_when_not():
-    """The cue is musical; arming (and the geometry check / --testing) stays
-    the safety decision in finalize."""
+    """The cue is musical; arming stays the safety decision in finalize."""
     for armed, expect_lit in ((True, True), (False, False)):
         rig = load_rig()
-        for fx in rig.by_role("laser"):
-            fx.mount_height_m = 0.9
-            fx.safety_test_mode = True
         clock = FakeClock()
         state = ShowState()
         state.publish(_snap(bucket="break", drop_hit_intensity=0.0, drop_start_bar=None, bar=3))

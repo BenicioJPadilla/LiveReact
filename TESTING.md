@@ -295,12 +295,19 @@ python -m livereact --net-check          # check the link-local IP + firewall fi
 python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json
 ```
 
-> **Laser on the bench:** add `--testing` when the laser is in a confirmed-safe spot with no
-> crowd. Josh's rig declares the laser at 0.91 m (below the 3 m rule), so without `--testing`
-> the software forces it off every run. Arming is per track: the laser is DISARMED at every
+> **Laser arming:** arming is per track: the laser is DISARMED at every
 > launch (not saved in config.json any more), press **L** (or tick "Arm lasers") for the tune
 > you want it on. Once armed it sweeps once per 8-bar block in PEAK only, one bar per sweep
 > (`engines/laser.py`), and never at a show with this flag.
+>
+> **Trigger profile (2026-10-06, `rigs/testing_setup.json`):** the lasers are
+> punctuation. Dark by default; a 2-bar MOMENT lights them on the drop hit, on
+> each 8-bar block of a sustained PEAK, or when the low-band wub spikes, with 8
+> bars of darkness between automatic moments and at most 10 % lit over any
+> 2 minutes. **J** (LASER HIT) fires one moment now; **K** (CUE LASER) holds
+> the line while pressed; both skip the spacing rule. The status chip reads
+> TRIGGER · READY / DROP / PEAK / WUB / HIT / CUE and the lit share. Still
+> behind **L** (arm). `laser_trigger` / `laser_budget` are in `state.jsonl`.
 >
 > **Manual laser cue (2026-09-30):** with the laser armed, hold **CUE LASER (K)** on the
 > console (a toggle — press again to release) and the dotted line shows at once, in any
@@ -358,7 +365,7 @@ Play a set: a track, a build, a drop, then mix into another track.
 **Expected:**
 - lights pulse on the beat, color follows the EQ
 - scenes rotate every ~16 bars
-- a drop's PEAK (8 bars in) brings one laser fan sweep per 8-bar block (once armed with **L**, and only with `--testing` on this rig) + bigger movement
+- a drop's PEAK (8 bars in) brings one laser fan sweep per 8-bar block (once armed with **L**) + bigger movement
 - press **C** ("Cue build") when a build starts that the lights aren't reacting to: BUILD commits
   now and holds (strobe ramp, wash ramp) until the drop lands, 32 bars pass, or you press C again.
   Exists because a kick-only intro reads louder than a mid-heavy build to a loudness classifier
@@ -430,7 +437,7 @@ misbehaving) in `NOTES.md`.
 | "No DJ-Link device seen" | Static IP `169.254.50.50/16`, Link on, firewall UDP 50000–50002 |
 | Beat not locking | `state.jsonl` — is `bpm` right and `pdl_fresh` true? Else network/PDL issue |
 | MIDI does nothing | `--midi-monitor` — do controls show up? Enable Utility→MIDI on the XZ |
-| Lasers won't light | Arm them (**L**) — disarmed at every launch; they only sweep on 8-bar boundaries in PEAK, with `--testing` on this rig. **K** (CUE LASER) shows the line by hand at any time once armed |
+| Lasers won't light | Arm them (**L**) — disarmed at every launch; they only sweep on 8-bar boundaries in PEAK. **K** (CUE LASER) shows the line by hand at any time once armed |
 
 ---
 
@@ -454,7 +461,7 @@ written to disk until you click **Save rig…**.
 Launch as usual, with the head connected:
 
 ```
-python -m livereact --hardware --visualize --testing --rig rigs/josh_rig.json
+python -m livereact --hardware --visualize --rig rigs/josh_rig.json
 ```
 
 1. **Venue** tab → type the room's Width / Length (ft). Drag the orange
@@ -463,7 +470,10 @@ python -m livereact --hardware --visualize --testing --rig rigs/josh_rig.json
 2. Pick the moving head in **Fixture → Select**. Type its X (along the booth
    wall), Y (out into the crowd), Height (lens above the floor) and Facing
    (0 if the body points straight into the crowd).
-3. Tick **Jog live** (Freeze must be off). Slide Pan/Tilt until the real beam
+3. Selecting the head lights it (open white, full; "Light the selected head"
+   is ticked by default, and the no-music blackout is held off while a head
+   is pinned, so this works with the decks stopped -- 2026-10-05). Tick
+   **Jog live** (Freeze must be off). Slide Pan/Tilt until the real beam
    sits on the booth. It moves through the normal slew limit, so it glides.
 4. Target = `dj_booth` → click **SET AIM**. The label under it shows the
    captured offsets.
@@ -481,9 +491,84 @@ slider step and watch for jitter. If the unit ignores or twitches on the
 fine channels (CH2/CH4), set `MovingHead.USE_FINE_CHANNELS = False` in
 `src/livereact/fixtures/profiles.py` and say so in the session notes.
 
-**Laser CH7 probe** (bench only, no crowd, `--testing`, Arm lasers on):
+**Laser CH7 probe** (bench only, no crowd, Arm lasers on):
 select the laser, tick **Probe static line live**, sweep **H offset** 0 → 127.
 Record which of these happens: the line moves sideways (0-127 really is a
 static position), it stays put (it isn't), or it starts sweeping (both halves
 are speed). Untick, let a real sweep fire on a drop, and note whether the
 sweep's centre moved. Put the answer in `Laser`'s docstring.
+
+## Test 6 — The bar: laser bench probe + the feature laser profile (2026-10-01)
+
+At the bar the lasers are the show: `rigs/bar_rig.json` sets
+`"laser_profile": "feature"`, and `engines/laser_feature.py` keeps both lasers
+lit for the whole set — a slow line that changes colour through breaks and
+builds, the fast fan after an intense drop. Same audio/beat analysis as home.
+The console's status strip shows **Laser: FEATURE · CALM / TENSION / GROOVE /
+FAN** beside the bucket, and the banner says what each laser is showing.
+
+Three parts, in order. (a) and (b) happen at home; (c) is the first night.
+
+### (a) Bench probe — map the bytes the new looks need (home, one laser)
+
+Only the dotted line + sweep is verified on this unit. The "solid line",
+"curvy line", a line held still, and colours drifting on their own are all
+unmapped. `tools/laser_probe.py` holds raw channels through the Enttec with
+NO safety gate in the loop — bench only, no crowd, beam path confirmed safe,
+you watching the unit. It blacks out on every exit, including Ctrl-C, and
+appends each hold to `docs/laser_findings.md`.
+
+```
+# the verified line first, so you know the unit is listening:
+python tools/laser_probe.py --preset line --seconds 10
+
+# then each candidate (press Enter between steps, type what you saw first):
+python tools/laser_probe.py --candidate solid_line
+python tools/laser_probe.py --preset line --sweep 3 --from 0 --to 240 --step 16    # curvy line?
+python tools/laser_probe.py --preset line --sweep 7 --from 0 --to 120 --step 24    # still line, where?
+python tools/laser_probe.py --candidate colour_drift
+python tools/laser_probe.py --candidate rainbow_line
+python tools/laser_probe.py --preset line --sweep 4 --from 0 --to 120 --step 24    # rotated line?
+python tools/laser_probe.py --candidate painting
+```
+
+Skip `raise_line` (CH8) unless the unit is on its real mount: it may move the
+beam vertically. Every candidate is listed with the QLC+ file's claim in
+`Laser.PROBE_CANDIDATES` (`src/livereact/fixtures/profiles.py`); `--dry-run`
+prints the frames without hardware. A value becomes a real constant only
+with a findings row saying what it actually did.
+
+### (b) First feature run — home mount, with a track
+
+Arm with L once the track is playing.
+
+```
+python -m livereact --hardware --visualize --record --rig rigs/bar_rig.json
+```
+
+Watch for: a lit, slowly moving line from the first bar (CALM, blue / cyan);
+the colour stepping every 8 bars with the two sides one step apart; the
+sweep picking up on a rising build (TENSION); the fan on the big drop and
+holding through it (FAN; a softer drop reads GROOVE, a medium sweep); the
+line settling back at the breakdown. K forces the fan if a drop was under-
+read. The replay says what to expect first:
+
+```
+python tools/simulations/replay_laser.py recordings/<the new session>
+python tools/simulations/replay_laser.py recordings/session-2026091*     # every capture so far
+```
+
+Hand the session folder back as usual; `laser_mood`, `laser_target`,
+`laser_color_l/r` are in `state.jsonl`.
+
+### (c) The bar — venue entry, the beam check, then arm
+
+1. Set the units to the bar rig's addresses (a fresh rig, laid out in
+   order): wash bar **1** (6-channel mode), Laser L **7**, Laser R **19**
+   (12-channel mode). `rigs/bar_rig.json` already says so.
+2. Launch: `python -m livereact --hardware --visualize --record --rig rigs/bar_rig.json`.
+3. **Venue** tab: type the room's Width / Length (ft), place the bar and
+   both lasers (X, Y, Height 9 ft, Facing), tilt 0. **Save rig…**
+4. Arm lasers (L) once the first track is playing. Everything else is
+   automatic; C / D / K are the cues.
+5. Afterwards: notes + the session folder.

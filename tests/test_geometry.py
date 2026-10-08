@@ -14,7 +14,6 @@ from livereact.fixtures.geometry import (
     bearing,
     calibrate_from_capture,
     ft_to_m,
-    laser_min_beam_height,
     m_to_ft,
     pan_tilt_to_angles,
     ray_to_rect_edge,
@@ -120,19 +119,6 @@ def test_ray_to_rect_edge():
     assert ray_to_rect_edge((5, 0), 90.0, 10, 20) == pytest.approx(5.0)
     assert ray_to_rect_edge((5, 5), -90.0, 10, 20) == pytest.approx(5.0)
 
-
-def test_laser_min_beam_height_low_mount_is_its_own_mount_height():
-    # Josh's real laser: 0.9144 m mount, tilted up 10 deg -> the lowest point
-    # of the fan is the emitter itself (still below the 3.0 m rule).
-    low = laser_min_beam_height(Point3(4.5, 0.6, 0.9144), 0.0, 10.0, 30.0, 9.0, 12.0)
-    assert low == pytest.approx(0.9144)
-
-
-def test_laser_min_beam_height_high_mount_tilted_down_drops_below_three_metres():
-    low = laser_min_beam_height(Point3(4.5, 0.6, 3.5), 0.0, -10.0, 30.0, 9.0, 12.0)
-    assert 0.0 <= low < 3.0
-    level = laser_min_beam_height(Point3(4.5, 0.6, 3.5), 0.0, 0.0, 30.0, 9.0, 12.0)
-    assert level == pytest.approx(3.5)
 
 
 def test_x_norm_and_default_targets():

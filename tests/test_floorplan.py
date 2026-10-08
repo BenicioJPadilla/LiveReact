@@ -29,7 +29,7 @@ def _josh_rig_with_venue():
     rig.venue = Venue(w, l, h, Venue.default_targets(w, l, h))
     mh, laser = rig.fixture("mh"), rig.fixture("laser")
     mh.position = Point3(ft_to_m(5), ft_to_m(2), ft_to_m(1))
-    laser.position = Point3(ft_to_m(25), ft_to_m(2), laser.mount_height_m)
+    laser.position = Point3(ft_to_m(25), ft_to_m(2), ft_to_m(3))
     rig.refresh_geometry()
     return rig
 
@@ -59,22 +59,6 @@ def test_plan_places_positioned_fixtures_to_the_centimetre(qapp):
     assert x == pytest.approx(ft_to_m(5), abs=0.01)
     assert y == pytest.approx(ft_to_m(2), abs=0.01)
     assert set(view._targets) == {"dj_booth", "dancefloor_centre", "back_wall", "ceiling_bounce"}
-
-
-def test_the_real_laser_mount_is_flagged_unsafe(qapp):
-    """josh_rig.json's laser sits at 0.9144 m -- below the LASER-09 3.0 m
-    rule -- so the plan must say so, matching apply_safety's fail-closed."""
-    from livereact.ui.floorplan import FloorPlanView
-
-    rig = _josh_rig_with_venue()
-    view = FloorPlanView(rig, editable=False)
-    view.update_from_universe(rig.boot_universe())
-    assert view.laser_unsafe("laser")
-    rig.fixture("laser").position = Point3(ft_to_m(25), ft_to_m(2), 3.5)
-    rig.fixture("laser").mount_height_m = 3.5
-    rig.fixture("laser").beam_tilt_deg = 5.0
-    view.update_from_universe(rig.boot_universe())
-    assert not view.laser_unsafe("laser")
 
 
 def test_show_tab_plan_is_not_movable_but_venue_plan_is(qapp):

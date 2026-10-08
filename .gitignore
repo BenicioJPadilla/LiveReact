@@ -29,3 +29,4 @@ databases/
 Thumbs.db
 .vscode/
 .idea/
+logs/

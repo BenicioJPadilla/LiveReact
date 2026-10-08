@@ -158,8 +158,6 @@ def run(mp3_path: str, bpm: float, duration: float | None, rig_path: str, out_pr
     transition = TransitionEngine()
     frame_buffer = DmxFrameBuffer()
     manual = ManualParams(laser_enable=True)  # so the laser isn't suppressed for this analysis
-    for fx in rig.by_role("laser"):
-        fx.safety_test_mode = True  # offline analysis: same bypass as `--testing`
     show_engine = ShowEngine(show_state, rig, frame_buffer, [reactive, phrase, laser_engine, transition],
                               manual, clock, stop_event, laser_engine=laser_engine)
 

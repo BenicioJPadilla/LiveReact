@@ -254,6 +254,41 @@ verified (same `core/laser_trigger.py` foundation, extended rather than
 replaced), not a replacement for it — the onset flash still solves "lasers
 running constantly," which was the original, more urgent ask.
 
+### 3b. The bar's FEATURE profile — lasers as the main light (2026-10-01)
+
+Everything above is the HOME answer: lasers are punctuation (the Bible's
+§8.5), and `engines/laser.py` fires one sweep per 8-bar block in PEAK. The
+bar residency inverts it: two lasers at 9 ft over a small dancefloor, haze,
+and Josh's brief — "lasers on (almost) the whole time; a relatively chill
+pattern while the music is in transition / build-up, possibly a solid line
+or a curvy line moving / slowly changing colours, and after intense beat
+drops the fast fanning pattern." Same audio/MIDI/PDL analysis.
+
+Built as a second engine, not a mode switch inside the first (the accent
+engine is verified live and stays byte-for-byte): `rigs/bar_rig.json` says
+`"laser_profile": "feature"`, `app.py` builds `engines/laser_feature.py`'s
+`LaserFeatureEngine`, and everything downstream duck-types. One mood per
+tick from the debounced bucket — OFF (no audio) / CALM (break, outro,
+unarmed build: the line at the slowest confirmed sweep, colour stepping
+every 8 bars, the right laser one step ahead) / TENSION (build while
+rising or armed: sweep climbs with the rise index) / GROOVE (a drop whose
+hit is under 0.95: medium sweep) / FAN (hit ≥ 0.95, or the K cue: the full
+wub-driven fan, held for the whole drop). Decisions Josh made 2026-10-01:
+intense drops only, hold the whole drop; unison, one palette step apart in
+calm. Deliberate deviations recorded in `spec/conformance.md`: §8.5's duty
+rule (LASER-14) and PDL loss not cutting the laser (LASER-12). The
+beam-height rule itself was removed on 2026-10-03 at Josh's request.
+
+Still unverified bytes: the solid line, the curvy line, a still line, and
+hardware colour drift — `Laser.PROBE_CANDIDATES` + `tools/laser_probe.py`,
+TESTING.md Test 6. Offline evidence so far: `tools/simulations/
+replay_laser.py` over every capture — calm 55% / fan 11% of recorded time,
+zero fan rows outside DROP/PEAK; the one 82-minute set runs fan 38% because
+nearly every recorded hit reads 1.00 (energy_norm re-normalises per track),
+so "intense drops only" barely discriminates on long sets. Two knobs if
+that reads as too much live, both one-line changes: raise `FAN_MIN_HIT`, or
+add a fan length cap that settles to GROOVE after N bars.
+
 ## 4. Moving heads aimed at the stage, not roaming
 
 Current: pan/tilt sweeps use an arbitrary center (`0.5`) with wide amplitude

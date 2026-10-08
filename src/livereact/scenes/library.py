@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 
 from ..dynamics import musical_bar_position
+from .movement import apply_drop_movement
 from ..core.show_state import ShowSnapshot
 from ..engines.color import laser_color_for_bands
 from ..fixtures.profiles import Par, WashBar
@@ -184,7 +185,8 @@ class DropStrobeStab(Scene):
     see reactive.py's STROBE_TOGGLE_* comment). This look's job is just the
     color/movement CONTEXT the stab plays over: the phrase's DROP palette
     entry (blood_red / cold_steel, Josh's 2026-09-15 pick, replacing the
-    earlier plain white), static heads."""
+    earlier plain white). Heads: scenes/movement.py's post-drop shapes
+    (2026-10-05; they were static at 0.5/0.5 before)."""
 
     name = "Drop Strobe Stab"
     bucket = EnergyBucket.DROP
@@ -199,8 +201,12 @@ class DropStrobeStab(Scene):
         r, g, b = scene_color(snap)
         paint_wash(c, rig, r, g, b)
         paint_spots(c, rig, r, g, b, intensity)
-        for fx in rig.by_role("spot"):
-            fx.set_position(c, 0.5, 0.5)
+        # 2026-10-05: no longer parked at 0.5/0.5 -- "after the drop is
+        # when the moving heads should be moving more intense" (Josh,
+        # first run with both heads). scenes/movement.py picks a
+        # tempo-locked shape per 8-bar block of the drop, anchored on the
+        # calibrated crowd aim (or its fallback) rather than a raw tilt.
+        apply_drop_movement(c, rig, snap)
         return c
 
 
@@ -288,12 +294,11 @@ class PeakFullRig(Scene):
         paint_wash(c, rig, r, g, b)
         sr, sg, sb = spot_color(snap)
         paint_spots(c, rig, sr, sg, sb, intensity)  # "spot 100%"
-        pos = musical_bar_position(snap)
-        for fx in rig.by_role("spot"):
-            mirror = 1.0 if fx.side == "left" else -1.0
-            # "slow fan, period_bars 4" -- a full cycle every 4 bars, much
-            # slower than DROP scenes' fast sweeps (period_bars ~0.5-1).
-            fx.set_position(c, 0.5 + 0.3 * math.sin(pos * (2 * math.pi / 4.0)) * mirror, 0.5)
+        # 2026-10-05: the Bible's "slow fan, period_bars 4" was the only
+        # motion after a drop and read as stagnant (Josh). PEAK is a
+        # sustained drop, so it runs scenes/movement.py's post-drop
+        # shapes at double speed, anchored on the crowd aim.
+        apply_drop_movement(c, rig, snap, peak=True)
         return c
 
 

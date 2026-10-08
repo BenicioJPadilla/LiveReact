@@ -114,6 +114,16 @@ class ShowEngine(threading.Thread):
         self._last_tick_t = now
 
         auto_blackout = self.silence.update(snap)
+        # 2026-10-05: Venue-tab calibration pins mean an operator is at the
+        # console jogging a REAL fixture (TESTING.md Test 5) -- usually with
+        # no music, which is exactly when the no-music failsafe would black
+        # the head they are trying to see ("when I go to the moving head,
+        # it doesn't turn on, so I can't calibrate it" -- Josh). The pins
+        # suppress auto-blackout; the operator's own blackout switch
+        # (manual.blackout, finalize) still wins outright, and the silence
+        # detector keeps updating so it re-engages the instant the pins clear.
+        if self.manual.calibration is not None:
+            auto_blackout = False
         laser_on = bool(self.laser_engine.active) if self.laser_engine is not None else False
         safe_default_frame = None
         if self.bible_failsafe_enabled and auto_blackout:

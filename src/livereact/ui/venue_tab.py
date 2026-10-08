@@ -25,9 +25,8 @@ Moving-head calibration = measurements + one aim capture:
      bounded scene motion is centred there). Untick Jog live. Save rig…
 
 Jogging pins channels through merge/merge.py's CalibrationPins -- applied
-after the merge and before finalize, so the laser arm switch, the LASER-09
-geometry gate and the movement slew limit all still apply to a pinned
-fixture. Leaving the tab clears every pin.
+after the merge and before finalize, so the laser arm switch and the
+movement slew limit still apply to a pinned fixture. Leaving the tab clears every pin.
 """
 
 from __future__ import annotations
@@ -45,7 +44,6 @@ from ..fixtures.geometry import (
     aim,
     calibrate_from_capture,
     ft_to_m,
-    laser_min_beam_height,
     m_to_ft,
 )
 from ..fixtures.profiles import Laser, MovingHead, _to16
@@ -232,6 +230,8 @@ class VenueTab(QtWidgets.QWidget):
         # moving head: calibrate
         self.grp_head = QtWidgets.QGroupBox("Calibrate (moving head)")
         hf = QtWidgets.QFormLayout(self.grp_head)
+        self.cb_light = QtWidgets.QCheckBox("Light the selected head — open white at full, so you can see the beam")
+        self.cb_light.setChecked(True)
         self.cb_jog = QtWidgets.QCheckBox("Jog live — pins the REAL head to the sliders")
         self.s_pan = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal); self.s_pan.setRange(0, 65535); self.s_pan.setValue(32768)
         self.s_tilt = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal); self.s_tilt.setRange(0, 65535); self.s_tilt.setValue(32768)
@@ -248,6 +248,7 @@ class VenueTab(QtWidgets.QWidget):
         self.b_home = QtWidgets.QPushButton("Set home = target")
         self.l_cal = QtWidgets.QLabel("Not captured")
         self.l_cal.setWordWrap(True)
+        hf.addRow(self.cb_light)
         hf.addRow(self.cb_jog)
         hf.addRow("Pan", pan_row)
         hf.addRow("Tilt", tilt_row)
@@ -257,10 +258,12 @@ class VenueTab(QtWidgets.QWidget):
         btns = QtWidgets.QHBoxLayout(); btns.addWidget(self.b_aim); btns.addWidget(self.b_home)
         hf.addRow(btns)
         hf.addRow(self.l_cal)
-        hf.addRow(_hint("1 Place the head and the dj_booth target.  2 Tick Jog live, slide Pan/Tilt until the "
+        hf.addRow(_hint("Selecting a head lights it (the no-music blackout is held off while it is pinned).  "
+                        "1 Place the head and the dj_booth target.  2 Tick Jog live, slide Pan/Tilt until the "
                         "real beam sits on the booth.  3 SET AIM.  4 Aim at dancefloor_centre to verify; "
                         "wrong way round → Invert, SET AIM again.  5 Untick Jog live, Save rig…"))
         v.addWidget(self.grp_head)
+        self.cb_light.toggled.connect(self._light_toggled)
         self.cb_jog.toggled.connect(self._jog_toggled)
         self.s_pan.valueChanged.connect(self._sliders_moved)
         self.s_tilt.valueChanged.connect(self._sliders_moved)
@@ -276,12 +279,10 @@ class VenueTab(QtWidgets.QWidget):
         self.s_hoff = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal); self.s_hoff.setRange(0, 127); self.s_hoff.setValue(64)
         self.l_hoff = QtWidgets.QLabel("64")
         hrow = QtWidgets.QHBoxLayout(); hrow.addWidget(self.s_hoff, 1); hrow.addWidget(self.l_hoff)
-        self.l_beam_height = QtWidgets.QLabel("—")
-        self.cb_probe = QtWidgets.QCheckBox("Probe static line live (needs Arm lasers + --testing)")
+        self.cb_probe = QtWidgets.QCheckBox("Probe static line live (needs Arm lasers)")
         lf.addRow("Beam tilt (+ up)", self.sb_beam_tilt)
         lf.addRow("Fan half-angle", self.sb_fan)
         lf.addRow("H offset (CH7 0-127, UNVERIFIED)", hrow)
-        lf.addRow("Lowest beam height", self.l_beam_height)
         lf.addRow(self.cb_probe)
         lf.addRow(_hint("CH7's 0-127 half has never been probed on this unit. Tick Probe, sweep H offset, "
                         "and note whether the line moves, stays, or starts sweeping."))
@@ -330,6 +331,8 @@ class VenueTab(QtWidgets.QWidget):
             is_head, is_laser = isinstance(fx, MovingHead), isinstance(fx, Laser)
             self.grp_head.setVisible(is_head)
             self.grp_laser.setVisible(is_laser)
+            if is_head and self.cb_light.isChecked():
+                self._push_head_pins()  # 2026-10-05: light the head on select, so it can be calibrated
             if is_head:
                 cal = fx.calibration
                 self.cb_invert_pan.setChecked(cal.invert_pan)
@@ -360,8 +363,6 @@ class VenueTab(QtWidgets.QWidget):
             return
         fx.position = Point3(ft_to_m(self.sb_x.value()), ft_to_m(self.sb_y.value()), ft_to_m(self.sb_z.value()))
         fx.facing_deg = self.sb_facing.value()
-        if isinstance(fx, Laser):
-            fx.mount_height_m = fx.position.z   # one measurement, two names
         self.rig.refresh_geometry()
         self.plan.set_fixture_position(self._selected, fx.position)
         self.plan.refresh_layout()
@@ -412,26 +413,40 @@ class VenueTab(QtWidgets.QWidget):
             self._push_head_pins()
 
     def _jog_toggled(self, on: bool) -> None:
-        if on:
-            if self.is_frozen():
-                self.status.setText("Freeze is on — unfreeze (F) to jog the head.")
-            self._push_head_pins()
-        else:
-            self._clear_pins()
+        if on and self.is_frozen():
+            self.status.setText("Freeze is on — unfreeze (F) to jog the head.")
+        self._push_head_pins()
+
+    def _light_toggled(self, on: bool) -> None:
+        self._push_head_pins()
 
     def _push_head_pins(self) -> None:
+        """Pin the selected head: the calibration beam (open white, full,
+        strobe off, mid speed) while "Light" is ticked, plus pan/tilt from
+        the sliders while "Jog live" is ticked. Neither ticked = no pins.
+        (2026-10-05: selecting a head used to do nothing until Jog live was
+        ticked, and even then the no-music auto-blackout -- core/show_engine.py
+        -- blacked it out; now the pins hold that failsafe off.)"""
         fx = self._fx()
         if not isinstance(fx, MovingHead) or self.on_pins is None:
             return
-        pan01, tilt01 = self._pan_tilt01()
-        ph, pl = _to16(pan01)
-        th, tl = _to16(tilt01)
+        light = self.cb_light.isChecked()
+        jog = self.cb_jog.isChecked()
+        if not (light or jog):
+            self.on_pins(None)
+            return
         a = fx.address
-        # pan/tilt + a visible open-white beam at mid speed
-        channels = {a: ph, a + 1: pl if fx.USE_FINE_CHANNELS else 0,
-                    a + 2: th, a + 3: tl if fx.USE_FINE_CHANNELS else 0,
-                    a + 4: 128, a + 5: 255, a + 7: 0}
-        self.on_pins(CalibrationPins(channels=channels, absolute_slots=frozenset({self._selected})))
+        channels: dict[int, int] = {}
+        if light:
+            channels.update({a + 4: 128, a + 5: 255, a + 6: 0, a + 7: 0})  # speed, dimmer, strobe off, colour open
+        if jog:
+            pan01, tilt01 = self._pan_tilt01()
+            ph, pl = _to16(pan01)
+            th, tl = _to16(tilt01)
+            channels.update({a: ph, a + 1: pl if fx.USE_FINE_CHANNELS else 0,
+                             a + 2: th, a + 3: tl if fx.USE_FINE_CHANNELS else 0})
+        self.on_pins(CalibrationPins(channels=channels,
+                                     absolute_slots=frozenset({self._selected}) if jog else frozenset()))
 
     def _clear_pins(self) -> None:
         if self.on_pins is not None:
@@ -519,17 +534,9 @@ class VenueTab(QtWidgets.QWidget):
         self._mark_dirty()
 
     def _update_laser_readout(self) -> None:
-        fx = self._fx()
-        if not isinstance(fx, Laser):
-            return
-        v = self.rig.venue
-        o = self.plan.fixture_origin(fx)
-        centre = fx.facing_deg + (fx.h_offset01 - 0.5) * 2 * fx.fan_half_angle_deg
-        low = laser_min_beam_height(o, centre, fx.beam_tilt_deg, fx.fan_half_angle_deg, v.width_m, v.length_m)
-        ok = fx.mount_height_m is not None and low >= fx.min_beam_height_m
-        self.l_beam_height.setText(f"{m_to_ft(low):.1f} ft ({low:.2f} m)  "
-                                   + ("OK" if ok else f"BELOW {fx.min_beam_height_m:.1f} m — laser fails closed"))
-        self.l_beam_height.setStyleSheet("" if ok else "color:#e0413a; font-weight:700;")
+        """Intentionally empty since 2026-10-03 (Josh's call); kept so every
+        caller stays valid."""
+        return
 
     def _probe_toggled(self, on: bool) -> None:
         if on:

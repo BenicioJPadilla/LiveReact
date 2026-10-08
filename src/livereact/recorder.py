@@ -21,6 +21,7 @@ import logging
 import os
 import threading
 
+from .scenes.movement import drop_movement_name
 from .clock import Clock, LoopTimer
 from .core.frame_buffer import DmxFrameBuffer
 from .core.show_state import ShowState
@@ -196,10 +197,26 @@ class SessionRecorder(threading.Thread):
             record["scene_uses_lasers"] = self.phrase_engine._current.uses_lasers
         if self.laser_engine is not None:
             record["laser_on"] = self.laser_engine.active        # engines/laser.py: a block sweep is lit
+            manual = getattr(self.laser_engine, "manual", None)
+            if manual is not None:  # 2026-10-08: the arm switch (L) -- without it "engine on" and "lit" were inseparable in the 10-05 captures
+                record["laser_armed"] = bool(manual.laser_enable)
             record["laser_primed"] = self.laser_engine.primed    # PEAK gate open, pattern held with CH1 off
             record["laser_sweep"] = round(self.laser_engine.sweep, 3)  # the 0..1 CH7 sweep intensity sent
             record["laser_source"] = self.laser_engine.source        # "auto" block sweep / "manual" operator cue / ""
             record["laser_stab"] = round(self.laser_engine.stab, 3)   # the mids + highs envelope behind a manual cue
+            mood = getattr(self.laser_engine, "mood", None)
+            if mood is not None:  # engines/laser_feature.py (the bar's feature profile, 2026-10-01)
+                record["laser_mood"] = mood                              # off / calm / tension / groove / fan
+                record["laser_target"] = round(self.laser_engine.target, 3)  # the un-eased CH7 target
+                record["laser_color_l"] = self.laser_engine.color_l      # CH12 macros actually sent, per side
+                record["laser_color_r"] = self.laser_engine.color_r
+            trigger = getattr(self.laser_engine, "trigger", None)
+            if trigger is not None:  # engines/laser_trigger.py (2026-10-06)
+                record["laser_trigger"] = trigger                              # drop / peak / wub / hit / cue / ""
+                record["laser_budget"] = round(self.laser_engine.budget, 3)     # lit share of the duty window
+        # scenes/movement.py (2026-10-05): which post-drop head shape the DROP/PEAK
+        # looks are running this tick ("" outside those buckets)
+        record["head_movement"] = drop_movement_name(snap) if snap.bucket in ("drop", "peak") else ""
         if self.silence_detector is not None:
             record["silence_active"] = self.silence_detector.active
         if self.rig is not None:

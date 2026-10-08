@@ -25,6 +25,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..core.messages import BeatMessage
 from ..engines.color import band_levels
+from ..engines.laser_feature import MOOD_OFF, laser_color_name
+from ..engines.laser_trigger import DUTY_WINDOW_S
 from ..tap_tempo import TapTempo
 from .floorplan import FloorPlanView
 from .rig_config import RigConfigTab
@@ -43,6 +45,15 @@ def _slider(lo: int, hi: int, value: int) -> QtWidgets.QSlider:
 
 _DOT_OK = "color:#3c6; font-weight:bold;"
 _DOT_BAD = "color:#c33; font-weight:bold;"
+# Feature-profile laser moods (engines/laser_feature.py) -> chip colors, calm
+# to fan reading cool to hot like the bucket chip does.
+_MOOD_COLORS = {
+    MOOD_OFF: MUTED,
+    "calm": "#2a5db0",
+    "tension": "#b07a1e",
+    "groove": "#7a3fb0",
+    "fan": "#c0392b",
+}
 
 
 def _status_dot(label: str) -> QtWidgets.QLabel:
@@ -164,12 +175,21 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.l_bucket.setObjectName("bucket")
         self.l_bucket.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.l_bucket.setMinimumWidth(110)
+        # Laser profile + mood (2026-10-01): "ACCENT" on the home rig; on the
+        # bar's feature rig the lasers are the main light, so what they are
+        # doing right now (engines/laser_feature.py's mood) sits beside the
+        # bucket that drives it.
+        self.l_laser = QtWidgets.QLabel("—")
+        self.l_laser.setObjectName("bucket")
+        self.l_laser.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.l_laser.setMinimumWidth(130)
 
         h.addWidget(_readout("BPM", self.l_bpm))
         h.addWidget(_readout("Beat / Bar", self.l_beat))
         h.addWidget(_readout("Deck", self.l_deck))
         h.addWidget(_readout("Scene", self.l_scene), 1)
         h.addWidget(_readout("Bucket", self.l_bucket))
+        h.addWidget(_readout("Laser", self.l_laser))
         self.l_health.setStyleSheet(f"color:{MUTED};")
         h.addWidget(self.l_health)
         return w
@@ -239,10 +259,14 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         # control (inputs/midi_map.py); refresh() mirrors that back here.
         self.b_laser_cue = _button("CUE LASER\n(K)", "cue", checkable=True)
         self.b_laser_cue.setChecked(m.laser_cue)
+        # 2026-10-06 (trigger profile): one laser moment NOW -- the operator's
+        # "manual scene button" for the lasers. A counter on ManualParams.
+        self.b_laser_hit = _button("LASER HIT\n(J)", "cue")
         self.b_tap = _button("Tap tempo (T)")
         cl.addWidget(self.b_cue, 0, 0); cl.addWidget(self.b_arm, 0, 1)
         cl.addWidget(self.b_burst, 1, 0); cl.addWidget(self.b_skip, 1, 1)
         cl.addWidget(self.b_laser_cue, 2, 0); cl.addWidget(self.b_tap, 2, 1)
+        cl.addWidget(self.b_laser_hit, 3, 0)
         v.addWidget(cues)
 
         # --- SAFETY / OVERRIDES: the hard switches ------------------------
@@ -283,6 +307,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.s_warm.valueChanged.connect(lambda x: setattr(m, "warm_cool_bias", x / 100))
         self.cb_laser.toggled.connect(lambda on: setattr(m, "laser_enable", on))
         self.b_laser_cue.toggled.connect(lambda on: setattr(m, "laser_cue", on))
+        self.b_laser_hit.clicked.connect(lambda: setattr(m, "laser_hit", m.laser_hit + 1))
         self.cb_synth.toggled.connect(lambda on: setattr(m, "synth_sync", on))
         self.b_black.toggled.connect(self._set_blackout)
         self.b_freeze.toggled.connect(lambda on: setattr(m, "freeze", on))
@@ -304,6 +329,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         sc("S", self.cb_synth.toggle)
         sc("L", self.cb_laser.toggle)
         sc("K", self.b_laser_cue.toggle)
+        sc("J", self.b_laser_hit.click)
         sc("C", self.app.metronome.cue_build)
         sc("D", self.app.metronome.arm_drop)
         sc(QtCore.Qt.Key.Key_Space, self._strobe_burst)
@@ -373,7 +399,47 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             self.b_laser_cue.blockSignals(True)
             self.b_laser_cue.setChecked(self.app.manual.laser_cue)
             self.b_laser_cue.blockSignals(False)
-        if laser.manual_cued and not self.app.manual.laser_enable:
+        mood = getattr(laser, "mood", None)  # engines/laser_feature.py and laser_trigger.py have one
+        trigger = getattr(laser, "trigger", None)  # only engines/laser_trigger.py (2026-10-06)
+        if mood is None:
+            self.l_laser.setText("ACCENT")
+            self.l_laser.setStyleSheet(f"background:{MUTED}; color:white;")
+        elif trigger is not None:
+            lit = bool(laser.active)
+            self.l_laser.setText(f"TRIGGER · {mood.upper()} · {laser.budget:.0%} of {int(DUTY_WINDOW_S)} s")
+            self.l_laser.setStyleSheet(f"background:{'#b03030' if lit else MUTED}; color:white;")
+            if not self.app.manual.laser_enable:
+                self.l_laser_flash.setText("○ LASERS NOT ARMED — press L (trigger profile: 2-bar moments on the drop / PEAK blocks / a big wub; J = hit now, K = hold)")
+                self.l_laser_flash.setStyleSheet(_DOT_BAD)
+            elif mood == MOOD_OFF:
+                self.l_laser_flash.setText("○ LASER OFF — waiting for real audio")
+                self.l_laser_flash.setStyleSheet(_DOT_BAD)
+            elif lit:
+                self.l_laser_flash.setText(f"● LASER MOMENT — {trigger.upper()} · {laser_color_name(laser.color)}")
+                self.l_laser_flash.setStyleSheet(_DOT_OK)
+            else:
+                self.l_laser_flash.setText("○ lasers dark, ready — next moment on the drop hit, a PEAK block, a big wub, J or K")
+                self.l_laser_flash.setStyleSheet(f"color:{MUTED};")
+            mood = None  # the feature-profile banners below do not apply
+        else:
+            self.l_laser.setText(f"FEATURE · {mood.upper()}")
+            self.l_laser.setStyleSheet(f"background:{_MOOD_COLORS.get(mood, MUTED)}; color:white;")
+        if mood is not None:
+            # Feature profile banners: the lasers ARE the light here, so "not
+            # armed" is the loudest thing the console can say.
+            colors = f"{laser_color_name(laser.color_l)} / {laser_color_name(laser.color_r)}"
+            if not self.app.manual.laser_enable:
+                self.l_laser_flash.setText("○ LASERS NOT ARMED — press L (feature profile: the lasers are the light)")
+                self.l_laser_flash.setStyleSheet(_DOT_BAD)
+            elif mood == MOOD_OFF:
+                self.l_laser_flash.setText("○ LASER OFF — waiting for real audio")
+                self.l_laser_flash.setStyleSheet(_DOT_BAD)
+            else:
+                forced = " (K forcing the fan)" if laser.source == "manual" else ""
+                self.l_laser_flash.setText(
+                    f"● LASER {mood.upper()}{forced} — {colors} · sweep {int(laser.sweep * 100)}%")
+                self.l_laser_flash.setStyleSheet(_DOT_OK)
+        elif laser.manual_cued and not self.app.manual.laser_enable:
             self.l_laser_flash.setText("○ LASER CUED but not armed — press L to arm")
             self.l_laser_flash.setStyleSheet(_DOT_BAD)
         elif laser.manual_cued and laser.source == "manual":
