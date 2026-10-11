@@ -23,6 +23,8 @@ from .core.show_engine import ShowEngine
 from .core.show_state import ShowState
 from .engines.laser import LaserEngine
 from .engines.laser_feature import LaserFeatureEngine
+from .engines.laser_manual import LaserManualEngine
+from .engines.laser_show import LaserShowEngine
 from .engines.laser_trigger import LaserTriggerEngine
 from .engines.phrase import PhraseEngine
 from .engines.reactive import ReactiveLayerEngine
@@ -121,6 +123,21 @@ class App:
             self.laser_engine = LaserFeatureEngine(self.clock, manual=self.manual)
         elif self.rig.laser_profile == "trigger":
             self.laser_engine = LaserTriggerEngine(self.clock, manual=self.manual)
+        elif self.rig.laser_profile == "show":
+            # "show" (2026-10-08, Sophia's Thai): the lasers hold a picked
+            # scene for the whole set -- engines/laser_show.py, the console's
+            # Laser Show tab. Josh: the gate must not keep them dark here, so
+            # the arm switch starts ON for this profile (L still disarms,
+            # B still blacks out everything instantly).
+            self.laser_engine = LaserShowEngine(self.clock, manual=self.manual)
+            self.manual.laser_enable = True
+        elif self.rig.laser_profile == "manual":
+            # "manual" (2026-10-10, Junior Crib): no music input at all -- the
+            # operator drives each head from the Venue tab's manual section
+            # (engines/laser_manual.py). Armed at launch like "show" so the
+            # section's ON actually lights a head; L still disarms, B blacks out.
+            self.laser_engine = LaserManualEngine(self.clock, manual=self.manual)
+            self.manual.laser_enable = True
         else:
             self.laser_engine = LaserEngine(self.clock, manual=self.manual)
         # Merge is LTP-by-priority per channel kind (merge/merge.py), so list

@@ -47,7 +47,7 @@ from importlib import resources
 
 from ..core.frame_buffer import UNIVERSE_SIZE
 from .geometry import HeadCalibration, Point3, Venue, x_norm
-from .profiles import FIXTURE_TYPES, ChannelKind, Fixture, Laser, MovingHead
+from .profiles import FIXTURE_TYPES, ChannelKind, Fixture, Laser, MotionBounds, MovingHead
 
 log = logging.getLogger(__name__)
 
@@ -57,14 +57,14 @@ log = logging.getLogger(__name__)
 # are the main light, lit for (almost) the whole set. A rig file picks this
 # because the choice is a property of the venue and its mount, not of a
 # session; app.py reads it, nothing else does.
-LASER_PROFILES = ("accent", "feature", "trigger")
+LASER_PROFILES = ("accent", "feature", "trigger", "show", "manual")  # "show" (2026-10-08): engines/laser_show.py; "manual" (2026-10-10): engines/laser_manual.py
 DEFAULT_LASER_PROFILE = "accent"
 
 # Slot keys the loader models; anything else rides along in Fixture.extra.
 _KNOWN_SLOT_KEYS = frozenset({
     "slot_id", "label", "fixture_type", "dmx_address", "role", "side",
     "x", "y", "home_pan", "home_tilt",
-    "position", "facing_deg", "calibration", "beam",
+    "position", "facing_deg", "calibration", "beam", "bounds",
 })
 
 
@@ -264,6 +264,10 @@ def _rig_from_dict(data: dict) -> Rig:
         if isinstance(slot.get("position"), dict):
             fx.position = _point(slot["position"])
         fx.facing_deg = float(slot.get("facing_deg", 0.0))
+        if isinstance(fx, MovingHead) and isinstance(slot.get("bounds"), dict):
+            b = slot["bounds"]   # raw motion box, 2026-10-10
+            fx.bounds = MotionBounds(float(b["pan_min"]), float(b["pan_max"]),
+                                     float(b["tilt_min"]), float(b["tilt_max"]))
         if isinstance(fx, MovingHead) and isinstance(slot.get("calibration"), dict):
             c = slot["calibration"]
             fx.calibration = HeadCalibration(
@@ -274,6 +278,11 @@ def _rig_from_dict(data: dict) -> Rig:
                 target=c.get("target"),
                 pan01=float(c["pan01"]) if c.get("pan01") is not None else None,
                 tilt01=float(c["tilt01"]) if c.get("tilt01") is not None else None,
+                pan_range_deg=float(c["pan_range_deg"]) if c.get("pan_range_deg") else None,
+                tilt_range_deg=float(c["tilt_range_deg"]) if c.get("tilt_range_deg") else None,
+                target2=c.get("target2"),
+                pan01_2=float(c["pan01_2"]) if c.get("pan01_2") is not None else None,
+                tilt01_2=float(c["tilt01_2"]) if c.get("tilt01_2") is not None else None,
             )
         if isinstance(fx, Laser):
             if isinstance(slot.get("beam"), dict):
@@ -320,6 +329,10 @@ def slot_to_dict(fx: Fixture) -> dict:
         slot["position"] = _point_dict(fx.position)
     if fx.facing_deg:
         slot["facing_deg"] = round(fx.facing_deg, 2)
+    if isinstance(fx, MovingHead) and fx.bounds is not None:
+        b = fx.bounds
+        slot["bounds"] = {"pan_min": round(b.pan_min, 4), "pan_max": round(b.pan_max, 4),
+                          "tilt_min": round(b.tilt_min, 4), "tilt_max": round(b.tilt_max, 4)}
     if isinstance(fx, MovingHead) and fx.calibration.captured:
         c = fx.calibration
         slot["calibration"] = {
@@ -327,6 +340,12 @@ def slot_to_dict(fx: Fixture) -> dict:
             "pan_offset_deg": round(c.pan_offset_deg, 3), "tilt_offset_deg": round(c.tilt_offset_deg, 3),
             "invert_pan": c.invert_pan, "invert_tilt": c.invert_tilt,
         }
+        if c.pan_range_deg or c.tilt_range_deg:   # two-point capture (2026-10-10)
+            slot["calibration"].update({
+                "pan_range_deg": round(c.pan_range_deg, 2) if c.pan_range_deg else None,
+                "tilt_range_deg": round(c.tilt_range_deg, 2) if c.tilt_range_deg else None,
+                "target2": c.target2, "pan01_2": c.pan01_2, "tilt01_2": c.tilt01_2,
+            })
     if isinstance(fx, Laser):
         slot["beam"] = {
             "tilt_deg": fx.beam_tilt_deg,

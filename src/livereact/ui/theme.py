@@ -118,6 +118,16 @@ QPushButton#cue {{
     font-size: 18px;
     border: 2px solid #3a4250;
 }}
+QPushButton#look {{
+    min-height: 56px;
+    font-size: 17px;
+    border: 2px solid #3a4250;
+}}
+QPushButton#look:checked {{
+    background: #2a5db0;
+    color: white;
+    border: 2px solid #7fb0ff;
+}}
 QPushButton#danger {{
     border: 2px solid #4a2a2a;
 }}

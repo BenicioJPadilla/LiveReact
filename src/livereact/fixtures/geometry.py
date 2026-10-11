@@ -94,6 +94,20 @@ class HeadCalibration:
     target: str | None = None      # the named target it was captured on
     pan01: float | None = None     # the raw pan/tilt that hit that target
     tilt01: float | None = None
+    # Two-point capture (2026-10-10, Junior Crib): the SOLVED pan/tilt travel
+    # of this unit as mounted, replacing the profile's placeholder constants
+    # whenever set. None = one-point capture, trust the profile.
+    pan_range_deg: float | None = None
+    tilt_range_deg: float | None = None
+    target2: str | None = None     # the second capture, kept so a re-solve can show it
+    pan01_2: float | None = None
+    tilt01_2: float | None = None
+
+    def ranges(self, pan_range_deg: float, tilt_range_deg: float) -> tuple[float, float]:
+        """The travel to use: the solved values when a two-point capture
+        exists, else the profile's ``pan_range_deg``/``tilt_range_deg``."""
+        return (self.pan_range_deg if self.pan_range_deg else pan_range_deg,
+                self.tilt_range_deg if self.tilt_range_deg else tilt_range_deg)
 
     @property
     def captured(self) -> bool:
@@ -125,6 +139,7 @@ def _sign(invert: bool) -> float:
 def pan_tilt_to_angles(pan01: float, tilt01: float, facing_deg: float, cal: HeadCalibration,
                        pan_range_deg: float, tilt_range_deg: float) -> tuple[float, float]:
     """Where a raw pan/tilt actually points: (az_abs_deg, el_deg)."""
+    pan_range_deg, tilt_range_deg = cal.ranges(pan_range_deg, tilt_range_deg)
     az_rel = (pan01 - 0.5) * pan_range_deg * _sign(cal.invert_pan) + cal.pan_offset_deg
     el = (tilt01 - 0.5) * tilt_range_deg * _sign(cal.invert_tilt) + cal.tilt_offset_deg
     return wrap_deg(facing_deg + az_rel), el
@@ -152,6 +167,55 @@ def calibrate_from_capture(origin: Point3, facing_deg: float, target: Point3,
     )
 
 
+MIN_SEPARATION_01 = 0.02   # raw pan/tilt difference below which an axis can't be solved from two points
+
+
+def calibrate_from_two_captures(origin: Point3, facing_deg: float,
+                                target_a: Point3, pan_a: float, tilt_a: float,
+                                target_b: Point3, pan_b: float, tilt_b: float,
+                                pan_range_deg: float, tilt_range_deg: float,
+                                target_a_name: str | None = None,
+                                target_b_name: str | None = None) -> HeadCalibration:
+    """Two captures solve each axis's DIRECTION and TRAVEL as well as its
+    offset (2026-10-10, Junior Crib: heads hung at 18 ft verified the wrong
+    way / the wrong distance after a one-point capture because the profile's
+    range constants are placeholders and a hung head pans mirrored).
+
+    Per axis, with k = signed degrees per unit of raw travel:
+        angle_a = k*(raw_a - 0.5) + offset,  angle_b = k*(raw_b - 0.5) + offset
+        -> k = (angle_b - angle_a) / (raw_b - raw_a);  invert = k < 0;  range = |k|
+    Pan differences are wrapped into (-180, 180] (the short way round). An axis
+    whose two raw values are closer than ``MIN_SEPARATION_01`` keeps the
+    profile's direction/range and only takes the offset from capture A."""
+    az_a, el_a = bearing(origin, target_a)
+    az_b, el_b = bearing(origin, target_b)
+    rel_a = wrap_deg(az_a - facing_deg)
+    rel_b = wrap_deg(az_b - facing_deg)
+
+    if abs(pan_b - pan_a) >= MIN_SEPARATION_01:
+        k_pan = wrap_deg(rel_b - rel_a) / (pan_b - pan_a)
+        invert_pan, pan_range = k_pan < 0, abs(k_pan)
+    else:
+        k_pan, invert_pan, pan_range = pan_range_deg, False, None
+    if abs(tilt_b - tilt_a) >= MIN_SEPARATION_01:
+        k_tilt = (el_b - el_a) / (tilt_b - tilt_a)
+        invert_tilt, tilt_range = k_tilt < 0, abs(k_tilt)
+    else:
+        k_tilt, invert_tilt, tilt_range = tilt_range_deg, False, None
+
+    return HeadCalibration(
+        pan_offset_deg=wrap_deg(rel_a - k_pan * (pan_a - 0.5)),
+        tilt_offset_deg=el_a - k_tilt * (tilt_a - 0.5),
+        invert_pan=invert_pan,
+        invert_tilt=invert_tilt,
+        target=target_a_name or "captured",
+        pan01=pan_a, tilt01=tilt_a,
+        pan_range_deg=pan_range, tilt_range_deg=tilt_range,
+        target2=target_b_name or "captured-2",
+        pan01_2=pan_b, tilt01_2=tilt_b,
+    )
+
+
 def aim(origin: Point3, facing_deg: float, target: Point3, cal: HeadCalibration,
         pan_range_deg: float, tilt_range_deg: float) -> tuple[float, float, bool]:
     """Raw (pan01, tilt01, reachable) that points the head at ``target``.
@@ -160,6 +224,7 @@ def aim(origin: Point3, facing_deg: float, target: Point3, cal: HeadCalibration,
     than one pan value: pick the one nearest the captured pan (or centre if
     nothing was captured) so the head takes the short way round. Values are
     clamped to 0..1; ``reachable`` is False when either axis had to clamp."""
+    pan_range_deg, tilt_range_deg = cal.ranges(pan_range_deg, tilt_range_deg)
     az_abs, el = bearing(origin, target)
     az_rel = az_abs - facing_deg - cal.pan_offset_deg
     ps = _sign(cal.invert_pan)

@@ -693,9 +693,9 @@ class Metronome(threading.Thread):
                 msg = self.queue.get_nowait()
             except queue.Empty:
                 break
-            self._handle(msg)
+            self._handle_message(msg)
 
-    def _handle(self, msg) -> None:
+    def _handle_message(self, msg) -> None:  # was _handle: collides with threading.Thread._handle on Python 3.13
         if isinstance(msg, BeatMessage):
             self._on_beat(msg)
         elif isinstance(msg, StatusMessage):

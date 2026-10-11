@@ -13,6 +13,7 @@ from livereact.fixtures.geometry import (
     beam_floor_hit,
     bearing,
     calibrate_from_capture,
+    calibrate_from_two_captures,
     ft_to_m,
     m_to_ft,
     pan_tilt_to_angles,
@@ -128,3 +129,47 @@ def test_x_norm_and_default_targets():
     t = Venue.default_targets(9.0, 12.0, 3.6)
     assert set(t) == {"dj_booth", "dancefloor_centre", "back_wall", "ceiling_bounce"}
     assert t["dancefloor_centre"].x == 4.5 and t["ceiling_bounce"].z == 3.6
+
+
+def test_two_point_capture_solves_a_mirrored_pan_and_a_shorter_tilt_travel():
+    # A head hung upside down at 5.5 m: its real pan runs the OTHER way and its
+    # real tilt travel is 180 deg, not the profile's 270. Simulate the hardware
+    # with those truths, "jog" onto two targets, and check the solve recovers
+    # them and then aims a third target exactly.
+    origin = Point3(2.6, 1.1, 5.5)
+    true_k_pan, true_k_tilt = -540.0, 180.0
+    true_off_pan, true_off_tilt = 30.0, -20.0
+
+    def hardware_raw(target):
+        az, el = bearing(origin, target)
+        return 0.5 + (az - true_off_pan) / true_k_pan, 0.5 + (el - true_off_tilt) / true_k_tilt
+
+    a, b, c = Point3(0.0, 7.6, 0.9), Point3(7.6, 7.6, 0.9), Point3(3.8, 15.0, 2.0)
+    pa, ta = hardware_raw(a)
+    pb, tb = hardware_raw(b)
+    cal = calibrate_from_two_captures(origin, 0.0, a, pa, ta, b, pb, tb, PAN, TILT, "edge_l", "edge_r")
+    assert cal.invert_pan is True and cal.invert_tilt is False
+    assert cal.pan_range_deg == pytest.approx(540.0, abs=1e-6)
+    assert cal.tilt_range_deg == pytest.approx(180.0, abs=1e-6)
+    assert cal.target == "edge_l" and cal.target2 == "edge_r"
+    # verify aim at a THIRD target lands where the hardware really needs to be
+    pc, tc = hardware_raw(c)
+    pan, tilt, ok = aim(origin, 0.0, c, cal, PAN, TILT)
+    assert ok
+    assert pan == pytest.approx(pc, abs=1e-6)
+    assert tilt == pytest.approx(tc, abs=1e-6)
+    # and the one-point capture on A alone would have sent the pan the WRONG way
+    one = calibrate_from_capture(origin, 0.0, a, pa, ta, PAN, TILT)
+    pan1, _, _ = aim(origin, 0.0, c, one, PAN, TILT)
+    assert (pan1 - pa) * (pc - pa) < 0
+
+
+def test_two_point_capture_keeps_profile_range_when_an_axis_barely_moved():
+    origin = Point3(0, 0, 5)
+    a, b = Point3(-5, 5, 0), Point3(5, 5, 0)   # same elevation -> tilt identical
+    cal = calibrate_from_two_captures(origin, 0.0, a, 0.3, 0.6, b, 0.7, 0.6, PAN, TILT)
+    assert cal.pan_range_deg == pytest.approx(90.0 / 0.4)
+    assert cal.tilt_range_deg is None
+    assert cal.invert_tilt is False
+    pan, tilt, ok = aim(origin, 0.0, b, cal, PAN, TILT)
+    assert pan == pytest.approx(0.7) and tilt == pytest.approx(0.6)

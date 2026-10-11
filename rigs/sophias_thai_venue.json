@@ -1,0 +1,44 @@
+{
+  "name": "Sophia's Thai (venue)",
+  "description": "Sophia's Thai set (2026-10-08) as actually rigged on the night: two Shehds 3W lasers + the OK103 wash bar, show laser profile (engines/laser_show.py, Laser Show tab). Addresses per the units' displays: wash bar 69-74 (6-channel mode), Laser L 75-86 (12-channel mode, the first one working), Laser R 1-12 (12-channel mode, A01).",
+  "laser_profile": "show",
+  "slots": [
+    {
+      "slot_id": "bar",
+      "fixture_type": "ok103_wash_bar",
+      "dmx_address": 69,
+      "label": "Wash Bar",
+      "role": "wash",
+      "side": "left",
+      "mount_note": "Behind the DJ stand. Unit set to address 69 (6-channel mode)."
+    },
+    {
+      "slot_id": "laser_l",
+      "fixture_type": "shehds_3w_laser",
+      "dmx_address": 75,
+      "label": "Laser L",
+      "role": "laser",
+      "side": "left",
+      "beam": {
+        "tilt_deg": 0.0,
+        "fan_half_angle_deg": 30.0,
+        "h_offset01": 0.5
+      },
+      "mount_note": "Unit set to address 75 (12-channel mode)."
+    },
+    {
+      "slot_id": "laser_r",
+      "fixture_type": "shehds_3w_laser",
+      "dmx_address": 1,
+      "label": "Laser R",
+      "role": "laser",
+      "side": "right",
+      "beam": {
+        "tilt_deg": 0.0,
+        "fan_half_angle_deg": 30.0,
+        "h_offset01": 0.5
+      },
+      "mount_note": "Unit set to address A01 (12-channel mode)."
+    }
+  ]
+}

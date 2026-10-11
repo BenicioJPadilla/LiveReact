@@ -177,6 +177,10 @@ class AudioAnalyzer(InputSource):
         import numpy as np  # lazy, same reasoning
 
         device = self.device if self.device is not None else self._find_device(sd)
+        if isinstance(device, str) and device.strip().isdigit():
+            # argparse hands --audio-device over as a str; sounddevice treats
+            # a str as a name substring, so "1" matched nothing (2026-10-08)
+            device = int(device.strip())
         info = sd.query_devices(device)
         self._sr = int(info["default_samplerate"])
         self._setup_bands(np)

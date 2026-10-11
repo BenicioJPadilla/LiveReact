@@ -43,10 +43,11 @@ from ..fixtures.geometry import (
     Venue,
     aim,
     calibrate_from_capture,
+    calibrate_from_two_captures,
     ft_to_m,
     m_to_ft,
 )
-from ..fixtures.profiles import Laser, MovingHead, _to16
+from ..fixtures.profiles import Laser, MotionBounds, MovingHead, _to16
 from ..fixtures.rig import Rig, RigError, save_rig
 from ..merge.merge import CalibrationPins
 from .floorplan import DEFAULT_VENUE_FT, FloorPlanView
@@ -86,6 +87,18 @@ def _hint(text: str) -> QtWidgets.QLabel:
     return lbl
 
 
+class _WheelGuard(QtCore.QObject):
+    """Event filter: an unfocused value widget ignores the wheel so the
+    enclosing scroll area scrolls instead (Qt propagates an ignored wheel
+    event to the parent)."""
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt override)
+        if event.type() == QtCore.QEvent.Type.Wheel and not obj.hasFocus():
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
+
+
 class VenueTab(QtWidgets.QWidget):
     """``on_pins`` receives a CalibrationPins (or None) whenever the jog /
     probe state changes -- the console routes it to ``app.manual``."""
@@ -122,7 +135,21 @@ class VenueTab(QtWidgets.QWidget):
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll.setWidget(self._build_property_panel())
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        panel = self._build_property_panel()
+        scroll.setWidget(panel)
+        # 2026-10-10 (Josh: "I can't scroll on the right section"): the panel
+        # is wall-to-wall spin boxes / combos / sliders, and Qt hands the
+        # mouse wheel to whichever one is under the cursor (changing its
+        # value) instead of scrolling. Those widgets now take the wheel only
+        # while focused (clicked); otherwise the wheel reaches the scroll area.
+        self._wheel_guard = _WheelGuard(self)
+        for cls in (QtWidgets.QAbstractSpinBox, QtWidgets.QComboBox, QtWidgets.QAbstractSlider):
+            for child in panel.findChildren(cls):
+                if isinstance(child, QtWidgets.QScrollBar):
+                    continue
+                child.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+                child.installEventFilter(self._wheel_guard)
         split.addWidget(scroll)
         split.setSizes([760, 480])
         outer.addWidget(split, 1)
@@ -244,6 +271,7 @@ class VenueTab(QtWidgets.QWidget):
         inv = QtWidgets.QHBoxLayout(); inv.addWidget(self.cb_invert_pan); inv.addWidget(self.cb_invert_tilt); inv.addStretch(1)
         self.b_set_aim = QtWidgets.QPushButton("SET AIM — the head is on this target now")
         self.b_set_aim.setObjectName("cue")
+        self.b_set_aim2 = QtWidgets.QPushButton("ADD 2ND POINT — the head is on a DIFFERENT target now (solves direction + range)")
         self.b_aim = QtWidgets.QPushButton("Aim at target (verify)")
         self.b_home = QtWidgets.QPushButton("Set home = target")
         self.l_cal = QtWidgets.QLabel("Not captured")
@@ -255,19 +283,39 @@ class VenueTab(QtWidgets.QWidget):
         hf.addRow("Target", self.cb_target)
         hf.addRow(inv)
         hf.addRow(self.b_set_aim)
+        hf.addRow(self.b_set_aim2)
         btns = QtWidgets.QHBoxLayout(); btns.addWidget(self.b_aim); btns.addWidget(self.b_home)
         hf.addRow(btns)
         hf.addRow(self.l_cal)
+        # Raw motion box (2026-10-10): jog the beam onto each edge the crowd
+        # can see, ADD BOUND POINT each time; every scene then stays inside.
+        self.l_bounds = QtWidgets.QLabel("Motion box: none — the head sweeps its full travel")
+        self.l_bounds.setWordWrap(True)
+        self.b_bound_add = QtWidgets.QPushButton("ADD BOUND POINT — the beam is on an edge now")
+        self.b_bound_add.setObjectName("cue")
+        self.b_bound_clear = QtWidgets.QPushButton("Clear box")
+        brow = QtWidgets.QHBoxLayout(); brow.addWidget(self.b_bound_add, 1); brow.addWidget(self.b_bound_clear)
+        hf.addRow(_hint("MOTION BOX (no geometry needed): tick Jog live, slide the beam onto the venue's "
+                        "LEFT edge → ADD BOUND POINT; RIGHT edge → ADD BOUND POINT; then the lowest and "
+                        "highest points you want it to reach (booth edges / far wall) → ADD BOUND POINT each. "
+                        "Every scene's movement is then squeezed inside that box. Untick Jog live, Save rig…"))
+        hf.addRow(brow)
+        hf.addRow(self.l_bounds)
         hf.addRow(_hint("Selecting a head lights it (the no-music blackout is held off while it is pinned).  "
                         "1 Place the head and the dj_booth target.  2 Tick Jog live, slide Pan/Tilt until the "
-                        "real beam sits on the booth.  3 SET AIM.  4 Aim at dancefloor_centre to verify; "
-                        "wrong way round → Invert, SET AIM again.  5 Untick Jog live, Save rig…"))
+                        "real beam sits on the booth.  3 SET AIM.  4 Jog onto a SECOND, well-separated target, "
+                        "pick it, ADD 2ND POINT — this solves pan/tilt direction and travel for this unit as hung "
+                        "(the Invert boxes are set for you).  5 Aim at a third target to verify.  "
+                        "6 Untick Jog live, Save rig…"))
         v.addWidget(self.grp_head)
         self.cb_light.toggled.connect(self._light_toggled)
         self.cb_jog.toggled.connect(self._jog_toggled)
         self.s_pan.valueChanged.connect(self._sliders_moved)
         self.s_tilt.valueChanged.connect(self._sliders_moved)
         self.b_set_aim.clicked.connect(self._set_aim)
+        self.b_set_aim2.clicked.connect(self._set_aim_second)
+        self.b_bound_add.clicked.connect(self._bound_add)
+        self.b_bound_clear.clicked.connect(self._bound_clear)
         self.b_aim.clicked.connect(self._aim_at_target)
         self.b_home.clicked.connect(self._set_home)
 
@@ -478,6 +526,48 @@ class VenueTab(QtWidgets.QWidget):
         self.status.setText(f"Captured {fx.label} on {name}. Now 'Aim at target' with another target to verify.")
         self._mark_dirty()
 
+    def _set_aim_second(self) -> None:
+        """Second capture: the head is now on a DIFFERENT target. Together
+        with the SET AIM capture this solves each axis's direction and travel
+        (geometry.calibrate_from_two_captures), so a verify aim goes TO the
+        target instead of mirroring the move away from the first one."""
+        fx = self._fx()
+        tp = self._target_point()
+        if not isinstance(fx, MovingHead) or tp is None:
+            return
+        if fx.position is None:
+            self.status.setText("Place the head first (X / Y / Height).")
+            return
+        c: HeadCalibration = fx.calibration
+        if not c.captured or c.pan01 is None or c.tilt01 is None or c.target not in self.rig.venue.targets:
+            self.status.setText("SET AIM on the first target before adding a second point.")
+            return
+        name_b, target_b = tp
+        if name_b == c.target:
+            self.status.setText(f"Pick a target other than {c.target} for the second point.")
+            return
+        pan_b, tilt_b = self._pan_tilt01()
+        target_a = self.rig.venue.targets[c.target]
+        fx.calibration = calibrate_from_two_captures(
+            fx.position, fx.facing_deg,
+            target_a, c.pan01, c.tilt01, target_b, pan_b, tilt_b,
+            fx.PAN_RANGE_DEG, fx.TILT_RANGE_DEG,
+            target_a_name=c.target, target_b_name=name_b)
+        nc = fx.calibration
+        for cb, val in ((self.cb_invert_pan, nc.invert_pan), (self.cb_invert_tilt, nc.invert_tilt)):
+            cb.blockSignals(True); cb.setChecked(val); cb.blockSignals(False)
+        weak = []
+        if nc.pan_range_deg is None:
+            weak.append("pan")
+        if nc.tilt_range_deg is None:
+            weak.append("tilt")
+        self._update_cal_label()
+        msg = f"Solved {fx.label} from {c.target} + {name_b}. Now 'Aim at target' with a third target to verify."
+        if weak:
+            msg += f"  ({'/'.join(weak)} barely moved between the two points — kept the profile's range for it; pick points further apart.)"
+        self.status.setText(msg)
+        self._mark_dirty()
+
     def _aim_at_target(self) -> None:
         fx = self._fx()
         tp = self._target_point()
@@ -502,16 +592,58 @@ class VenueTab(QtWidgets.QWidget):
         self._update_cal_label()
         self._mark_dirty()
 
+    # --- raw motion box (2026-10-10) ---
+    def _bound_add(self) -> None:
+        fx = self._fx()
+        if not isinstance(fx, MovingHead):
+            return
+        pan01, tilt01 = self._pan_tilt01()
+        fx.bounds = (fx.bounds.include(pan01, tilt01) if fx.bounds is not None
+                     else MotionBounds.point(pan01, tilt01))
+        self._update_bounds_label()
+        b = fx.bounds
+        if b.pan_max - b.pan_min < 0.01 and b.tilt_max - b.tilt_min < 0.01:
+            self.status.setText(f"{fx.label}: first edge stored (pan {pan01:.3f} / tilt {tilt01:.3f}). "
+                                "Jog to the opposite edge and ADD BOUND POINT again.")
+        else:
+            self.status.setText(f"{fx.label} motion box: pan {b.pan_min:.3f}–{b.pan_max:.3f}, "
+                                f"tilt {b.tilt_min:.3f}–{b.tilt_max:.3f}. Add more edges or Save rig…")
+        self._mark_dirty()
+
+    def _bound_clear(self) -> None:
+        fx = self._fx()
+        if not isinstance(fx, MovingHead):
+            return
+        fx.bounds = None
+        self._update_bounds_label()
+        self.status.setText(f"{fx.label}: motion box cleared — full travel again.")
+        self._mark_dirty()
+
+    def _update_bounds_label(self) -> None:
+        fx = self._fx()
+        if not isinstance(fx, MovingHead) or not hasattr(self, "l_bounds"):
+            return
+        b = fx.bounds
+        if b is None:
+            self.l_bounds.setText("Motion box: none — the head sweeps its full travel")
+        else:
+            self.l_bounds.setText(f"Motion box: pan {b.pan_min:.3f} → {b.pan_max:.3f}  ·  "
+                                  f"tilt {b.tilt_min:.3f} → {b.tilt_max:.3f}  (every scene stays inside)")
+
     def _update_cal_label(self) -> None:
         fx = self._fx()
         if not isinstance(fx, MovingHead):
             return
+        self._update_bounds_label()
         c: HeadCalibration = fx.calibration
         home = (f"  ·  home {fx.home_pan:.2f}/{fx.home_tilt:.2f}"
                 if fx.home_pan is not None and fx.home_tilt is not None else "")
         if c.captured:
+            two = (f"  ·  2-point ({c.target2}): pan travel {c.pan_range_deg:.0f}°, tilt travel {c.tilt_range_deg:.0f}°"
+                   if c.pan_range_deg and c.tilt_range_deg else
+                   f"  ·  2-point ({c.target2}), partial" if c.target2 else "")
             self.l_cal.setText(f"Captured on {c.target}: pan offset {c.pan_offset_deg:+.1f}°, "
-                               f"tilt offset {c.tilt_offset_deg:+.1f}°"
+                               f"tilt offset {c.tilt_offset_deg:+.1f}°{two}"
                                f"{' · pan inverted' if c.invert_pan else ''}"
                                f"{' · tilt inverted' if c.invert_tilt else ''}{home}")
         else:

@@ -26,6 +26,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..core.messages import BeatMessage
 from ..engines.color import band_levels
 from ..engines.laser_feature import MOOD_OFF, laser_color_name
+from ..engines.laser_show import MODE_FOLLOW, MODE_HOLD, MODE_ROTATE, look_names
 from ..engines.laser_trigger import DUTY_WINDOW_S
 from ..tap_tempo import TapTempo
 from .floorplan import FloorPlanView
@@ -123,6 +124,13 @@ class ConsoleWindow(QtWidgets.QMainWindow):
                                   is_frozen=lambda: app.manual.freeze)
         tabs = QtWidgets.QTabWidget()
         tabs.addTab(show, "Show")
+        # Laser Show tab (2026-10-08): only for rigs on the `show` laser
+        # profile (engines/laser_show.py) -- the other profiles have nothing
+        # to pick here.
+        self.laser_show_tab = None
+        if getattr(app.rig, "laser_profile", "") == "show":
+            self.laser_show_tab = self._build_laser_show_tab()
+            tabs.addTab(self.laser_show_tab, "Laser Show")
         tabs.addTab(self.venue_tab, "Venue")
         tabs.addTab(RigConfigTab(app.rig, rig_path), "Rig Config")
         tabs.currentChanged.connect(self._tab_changed)
@@ -269,6 +277,33 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         cl.addWidget(self.b_laser_hit, 3, 0)
         v.addWidget(cues)
 
+        # --- LASER SCENES (laser profile "manual", 2026-10-10, Junior Crib) --
+        # Sophia's Laser Show look buttons, on the Show tab: press a scene to
+        # cue it on every head, OFF (the launch state) to kill them. Nothing
+        # listens to the music (engines/laser_manual.py). Only rigs on that
+        # profile get this group -- every other rig's Show tab is unchanged.
+        self.laser_scene_buttons: dict[str, QtWidgets.QPushButton] = {}
+        if getattr(self.app.rig, "laser_profile", "") == "manual":
+            from ..engines.laser_manual import manual_scene_names as scene_names
+            eng = self.app.laser_engine
+            lasers = QtWidgets.QGroupBox("Lasers — press a scene to cue it (off at launch)")
+            ll = QtWidgets.QGridLayout(lasers)
+            ll.setSpacing(8)
+            self._laser_scene_group = QtWidgets.QButtonGroup(w)
+            self._laser_scene_group.setExclusive(True)
+            names = ["OFF"] + scene_names()
+            for i, name in enumerate(names):
+                b = _button(name, "danger" if name == "OFF" else "look", checkable=True)
+                self.laser_scene_buttons[name] = b
+                self._laser_scene_group.addButton(b)
+                ll.addWidget(b, i // 3, i % 3)
+                if name == "OFF":
+                    b.clicked.connect(eng.off)
+                else:
+                    b.clicked.connect(lambda _c=False, n=name: eng.cue(n))
+            self.laser_scene_buttons[eng.scene or "OFF"].setChecked(True)
+            v.addWidget(lasers)
+
         # --- SAFETY / OVERRIDES: the hard switches ------------------------
         safe = QtWidgets.QGroupBox("Safety / Overrides")
         sl = QtWidgets.QGridLayout(safe)
@@ -317,6 +352,75 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.b_cue.clicked.connect(self.app.metronome.cue_build)
         self.b_arm.clicked.connect(self.app.metronome.arm_drop)
         return w
+
+    def _build_laser_show_tab(self) -> QtWidgets.QWidget:
+        """Sophia's Thai (2026-10-08): the laser mode (follow the music /
+        rotate / hold), the manual override grid (one button per look --
+        pressing one holds it), the drop accent, and the light bar's Synth
+        Sync. Everything here is a ManualParams field read by
+        engines/laser_show.py or the Synth Sync path in engines/reactive.py
+        (unchanged)."""
+        m = self.app.manual
+        w = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(w)
+        v.setContentsMargins(16, 16, 16, 16)
+        v.setSpacing(12)
+
+        modes = QtWidgets.QGroupBox("Laser mode")
+        ml = QtWidgets.QVBoxLayout(modes)
+        self.rb_laser_follow = QtWidgets.QRadioButton(
+            "Follow the music — break: Slow Rainbow · build: Tension ramp · armed: chop · drop: Fan 8 bars then Rainbow · peak: Ping-Pong")
+        self.rb_laser_rotate = QtWidgets.QRadioButton("Rotate the static scenes every 16 bars, starting from the picked one")
+        self.rb_laser_hold = QtWidgets.QRadioButton("Hold one look (manual override) — pick it below")
+        self._laser_mode_buttons = {MODE_FOLLOW: self.rb_laser_follow, MODE_ROTATE: self.rb_laser_rotate,
+                                    MODE_HOLD: self.rb_laser_hold}
+        self._laser_mode_buttons.get(m.laser_mode, self.rb_laser_follow).setChecked(True)
+        for rb in self._laser_mode_buttons.values():
+            ml.addWidget(rb)
+        self.cb_laser_accent = QtWidgets.QCheckBox("Drop accent in rotate / hold (chop the lasers at 8th notes for 2 bars when a drop lands)")
+        self.cb_laser_accent.setChecked(m.laser_drop_accent)
+        ml.addWidget(self.cb_laser_accent)
+        self.l_laser_show = QtWidgets.QLabel("")
+        self.l_laser_show.setWordWrap(True)
+        ml.addWidget(self.l_laser_show)
+        v.addWidget(modes)
+
+        looks = QtWidgets.QGroupBox("Looks — press one to hold it (manual override)")
+        gl = QtWidgets.QGridLayout(looks)
+        gl.setSpacing(8)
+        self.laser_look_buttons: dict[str, QtWidgets.QPushButton] = {}
+        self._laser_look_group = QtWidgets.QButtonGroup(w)
+        self._laser_look_group.setExclusive(True)
+        for i, name in enumerate(look_names()):
+            b = _button(name, "look", checkable=True)  # #look / #look:checked in ui/theme.py
+            self.laser_look_buttons[name] = b
+            self._laser_look_group.addButton(b)
+            gl.addWidget(b, i // 3, i % 3)
+        if m.laser_scene in self.laser_look_buttons:
+            self.laser_look_buttons[m.laser_scene].setChecked(True)
+        v.addWidget(looks)
+
+        bar = QtWidgets.QGroupBox("Light bar")
+        bl = QtWidgets.QVBoxLayout(bar)
+        self.cb_synth_bar = QtWidgets.QCheckBox("SynthSync (light bar)")
+        self.cb_synth_bar.setChecked(m.synth_sync)
+        bl.addWidget(self.cb_synth_bar)
+        v.addWidget(bar)
+        v.addStretch(1)
+
+        for mode, rb in self._laser_mode_buttons.items():
+            rb.toggled.connect(lambda on, mode=mode: on and setattr(m, "laser_mode", mode))
+        for name, b in self.laser_look_buttons.items():
+            b.clicked.connect(lambda _=False, name=name: self._hold_laser_look(name))
+        self.cb_laser_accent.toggled.connect(lambda on: setattr(m, "laser_drop_accent", on))
+        # Same flag as the Show tab's Synth Sync box (S); refresh() keeps both in step.
+        self.cb_synth_bar.toggled.connect(lambda on: setattr(m, "synth_sync", on))
+        return w
+
+    def _hold_laser_look(self, name: str) -> None:
+        """A look button: pick it and switch to the manual hold."""
+        self.app.manual.laser_scene = name
+        self.rb_laser_hold.setChecked(True)      # its toggled slot writes laser_mode
 
     def _install_shortcuts(self) -> None:
         def sc(key, fn):
@@ -401,7 +505,52 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             self.b_laser_cue.blockSignals(False)
         mood = getattr(laser, "mood", None)  # engines/laser_feature.py and laser_trigger.py have one
         trigger = getattr(laser, "trigger", None)  # only engines/laser_trigger.py (2026-10-06)
-        if mood is None:
+        scene_name = getattr(laser, "scene_name", None)  # only engines/laser_show.py (2026-10-08)
+        if scene_name is not None:
+            # Show profile: the chip names the scene; the banner says what the
+            # rotation / accent are doing. Keep the Laser Show tab's Synth
+            # Sync box in step with the Show tab's (one flag, two boxes).
+            if self.laser_show_tab is not None and self.cb_synth_bar.isChecked() != self.app.manual.synth_sync:
+                self.cb_synth_bar.blockSignals(True)
+                self.cb_synth_bar.setChecked(self.app.manual.synth_sync)
+                self.cb_synth_bar.blockSignals(False)
+            if self.cb_synth.isChecked() != self.app.manual.synth_sync:
+                self.cb_synth.blockSignals(True)
+                self.cb_synth.setChecked(self.app.manual.synth_sync)
+                self.cb_synth.blockSignals(False)
+            accent = bool(getattr(laser, "accent", False))
+            mode = getattr(laser, "mode", "")
+            self.l_laser.setText(f"SHOW · {scene_name.upper()}" + (" · ACCENT" if accent else ""))
+            self.l_laser.setStyleSheet(f"background:{'#b03030' if accent else '#2a5db0'}; color:white;")
+            if self.app.manual.blackout:
+                text, style = "○ LASERS BLACKED OUT (B)", _DOT_BAD
+            elif not self.app.manual.laser_enable:
+                text, style = "○ LASERS DISARMED — press L (show profile arms at launch)", _DOT_BAD
+            else:
+                reason = getattr(laser, "reason", "")
+                nxt = getattr(laser, "bars_to_next", None)
+                if getattr(laser, "rotating", False):
+                    tail = f"rotating · next in {int(nxt)} bars" if nxt is not None else "rotating on the clock (no beat grid)"
+                    if reason:
+                        tail = f"{reason} · {tail}"
+                else:
+                    tail = reason or mode
+                text = f"● LASER SHOW [{mode}] — {scene_name}{' · DROP ACCENT' if accent else ''} · {tail}"
+                style = _DOT_OK
+            self.l_laser_flash.setText(text)
+            self.l_laser_flash.setStyleSheet(style)
+            if self.laser_show_tab is not None:
+                self.l_laser_show.setText(text)
+                # the grid highlights what is showing NOW (follow / rotate
+                # move it around; in hold it is the picked look)
+                b = self.laser_look_buttons.get(scene_name)
+                if b is not None and not b.isChecked():
+                    b.setChecked(True)
+                rb = self._laser_mode_buttons.get(mode)
+                if rb is not None and not rb.isChecked():
+                    rb.blockSignals(True); rb.setChecked(True); rb.blockSignals(False)
+            mood = None
+        elif mood is None:
             self.l_laser.setText("ACCENT")
             self.l_laser.setStyleSheet(f"background:{MUTED}; color:white;")
         elif trigger is not None:
@@ -424,7 +573,9 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         else:
             self.l_laser.setText(f"FEATURE · {mood.upper()}")
             self.l_laser.setStyleSheet(f"background:{_MOOD_COLORS.get(mood, MUTED)}; color:white;")
-        if mood is not None:
+        if scene_name is not None:
+            pass  # the show-profile banner above is final
+        elif mood is not None:
             # Feature profile banners: the lasers ARE the light here, so "not
             # armed" is the loudest thing the console can say.
             colors = f"{laser_color_name(laser.color_l)} / {laser_color_name(laser.color_r)}"
@@ -499,4 +650,10 @@ def run_console(app, fps: int = 30) -> int:
     timer = QtCore.QTimer()
     timer.timeout.connect(win.refresh)
     timer.start(int(1000 / fps))
+    # SIGINT/SIGTERM (and tools/run_show.sh's `touch logs/STOP` + kill) only set
+    # app.stop_event; Qt's loop never saw it, so the window had to be force-killed
+    # (2026-10-08 demo run). Poll the event and quit the loop when it is set.
+    stop_poll = QtCore.QTimer()
+    stop_poll.timeout.connect(lambda: qt.quit() if app.stop_event.is_set() else None)
+    stop_poll.start(250)
     return qt.exec()

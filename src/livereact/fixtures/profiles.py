@@ -268,6 +268,40 @@ class Fixture:
         return VisualState(self.label, self.role, self.side, 0, 0, 0, 0.0, 0.5, 0.5, False)
 
 
+@dataclass(frozen=True)
+class MotionBounds:
+    """A moving head's allowed RAW pan/tilt box (0..1), 2026-10-10 (Junior
+    Crib, Josh: "I need the moving head's pan to bounce in between those
+    [edge] points -- if it goes outside of those bounds people will not be
+    able to see the lights"). Captured on the Venue tab by jogging the real
+    beam onto each edge and pressing ADD BOUND POINT; the box is the envelope
+    of every captured point. Enforced at finalize for EVERY scene, no
+    geometry model involved: relative scene motion is remapped to fill the
+    box, computed aims are clamped into it."""
+
+    pan_min: float
+    pan_max: float
+    tilt_min: float
+    tilt_max: float
+
+    @staticmethod
+    def point(pan01: float, tilt01: float) -> "MotionBounds":
+        return MotionBounds(pan01, pan01, tilt01, tilt01)
+
+    def include(self, pan01: float, tilt01: float) -> "MotionBounds":
+        return MotionBounds(min(self.pan_min, pan01), max(self.pan_max, pan01),
+                            min(self.tilt_min, tilt01), max(self.tilt_max, tilt01))
+
+    def remap(self, pan01: float, tilt01: float) -> tuple[float, float]:
+        """Raw 0..1 scene motion -> inside the box (0 = one edge, 1 = the other)."""
+        return (self.pan_min + max(0.0, min(1.0, pan01)) * (self.pan_max - self.pan_min),
+                self.tilt_min + max(0.0, min(1.0, tilt01)) * (self.tilt_max - self.tilt_min))
+
+    def clamp(self, pan01: float, tilt01: float) -> tuple[float, float]:
+        return (max(self.pan_min, min(self.pan_max, pan01)),
+                max(self.tilt_min, min(self.tilt_max, tilt01)))
+
+
 class MovingHead(Fixture):
     """SHEHDS 180W Beam Moving Head — 15CH (docs/04 §3.1).
 
@@ -312,6 +346,9 @@ class MovingHead(Fixture):
         # Uncaptured (default) -> named-target aiming falls back to each
         # scene's old hardcoded guess.
         self.calibration = HeadCalibration()
+        # Raw motion box (MotionBounds, 2026-10-10): when set it REPLACES the
+        # home_pan/home_tilt +-bound remap and also clamps computed aims.
+        self.bounds: MotionBounds | None = None
 
     def channel_kinds(self) -> list[ChannelKind]:
         K = ChannelKind
@@ -399,6 +436,17 @@ class MovingHead(Fixture):
         ``absolute`` (2026-09-18): the winning contribution marked this
         fixture's movement as a final aim (see set_aim) -- pass it through.
         """
+        if self.bounds is not None:
+            # 2026-10-10 motion box: scenes' raw 0..1 motion fills the box;
+            # a computed (absolute) aim is clamped into it so no look can
+            # ever leave the captured edges.
+            raw_pan = _read16(uni, self.offset + 0)
+            raw_tilt = _read16(uni, self.offset + 2)
+            new_pan, new_tilt = (self.bounds.clamp(raw_pan, raw_tilt) if absolute
+                                 else self.bounds.remap(raw_pan, raw_tilt))
+            self._write16(uni, self.offset + 0, _to16_int(max(0.0, min(1.0, new_pan))))
+            self._write16(uni, self.offset + 2, _to16_int(max(0.0, min(1.0, new_tilt))))
+            return
         if absolute or self.home_pan is None or self.home_tilt is None:
             return
         raw_pan = _read16(uni, self.offset + 0)
@@ -591,6 +639,22 @@ class Laser(Fixture):
         intensity = max(0.0, min(1.0, intensity))
         span = self.SWEEP_SPEED_MAX - self.SWEEP_SPEED_MIN
         return int(self.SWEEP_SPEED_MIN + intensity * span)
+
+    def set_scene(self, buf: Buffer, values: "list[int] | tuple[int, ...]", lit: bool = True) -> None:
+        """Write a whole 12-channel look verbatim (2026-10-08, the SHOW
+        profile / engines/laser_show.py). ``values`` are the CH1..CH12 bytes
+        exactly as read off a QLC+ scene; nothing is reinterpreted. With
+        ``lit=False`` every channel but CH1 is written and CH1 stays 0 (the
+        documented OFF band) -- the same priming trick as
+        set_dotted_line_sweep. Still behind apply_safety (the arm switch)
+        and apply_laser_gate like every other laser write."""
+        if len(values) != self.channel_count:
+            raise ValueError(f"laser scene needs {self.channel_count} values, got {len(values)}")
+        for ch, value in enumerate(values, start=1):
+            if ch == 1 and not lit:
+                self._set(buf, 1, 0)
+            else:
+                self._set(buf, ch, _clamp8(int(value)))
 
     STATIC_POS_MAX = 127            # CH7 — top of the (UNVERIFIED) static-position sub-range
 

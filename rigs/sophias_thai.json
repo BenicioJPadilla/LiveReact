@@ -1,0 +1,44 @@
+{
+  "name": "Sophia's Thai",
+  "description": "Sophia's Thai set (2026-10-08): two Shehds 3W lasers + the OK103 wash bar behind the DJ stand, nothing else. laser_profile=show runs the lasers lit for the whole set on a picked scene (engines/laser_show.py, the console's Laser Show tab); the bar runs Synth Sync exactly as before. Addressing reused from bar_rig.json: wash bar 1-6, Laser L 7-18, Laser R 19-30 (12-channel mode on each laser).",
+  "laser_profile": "show",
+  "slots": [
+    {
+      "slot_id": "bar",
+      "fixture_type": "ok103_wash_bar",
+      "dmx_address": 1,
+      "label": "Wash Bar",
+      "role": "wash",
+      "side": "left",
+      "mount_note": "Behind the DJ stand. Set the unit to address 1 (6-channel mode)."
+    },
+    {
+      "slot_id": "laser_l",
+      "fixture_type": "shehds_3w_laser",
+      "dmx_address": 7,
+      "label": "Laser L",
+      "role": "laser",
+      "side": "left",
+      "beam": {
+        "tilt_deg": 0.0,
+        "fan_half_angle_deg": 30.0,
+        "h_offset01": 0.5
+      },
+      "mount_note": "Address 7 (12-channel mode)."
+    },
+    {
+      "slot_id": "laser_r",
+      "fixture_type": "shehds_3w_laser",
+      "dmx_address": 19,
+      "label": "Laser R",
+      "role": "laser",
+      "side": "right",
+      "beam": {
+        "tilt_deg": 0.0,
+        "fan_half_angle_deg": 30.0,
+        "h_offset01": 0.5
+      },
+      "mount_note": "Address 19 (12-channel mode)."
+    }
+  ]
+}

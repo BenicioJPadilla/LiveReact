@@ -53,6 +53,15 @@ Watch it live (the full pipeline driving the rig view):
 ```bash
 .venv\Scripts\python -m livereact --demo --visualize     # Windows
 .venv/bin/python -m livereact --demo --visualize         # macOS / Linux
+
+# 2026-10-08: Python 3.14.3's garbage collector segfaulted three times inside the
+# show-engine thread (crash reports Python-2026-10-05-232007, -10-08-152952,
+# -10-08-160540: SIGSEGV in mark_stacks < _PyGC_Collect). A Python 3.13 venv lives
+# at .venv313 (`uv python install 3.13 && uv venv .venv313 --python 3.13 &&
+# uv pip install --python .venv313/bin/python -e ".[ui,hardware,dev]" netifaces`).
+# For a live night use the relaunch loop, which prefers .venv313 and restarts
+# after a crash (closing the window, or `touch logs/STOP`, ends it):
+nohup tools/run_show.sh --hardware --visualize --record --rig rigs/sophias_thai.json > logs/watchdog.log 2>&1 & disown
 ```
 
 ## Quick start

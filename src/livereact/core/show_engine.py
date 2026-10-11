@@ -133,17 +133,21 @@ class ShowEngine(threading.Thread):
         # 2026-09-18): overwrite the merged frame BEFORE finalize, so every
         # safety clamp and the slew limit still apply to a pinned fixture.
         pins = self.manual.calibration
+        pinned: frozenset[int] = frozenset()
         if pins is not None:
             for ch, value in pins.channels.items():
                 if 1 <= ch <= UNIVERSE_SIZE:
                     merged[ch - 1] = 0 if value < 0 else 255 if value > 255 else int(value)
             for slot in pins.absolute_slots:
                 try:
-                    absolute = absolute | {self.rig.fixture(slot).offset}
+                    off = self.rig.fixture(slot).offset
+                    absolute = absolute | {off}
+                    pinned = pinned | {off}
                 except KeyError:
                     pass
             laser_on = laser_on or pins.laser_open
         frame = finalize(merged, self.rig, self.manual, auto_blackout, laser_on, dt,
-                         safe_default_frame, snap.drop_pending, absolute_movement=absolute)
+                         safe_default_frame, snap.drop_pending, absolute_movement=absolute,
+                         pinned_movement=pinned)
         self.frame_buffer.publish(frame)
         return frame

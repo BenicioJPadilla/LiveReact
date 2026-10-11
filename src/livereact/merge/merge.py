@@ -101,6 +101,15 @@ class ManualParams:
     # moment on every change. A counter, not a flag, so two presses in one
     # tick are not lost and nothing has to be reset. Behind the arm switch.
     laser_hit: int = 0
+    # Laser SHOW profile (2026-10-08, engines/laser_show.py, the console's
+    # Laser Show tab): `laser_mode` = "follow" (the look follows the
+    # existing BUILD/DROP/PEAK detection), "rotate" (step through the static
+    # scenes) or "hold" (the manual override: show `laser_scene`, any LOOKS
+    # name, and nothing else); `laser_drop_accent` chops the lasers for two
+    # bars on a drop entry in rotate / hold modes. Never persisted.
+    laser_mode: str = "follow"
+    laser_scene: str = "Rainbow"
+    laser_drop_accent: bool = True
     # Venue-tab calibration pins (see CalibrationPins). None = nothing pinned.
     # Never persisted (config.py's _PERSIST leaves it out); cleared whenever
     # the operator leaves the Venue tab or unticks "Jog live".
@@ -172,8 +181,14 @@ def _merge(contributions: list[Contribution], rig: Rig) -> tuple[bytearray, set[
 def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: bool = False,
              laser_on: bool = False, dt: float = 1.0 / 60.0,
              safe_default_frame: bytes | None = None, drop_pending: bool = False,
-             absolute_movement: frozenset[int] = frozenset()) -> bytes:
+             absolute_movement: frozenset[int] = frozenset(),
+             pinned_movement: frozenset[int] = frozenset()) -> bytes:
     """Apply manual biases/caps + safety clamps and return the wire-ready universe.
+
+    ``pinned_movement`` (2026-10-10): fixture offsets the Venue tab is jogging
+    by hand -- they skip apply_home_position entirely (home remap AND the
+    motion box), so the operator can drive the real head anywhere to capture
+    the box's edges. Slew still applies.
 
     ``absolute_movement`` (2026-09-18, from ``merge_contributions_ex``): the
     0-based channel indices whose pan/tilt is a final computed aim -- their
@@ -241,7 +256,8 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
         fx.cap_strobe(out, manual.strobe_cap)              # safety: always cap
         fx.cap_brightness_while_strobing(out)               # safety: never full-bright while strobing (Josh, 2026-09-14)
         fx.apply_safety(out, manual.laser_enable)          # laser fail-safe
-        fx.apply_home_position(out, absolute=fx.offset in absolute_movement)  # docs/14 §4: bound around a calibrated home
+        if fx.offset not in pinned_movement:
+            fx.apply_home_position(out, absolute=fx.offset in absolute_movement)  # docs/14 §4 home remap / 2026-10-10 motion box
         fx.apply_slew_limit(out, dt)                        # LIGHTING_BIBLE.md §6.6: protect motors from instant jumps
         fx.apply_laser_gate(out, laser_on)                  # engines/laser.py: only during a laser moment
     return bytes(out)
