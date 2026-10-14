@@ -1,135 +1,174 @@
 # LiveReact
 
-A beat-reactive DMX stage-lighting controller for live DJ sets. It reads musical
-timing from a Pioneer XDJ-XZ (Pro DJ Link over Ethernet + USB MIDI) and
-automatically drives an 8-fixture / 74-channel DMX rig through an Enttec DMX USB
-Pro at ~40 Hz. **Automation is the default**; a human only nudges
-brightness / strobe-cap / blackout.
+A beat-reactive DMX stage-lighting controller for live DJ sets. It listens to
+the music (real audio analysis from the DJ board's USB audio interface, plus
+Pro DJ Link beat-grid timing and read-only MIDI from a Pioneer XDJ-XZ when
+present), classifies the set's energy (BREAK / BUILD / DROP / PEAK / OUTRO),
+and drives a DMX rig through an Enttec DMX USB Pro at 40 Hz. **Automation is
+the default**; a human only nudges brightness, strobe cap, blackout, and
+(on some rigs) laser cues.
 
-This is a clean-room rebuild from the design analysis in [`docs/`](docs/). Start
-with [`docs/00_EXECUTIVE_SUMMARY.md`](docs/00_EXECUTIVE_SUMMARY.md), then read the
-[rebuild roadmap](docs/12_REBUILD_ROADMAP.md). Build status and the working plan
-live in [`PLAN.md`](PLAN.md); deferred hardware/usage decisions live in
-[`ASSUMPTIONS.md`](ASSUMPTIONS.md).
+It has run real sets: a bar residency, a Thai-restaurant set (two lasers + a
+wash bar), and a house-party rig with two moving heads, two lasers and a wash
+bar. Everything in `rigs/` reflects fixtures verified on hardware by channel
+probing, not datasheets.
+
+Design history lives in [`docs/`](docs/) — start with
+[`docs/00_EXECUTIVE_SUMMARY.md`](docs/00_EXECUTIVE_SUMMARY.md). The original
+build checklist is [`PLAN.md`](PLAN.md) (frozen at the end of the clean-room
+rebuild; see its scope note), deferred hardware/usage decisions are in
+[`ASSUMPTIONS.md`](ASSUMPTIONS.md), and the hardware test procedure is in
+[`TESTING.md`](TESTING.md).
 
 ## Status
 
-**Phases 0–6 complete; Phase 7 hardware layer built ("ready but untested").** The
-full show runs hardware-free (synthetic clock → ShowState → Reactive + Phrase +
-Transition engines → merge/safety → DMX writer, in an operator console). The
-hardware adapters — Enttec serial output, Pro DJ Link + read-only MIDI input, the
-fixture-test panel, MIDI-learn, and network diagnostics — are written behind the
-existing interfaces and unit-tested for everything that doesn't need a device;
-`--hardware` degrades gracefully when none are present. The real serial/MIDI/PDL
-paths await the physical rig — see [`HARDWARE.md`](HARDWARE.md). **Phase 8 (tuning,
-endurance, packaging)** is the last step. See [`PLAN.md`](PLAN.md).
+**Deployed and gigging.** The full pipeline (inputs → ShowState → Reactive +
+Phrase + Transition engines → priority merge / safety → DMX writer) runs on real
+hardware with an operator console. The Enttec serial output, real audio
+capture + FFT analysis, Pro DJ Link beat grid, and MIDI input have all been
+verified on the physical rig. `--hardware` still degrades gracefully: with no
+Enttec it logs frames instead of sending them; with no XDJ, point
+`--audio-device` at the laptop mic and beat timing falls back to tap tempo and
+a free-running metronome.
+
+Known rough edges, tracked in the repo rather than hidden:
+
+- `tests/test_spec_conformance_gaps.py` holds **3 intentionally failing tests**
+  that encode spec behaviour the merge/failsafe code does not yet implement.
+  The other 619 tests pass.
+- Python 3.14's garbage collector has segfaulted inside the show-engine thread
+  on live nights. A Python 3.13 venv (`.venv313`) is used for shows and has not
+  reproduced it; `tools/run_show.sh` prefers it and relaunches after a crash.
+- The output backend is chosen once at launch. If the Enttec is absent then (or
+  has dropped off USB before a relaunch), the run is log-only and never retries
+  the port; replug, then relaunch. Mid-run send failures do get a reopen loop.
+- The fixture-side strobe flash rate is set by a static DMX byte, so photosensitive-safety
+  frequency limits cannot be enforced in software. See `spec/LIGHTING_BIBLE.md`.
+
+## Running it
 
 ```bash
-python -m livereact --hardware --visualize   # real devices (auto-detect, graceful fallback)
-python -m livereact --fixture-test           # drive raw DMX channels for bring-up
+# Demo mode: synthetic music, no hardware, operator console + virtual rig
+.venv/bin/python -m livereact --demo --visualize
+
+# A live night (preferred): relaunch loop, hardware, recording, a specific rig
+nohup tools/run_show.sh --hardware --visualize --record --rig rigs/junior_crib.json \
+    --audio-device 1 > logs/watchdog.log 2>&1 & disown
+#   stop it: touch logs/STOP  then close the window (or kill the python PID)
+
+# Bring-up and diagnostics
+python -m livereact --fixture-test           # drive raw DMX channels
 python -m livereact --midi-monitor           # discover the XDJ's MIDI CCs
 python -m livereact --net-check              # Pro DJ Link network readiness
 python -m livereact --doctor                 # environment + detected-devices report
 ```
 
-**Testing on hardware?** Follow [`TESTING.md`](TESTING.md) — the exact test
-procedure plus a recording system (`--record`, `--doctor`) that captures logs,
-state, and your notes into a session folder you can hand back for analysis.
+Useful flags: `--rig <json>` (fixtures + laser profile), `--audio-device
+<name|index>` (default: auto-detect the XDJ; `1` is usually the MacBook mic),
+`--record` (logs + state + notes into `recordings/session-<timestamp>/`),
+`--full-catalog` (rotate all 29 scenes instead of the 6-scene core set),
+`--bible-failsafe` (fade to a safe-default look instead of hard blackout when
+music stops), `--no-norm-seed` (cold-start the energy normaliser at a new venue).
+`python -m livereact --help` lists the rest.
 
-**Which rig, which show?** `--rig rigs/<file>.json` picks the fixtures AND the
-laser profile: `rigs/testing_setup.json` (the garage truss rig, `laser_profile:
-trigger` — the lasers are punctuation: dark by default, 2-bar moments on the
-drop hit / each 8-bar block of a sustained peak / a big low-end hit, spaced 8
-bars apart and capped at 10 % of any 2 minutes, plus **J** = one moment now and
-**K** = hold; `engines/laser_trigger.py`), `rigs/josh_rig.json` (the old home
-layout, `laser_profile: accent` — one sweep per 8-bar block in a peak) or
-`rigs/bar_rig.json` (the bar residency, `laser_profile: feature` — two lasers as
-the main light, lit for the whole set; `engines/laser_feature.py`, TESTING.md
-Test 6). After a drop the moving heads run `scenes/movement.py`'s tempo-locked
-shapes around the calibrated crowd aim (Venue tab, TESTING.md Test 5).
+### Rigs and laser profiles
 
-Watch it live (the full pipeline driving the rig view):
+`--rig rigs/<file>.json` picks the fixtures, their DMX addresses, the venue
+geometry, and the **laser profile** (`fixtures/rig.py`, `LASER_PROFILES`):
 
-```bash
-.venv\Scripts\python -m livereact --demo --visualize     # Windows
-.venv/bin/python -m livereact --demo --visualize         # macOS / Linux
+| Profile | Behaviour | Engine | Rig(s) |
+|---|---|---|---|
+| `accent` | One sweep per 8-bar block during a PEAK | `engines/laser.py` | `josh_rig.json` (default when unset) |
+| `feature` | Two lasers as the main light, lit for the whole set | `engines/laser_feature.py` | `bar_rig.json` |
+| `trigger` | Lasers as punctuation: dark by default, 2-bar moments on drop hits and sustained peaks; **J** fires one now, **K** holds | `engines/laser_trigger.py` | `testing_setup.json` (garage truss rig) |
+| `show` | Lasers lit all set; a "Laser Show" console tab with follow-the-music / rotate / hold modes | `engines/laser_show.py` | `sophias_thai*.json` |
+| `manual` | Nothing listens to the music; scene cue buttons (OFF + Rainbow, Slow Rainbow, Rainbow Dots, Blue Sweep, White, Green) on the Show tab, off at launch | `engines/laser_manual.py` | `junior_crib.json` |
 
-# 2026-10-08: Python 3.14.3's garbage collector segfaulted three times inside the
-# show-engine thread (crash reports Python-2026-10-05-232007, -10-08-152952,
-# -10-08-160540: SIGSEGV in mark_stacks < _PyGC_Collect). A Python 3.13 venv lives
-# at .venv313 (`uv python install 3.13 && uv venv .venv313 --python 3.13 &&
-# uv pip install --python .venv313/bin/python -e ".[ui,hardware,dev]" netifaces`).
-# For a live night use the relaunch loop, which prefers .venv313 and restarts
-# after a crash (closing the window, or `touch logs/STOP`, ends it):
-nohup tools/run_show.sh --hardware --visualize --record --rig rigs/sophias_thai.json > logs/watchdog.log 2>&1 & disown
-```
+After a drop, moving heads run `scenes/movement.py`'s tempo-locked shapes
+inside a per-head **motion box** (pan/tilt boundaries captured live from the
+Venue tab) around the calibrated crowd aim.
+
+### The console
+
+Four tabs when `--visualize` is on: **Show** (energy state, manual caps,
+blackout, laser arm, cue buttons on `manual` rigs, floor-plan mini-map),
+**Laser Show** (only on `show` rigs), **Venue** (editable floor plan in feet,
+per-fixture position/height/facing, moving-head calibration: jog live, set aim,
+capture motion-box bounds, save rig), and **Rig Config**.
 
 ## Quick start
 
-This repo targets **Python 3.12** (the analysis pins it for prebuilt
-`python-rtmidi` wheels at the hardware-MIDI phase), which is what the dev venv uses.
+Python **3.12 or 3.13** (3.14 currently crashes under load — see Status).
 
 ```bash
-# Windows (PowerShell)
-py -3.12 -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev]"
-.venv\Scripts\python -m livereact --demo --duration 3   # short demo run
-.venv\Scripts\python -m pytest                          # run the test suite
-
 # macOS / Linux
 python3 -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
-.venv/bin/python -m livereact --demo --duration 3
-.venv/bin/python -m pytest
+.venv/bin/python -m pip install -e ".[ui,hardware,dev]"
+.venv/bin/python -m livereact --demo --duration 3     # short headless demo
+.venv/bin/python -m pytest                            # test suite
+
+# Windows (PowerShell)
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -e ".[ui,hardware,dev]"
+.venv\Scripts\python -m livereact --demo --duration 3
+.venv\Scripts\python -m pytest
 ```
 
-Or use the dev launchers: `run.bat` (Windows) / `./run.command` (macOS).
+Extras: `ui` (PySide6 console), `hardware` (pyserial, mido, python-rtmidi,
+sounddevice, numpy), `net` (Art-Net output), `dev` (pytest). Pro DJ Link needs
+the git-only `python-prodj-link` library; see [`HARDWARE.md`](HARDWARE.md).
+The dev launchers `run.bat` / `./run.command` start demo mode from `.venv`.
 
 ## Lighting spec & look library
 
-The actual *content* of the show — what look plays for a given energy state,
-what colors/movement it uses, when it degrades — is driven by
+The *content* of the show — which look plays for a given energy state, its
+colours and movement, how it degrades — is driven by
 [`spec/LIGHTING_BIBLE.md`](spec/LIGHTING_BIBLE.md), a normative lighting-design
 spec, with [`spec/conformance.md`](spec/conformance.md) tracking implementation
-status rule-by-rule. This is a separate, later integration effort layered on
-top of the phases above (tracked as its own "Bible-integration" phase series in
-[`docs/bible_integration/`](docs/bible_integration/) and the working plan, not
-renumbered into Phases 0–8) — see `docs/bible_integration/RULES_MATRIX.md` for
-the current status and `docs/bible_integration/LOOK_CATALOG.md` for the full
-30-look catalog this project targets. As of this writing, 29 scenes span every
-energy bucket (BREAK/BUILD/DROP/PEAK/OUTRO) in
-[`src/livereact/scenes/library.py`](src/livereact/scenes/library.py); a small
-number of Bible-named looks are deliberately deferred (documented in-code and
-in the rules matrix, not silently skipped) pending either new detection
-infrastructure (`build_snare_accent`) or hardware this rig doesn't have (a
-gobo wheel, a second moving head, haze/fog).
+status rule by rule and
+[`docs/bible_integration/RULES_MATRIX.md`](docs/bible_integration/RULES_MATRIX.md)
+the current state. [`src/livereact/scenes/library.py`](src/livereact/scenes/library.py)
+holds 29 scenes across every energy bucket; a core set of 6 (one per bucket, two
+for BREAK) rotates by default. A few Bible-named looks are deliberately
+deferred and documented in-code, pending hardware this rig lacks (a gobo wheel,
+haze).
 
 ## Layout
 
 ```
 src/livereact/
-  clock.py            Clock / RealClock / FakeClock + drift-corrected LoopTimer   [Phase 0]
-  app.py              Supervisor: wires components, owns lifecycle + shutdown      [Phase 0]
-  __main__.py         CLI entry point (python -m livereact)                        [Phase 0]
-  core/               frame_buffer (Phase 0); ShowState, Metronome (Phase 1); show engine (Phase 3)
-  output/             backend interface + null/log + writer (Phase 0); Enttec/Art-Net (Phase 7)
-  inputs/             InputSource interface; DemoDataSource (Phase 1); PDL/MIDI (Phase 7)
-  engines/            ReactiveLayer / Phrase / Transition (Phases 3-6)
-  scenes/             scene catalog (Phase 4)
-  merge/              per-channel merge + manual caps + safety clamps (Phase 2)
-  fixtures/           fixture profiles + rig loader (Phase 2)
-  ui/                 PySide6 console + virtual rig visualizer (Phases 2, 5, 7)
-tests/                pytest suite (deterministic via FakeClock)
+  __main__.py / app.py   CLI entry point; supervisor that wires components and owns shutdown
+  clock.py               Clock / RealClock / FakeClock + drift-corrected LoopTimer
+  core/                  ShowState, Metronome, show engine, build/rise/snare/silence detectors
+  inputs/                InputSource interface; demo, real audio (FFT), Pro DJ Link, MIDI
+  engines/               Reactive / Phrase / Transition layers, colour + palette, 5 laser profiles
+  scenes/                29-scene library, catalog, tempo-locked moving-head movement
+  merge/                 priority merge + manual caps + safety clamps
+  fixtures/              fixture profiles, rig loader/saver, venue geometry + head calibration
+  output/                backend interface, null/log backend, Enttec serial, 40 Hz writer
+  ui/                    PySide6 console (Show / Laser Show / Venue / Rig Config), floor plan, visualizer
+  recorder.py, diagnostics.py, network.py, tap_tempo.py, dynamics.py
+rigs/                    rig JSON files (fixtures, addresses, venue geometry, laser profile)
+spec/                    LIGHTING_BIBLE.md + conformance.md
+tools/                   run_show.sh relaunch loop, laser_probe.py, offline simulators / replays
+tests/                   pytest suite (deterministic via FakeClock)
 ```
 
 ## Design notes baked into the foundation
 
 - **Injected clock everywhere** — real-time logic is unit-testable; a 90-min show
-  simulates in milliseconds. (docs/05 §5.2)
+  simulates in milliseconds.
 - **Double-buffered DMX** — the writer always emits the last *complete* frame, so
-  an engine stall holds the lights steady instead of flickering. (docs/05 §5.1)
+  an engine stall holds the lights steady instead of flickering.
 - **The writer never stops** — every backend fault is contained; it reopens with
-  backoff and keeps ticking. (NFR-5)
-- **Output behind an interface** — null/log now; Enttec serial + Art-Net later,
-  swapped without touching engine code. (docs/05 §5.5)
-```
+  backoff and keeps ticking.
+- **Output behind an interface** — null/log, Enttec serial and Art-Net are
+  swapped without touching engine code.
+- **Real-time audio discipline** — the capture callback only copies into a ring
+  buffer; FFT and band analysis run on a separate thread.
+- **Verified on hardware, not assumed** — channel maps, addresses, and the
+  XDJ's audio-over-USB path were each confirmed on the rig before being relied on.
+
+## License
+
+[MIT](LICENSE).

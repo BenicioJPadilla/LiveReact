@@ -7,6 +7,7 @@ name = "livereact"
 version = "0.1.0"
 description = "Beat-reactive DMX stage-lighting controller for live DJ sets"
 readme = "README.md"
+license = { file = "LICENSE" }
 # Target 3.12 (the analysis pins it for prebuilt python-rtmidi wheels at the
 # hardware-MIDI phase). 3.13 is fine for the hardware-free phases (0-6).
 requires-python = ">=3.12"
