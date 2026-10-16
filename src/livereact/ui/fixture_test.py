@@ -69,7 +69,7 @@ class FixtureTestPanel(QtWidgets.QMainWindow):
         self._publish()
 
     def _fixture_group(self, fx) -> QtWidgets.QWidget:
-        box = QtWidgets.QGroupBox(f"{fx.label.upper()}  ·  ADDR {fx.address}  ·  {fx.type_name.upper()}")
+        box = QtWidgets.QGroupBox(f"{fx.label}, DMX {fx.address} ({fx.type_name})")
         form = QtWidgets.QGridLayout(box)
         form.setHorizontalSpacing(theme.SP3)
         form.setVerticalSpacing(0)

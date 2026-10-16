@@ -36,7 +36,7 @@ class RigConfigTab(QtWidgets.QWidget):
         self.rig_path = rig_path
 
         v = QtWidgets.QVBoxLayout(self)
-        v.setContentsMargins(theme.SP4, theme.SP4, theme.SP4, theme.SP4)
+        v.setContentsMargins(theme.SP8, theme.SP4, theme.SP8, theme.SP4)
         v.setSpacing(theme.SP3)
 
         head = QtWidgets.QFrame()
@@ -46,9 +46,9 @@ class RigConfigTab(QtWidgets.QWidget):
         hl.setSpacing(theme.SP4)
         titles = QtWidgets.QVBoxLayout()
         titles.setSpacing(2)
-        titles.addWidget(label("Rig", "pageTitle"))
+        titles.addWidget(label("DMX addresses", "h3"))
         note = label(
-            "Edit fixture type, DMX address, role and side, then save. Changes do NOT apply to the "
+            "Edit fixture type, DMX address, role and side, then save. Changes don't apply to the "
             "running show: restart LiveReact with --rig <saved file> to pick them up (same as "
             "plugging in new hardware).", "hint", wrap=True)
         titles.addWidget(note)
@@ -70,7 +70,7 @@ class RigConfigTab(QtWidgets.QWidget):
 
         fixtures = Card("Fixtures", "rig")
         self.table = QtWidgets.QTableWidget(0, len(_COLUMNS))
-        self.table.setHorizontalHeaderLabels([c.upper() for c in _COLUMNS])
+        self.table.setHorizontalHeaderLabels(list(_COLUMNS))
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)

@@ -130,7 +130,7 @@ class VenueTab(QtWidgets.QWidget):
             self.rig.refresh_geometry()
 
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(theme.SP4, theme.SP4, theme.SP4, theme.SP2)
+        outer.setContentsMargins(theme.SP8, theme.SP4, theme.SP8, theme.SP2)
         outer.setSpacing(theme.SP3)
         outer.addWidget(self._build_venue_bar())
 
@@ -168,9 +168,9 @@ class VenueTab(QtWidgets.QWidget):
                 child.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
                 child.installEventFilter(self._wheel_guard)
         split.addWidget(scroll)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
-        split.setSizes([820, 540])
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
+        split.setSizes([620, 500])
         outer.addWidget(split, 1)
 
         self.status = label("", "hint")
@@ -186,14 +186,14 @@ class VenueTab(QtWidgets.QWidget):
         h = QtWidgets.QHBoxLayout(box)
         h.setContentsMargins(theme.SP4 + 4, theme.SP3, theme.SP3, theme.SP3)
         h.setSpacing(theme.SP2)
-        h.addWidget(label("Venue", "pageTitle"))
+        h.addWidget(label("Room size", "h3"))
         h.addSpacing(theme.SP4)
         self.sb_width = _ft_box(v.width_m, lo=3.0)
         self.sb_length = _ft_box(v.length_m, lo=3.0)
         self.sb_height = _ft_box(v.height_m if v.height_m is not None else ft_to_m(12.0), lo=3.0)
         for cap, w in (("Width", self.sb_width), ("Length", self.sb_length), ("Ceiling", self.sb_height)):
             w.setMinimumWidth(104)
-            h.addWidget(label(cap.upper(), "overline"))
+            h.addWidget(label(cap, "label"))
             h.addWidget(w)
             h.addSpacing(theme.SP2)
         h.addStretch(1)
@@ -222,7 +222,7 @@ class VenueTab(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------ targets
     def _build_targets(self) -> QtWidgets.QWidget:
-        box = QtWidgets.QGroupBox("TARGETS  ·  NAMED AIM POINTS, FT")
+        box = QtWidgets.QGroupBox("Targets (aim points, in feet)")
         self._targets_form = QtWidgets.QGridLayout(box)
         self._target_boxes: dict[str, tuple[QtWidgets.QDoubleSpinBox, ...]] = {}
         self._refresh_targets()
@@ -264,7 +264,7 @@ class VenueTab(QtWidgets.QWidget):
         v.setSpacing(theme.SP3)
 
         # fixture picker + placement
-        place = QtWidgets.QGroupBox("FIXTURE")
+        place = QtWidgets.QGroupBox("Light")
         form = QtWidgets.QFormLayout(place)
         form.setVerticalSpacing(theme.SP2)
         form.setHorizontalSpacing(theme.SP4)
@@ -286,7 +286,7 @@ class VenueTab(QtWidgets.QWidget):
         v.addWidget(place)
 
         # moving head: calibrate
-        self.grp_head = QtWidgets.QGroupBox("CALIBRATE  ·  MOVING HEAD")
+        self.grp_head = QtWidgets.QGroupBox("Aim the moving head")
         hf = QtWidgets.QFormLayout(self.grp_head)
         hf.setVerticalSpacing(theme.SP2)
         hf.setHorizontalSpacing(theme.SP4)
@@ -330,14 +330,14 @@ class VenueTab(QtWidgets.QWidget):
         self.b_bound_add = _action("Add bound point: the beam is on an edge", "plus", "primary")
         self.b_bound_clear = _action("Clear box", "trash")
         brow = QtWidgets.QHBoxLayout(); brow.addWidget(self.b_bound_add, 1); brow.addWidget(self.b_bound_clear)
-        hf.addRow(label("MOTION BOX", "overline"))
+        hf.addRow(label("Motion box", "label"))
         hf.addRow(_hint("No geometry needed. Tick Jog live, slide the beam onto the venue's LEFT edge and "
                         "add a bound point, then the RIGHT edge, then the lowest and highest points you want "
                         "it to reach (booth edges, far wall). Every scene's movement is then squeezed inside "
                         "that box. Untick Jog live, Save rig…"))
         hf.addRow(brow)
         hf.addRow(self.l_bounds)
-        hf.addRow(label("HOW TO", "overline"))
+        hf.addRow(label("How to", "label"))
         hf.addRow(_hint("Selecting a head lights it (the no-music blackout is held off while it is pinned).\n"
                         "1  Place the head and the dj_booth target.\n"
                         "2  Tick Jog live, slide Pan/Tilt until the real beam sits on the booth.\n"
@@ -359,7 +359,7 @@ class VenueTab(QtWidgets.QWidget):
         self.b_home.clicked.connect(self._set_home)
 
         # laser: beam geometry + probe
-        self.grp_laser = QtWidgets.QGroupBox("LASER BEAM")
+        self.grp_laser = QtWidgets.QGroupBox("Laser beam")
         lf = QtWidgets.QFormLayout(self.grp_laser)
         lf.setVerticalSpacing(theme.SP2)
         lf.setHorizontalSpacing(theme.SP4)

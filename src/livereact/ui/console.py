@@ -1,28 +1,35 @@
-"""Operator console: live readouts + manual controls, around the rig view.
+"""Operator console: the live show at a glance, and the controls around it.
 
 The console embodies "automation is the default; manual is a bias/cap, not an
 override" (docs/02 §5): the show always runs itself; the operator only nudges
 brightness/strobe-cap/color, arms lasers, or hits the hard switches
-(blackout/freeze) and skip/tap-tempo. Readouts make the show legible at a glance.
+(blackout/freeze) and skip/tap-tempo.
 
-Layout (2026-10 "Blackbox" redesign, ui/theme.py; the 2026-09-18 grouping by
-function is kept, Josh: "easy to see, organized by section and function so I
-can track and press buttons while I am DJing"):
+Layout (design v2, ui/theme.py; lr-design/prototype-v2.html):
 
-    HEADER    wordmark · navigation · status pills (BPM, energy, audio/link/MIDI/DMX)
-    left      HERO (energy state, big BPM, beat pulse, tap, band meters)
-              live mini-map (read-only) + the activity banners
-    right     CUES (the big six) · laser scenes (manual rigs) · FEEL (faders,
-              Synth Sync, laser arm) · SAFETY (Blackout / Freeze, bottom right)
-    FOOTER    clock / Pro DJ Link / MIDI health, rig, shortcut legend
+    SIDEBAR   the rig (venue) with its glow tile · Live · Lights ·
+              Room: Phone remote · Safety
+    LIVE      status bar: on-air clock, music, light output, phone, Pro switch
+              stage: the real floor plan lit by the show, the status line
+              ("Listening.", "Blackout."), and under it the deck: beat
+              lights, a plain-language read of the music, the last two
+              minutes as sections
+              rack (right): Brightness, the look now showing, Blackout (B)
+              Pro controls (hidden until switched on): Moments (cues),
+              Lasers, Feel, Under the hood (the technical readouts)
+    LIGHTS    the Venue floor plan + calibration, or the Rig Config table
+    PHONE / SAFETY   what the phone console and the safety rules do
 
-Navigation is the header's buttons driving ``self.tabs`` (a QTabWidget whose
-own tab bar is hidden), so the page order and labels are unchanged.
+Pro controls hide Josh-level controls from everyone else. While they are
+hidden, only B (Blackout) works from the keyboard; every other shortcut
+comes back with them, unchanged. The switch is remembered between launches
+(QSettings) when the console is opened by ``run_console``.
 
-Every control keeps the attribute name and keyboard shortcut it had before
-(tests/test_console.py finds them that way). Refresh does no more work than
-before: it reads the same snapshot once, and every colour change goes through
-``theme.set_css`` so a widget is only re-polished when its state changes.
+Every control keeps the attribute name it had before (tests/test_console.py
+finds them that way). Refresh does no more work than before: it reads the
+same snapshot once, and painted widgets repaint only when what they draw
+changes. The live light colour ("glow") is read from the published DMX frame
+by ui/glow.py's own UI-thread timer (30 fps at most), never on the show thread.
 """
 
 from __future__ import annotations
@@ -39,49 +46,50 @@ from ..engines.laser_show import MODE_FOLLOW, MODE_HOLD, MODE_ROTATE, look_names
 from ..engines.laser_trigger import DUTY_WINDOW_S
 from ..tap_tempo import TapTempo
 from . import theme
-from .floorplan import FloorPlanView
+from .glow import Glow, GlowSource
+from .pages import LightsHeader, PhonePage, SafetyPage
 from .rig_config import RigConfigTab
-from .theme import (
-    ACCENT, DANGER, DANGER_TEXT, LINE_2, SURFACE_2, TEXT_2, WARN,
-    apply_theme, bucket_color, chip_css, rgba, set_css,
-)
+from .stage import StageView
+from .theme import DANGER, OK, TEXT, TEXT_2, TEXT_3, WARN, apply_theme, chip_css, set_css
 from .venue_tab import VenueTab
 from .widgets import (
-    AppHeader, BeatPulse, Card, CueButton, Footer, Meter, StatusPill,
-    hbox, label, overline, shell,
+    BeatLeds, BlackoutKey, CueButton, GlowFader, Meter, NavButton, OnAirChip, ProSwitch,
+    SECTION_NAMES, SectionStrip, Sheet, StatusLine, StatusPill, ToggleRow, VenueTile,
+    hair, hbox, heading, icon_label, label,
 )
 
 log = logging.getLogger(__name__)
 
+_ALIGN = QtCore.Qt.AlignmentFlag
 
-def _slider(lo: int, hi: int, value: int, role: str = "fader") -> QtWidgets.QSlider:
-    s = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-    s.setObjectName(role)
-    s.setRange(lo, hi)
-    s.setValue(value)
-    return s
-
-
-# Activity-banner tones (the leading ●/○ in each text is the status dot).
+# Activity lines (Under the hood): a tone bar down the left edge carries the
+# status; the text itself stays readable graphite / white.
 _TONES = {
-    "ok": f"color:{ACCENT}; background:{rgba(ACCENT, 0.07)}; border:1px solid {rgba(ACCENT, 0.28)};",
-    "bad": f"color:{DANGER_TEXT}; background:{rgba(DANGER, 0.08)}; border:1px solid {rgba(DANGER, 0.32)};",
-    "muted": f"color:{TEXT_2}; background:{SURFACE_2}; border:1px solid {LINE_2};",
-    "warn": f"color:{WARN}; background:{rgba(WARN, 0.07)}; border:1px solid {rgba(WARN, 0.30)};",
+    "ok": f"color:{TEXT}; background:{theme.SURFACE_2}; border:none; border-left:2px solid {OK};",
+    "bad": f"color:{TEXT}; background:{theme.SURFACE_2}; border:none; border-left:2px solid {DANGER};",
+    "muted": f"color:{TEXT_2}; background:{theme.SURFACE_2}; border:none; border-left:2px solid {TEXT_3};",
+    "warn": f"color:{TEXT}; background:{theme.SURFACE_2}; border:none; border-left:2px solid {WARN};",
 }
-# Feature-profile laser moods (engines/laser_feature.py) -> chip colors, calm
-# to fan reading cool to hot like the bucket chip does.
-_MOOD_COLORS = {
-    MOOD_OFF: TEXT_2,
-    "calm": theme.BUCKET_COLORS["break"],
-    "tension": WARN,
-    "groove": "#A98BFF",
-    "fan": theme.BUCKET_COLORS["drop"],
+
+# The plain-language read of the music, per ShowSnapshot.bucket.
+_READ = {
+    "break": ("Taking a breather", "The beat is resting. The lights ease off."),
+    "build": ("Building up", "Energy is rising."),
+    "drop": ("The drop hit", "The lights hit with it."),
+    "peak": ("Peak energy", "The floor is at full energy."),
+    "outro": ("Winding down", "Energy is falling off."),
 }
+_SILENT = ("Waiting for music", "No music coming in. The lights stay dark until it comes back.")
+
+_LASER_HINT = {
+    "show": "On at launch for this rig. Only this computer can turn them on.",
+    "manual": "Armed at launch for this rig; dark until you press a scene.",
+}
+_LASER_HINT_DEFAULT = "Off every time you open the app. Only this computer can turn them on."
 
 
 def _say(lbl: QtWidgets.QLabel, text: str, tone: str = "ok") -> None:
-    """Set an activity banner: text, tone, and hidden while empty."""
+    """Set an activity line: text, tone, and hidden while empty."""
     lbl.setText(text)
     if text:
         set_css(lbl, _TONES[tone])
@@ -100,6 +108,7 @@ def _mirror_check(w: QtWidgets.QAbstractButton, on: bool) -> None:
         w.blockSignals(True)
         w.setChecked(on)
         w.blockSignals(False)
+        w.update()
 
 
 def _mirror_slider(s: QtWidgets.QSlider, val: QtWidgets.QLabel, value: float) -> None:
@@ -113,112 +122,182 @@ def _mirror_slider(s: QtWidgets.QSlider, val: QtWidgets.QLabel, value: float) ->
         val.setText(f"{s.value()}%")
 
 
-def _button(text: str, role: str | None = None, checkable: bool = False) -> QtWidgets.QPushButton:
+def _look_button(text: str, role: str = "look") -> QtWidgets.QPushButton:
     b = QtWidgets.QPushButton(text)
-    if role:
-        b.setObjectName(role)  # styled by ui/theme.py (#look / #danger)
-    b.setCheckable(checkable)
-    b.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+    b.setObjectName(role)            # #look / #lookOff in ui/theme.py
+    b.setCheckable(True)
+    b.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+    b.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
     return b
 
 
+def _clock(seconds: float) -> str:
+    s = int(max(0.0, seconds))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}"
+
+
 class ConsoleWindow(QtWidgets.QMainWindow):
-    def __init__(self, app) -> None:
+    def __init__(self, app, remember: bool = False) -> None:
         super().__init__()
         self.app = app
         self.tap = TapTempo()
         self._tap_beat = 0
         self._last = {}  # refresh(): last value per readout, to skip no-op updates
-        self.setWindowTitle("LiveReact · Console")
+        self._t0 = app.clock.monotonic()
+        self._demo = bool(getattr(app.config, "demo", False))
+        self._settings = QtCore.QSettings("LiveReact", "Console") if remember else None
+        # Arming lasers asks once per run, unless they were already armed
+        # when the window opened (demo, or a rig profile that arms at launch).
+        self._lasers_confirmed = app.manual.laser_enable
+        self.setWindowTitle("LiveReact")
         apply_theme()
 
-        # Live floor plan on the Show tab: view only, nothing draggable mid-set.
-        self.rig_view = FloorPlanView(app.rig, editable=False)
+        self.glow = Glow(self)
+        self.glow_source = GlowSource(self.glow, app.rig, app.frame_buffer, self)
+        # The Live stage: the floor plan, view only, nothing draggable mid-set.
+        self.rig_view = StageView(app.rig, self.glow)
 
         rig_path = getattr(app.config, "rig_path", None)
-        # Venue tab: the editable floor plan + head calibration. Its jog/probe
+        self.rig_path = rig_path
+        # Venue page: the editable floor plan + head calibration. Its jog/probe
         # pins land on app.manual.calibration (read once per show-engine tick)
-        # and are cleared the moment the operator leaves the tab.
+        # and are cleared the moment the operator leaves the page.
         self.venue_tab = VenueTab(app.rig, rig_path,
                                   on_pins=lambda pins: setattr(app.manual, "calibration", pins),
                                   is_frozen=lambda: app.manual.freeze)
+        self.rig_tab = RigConfigTab(app.rig, rig_path)
+        self.phone_page = PhonePage()
+        self.safety_page = SafetyPage(getattr(app.rig, "laser_profile", "accent") or "accent", self._demo,
+                                      bool(getattr(app.config, "bible_failsafe_enabled", False)))
         tabs = QtWidgets.QTabWidget()
-        tabs.tabBar().hide()                 # the header's nav buttons drive it
+        tabs.tabBar().hide()                 # the sidebar drives it
         tabs.setDocumentMode(True)
-        tabs.addTab(self._build_show_page(), "Show")
-        # Laser Show tab (2026-10-08): only for rigs on the `show` laser
-        # profile (engines/laser_show.py) -- the other profiles have nothing
-        # to pick here.
-        self.laser_show_tab = None
-        if getattr(app.rig, "laser_profile", "") == "show":
-            self.laser_show_tab = self._build_laser_show_tab()
-            tabs.addTab(self.laser_show_tab, "Laser Show")
-        tabs.addTab(self.venue_tab, "Venue")
-        tabs.addTab(RigConfigTab(app.rig, rig_path), "Rig Config")
         self.tabs = tabs
+        tabs.addTab(self._build_live_page(), "Show")
+        tabs.addTab(self.venue_tab, "Venue")
+        tabs.addTab(self.rig_tab, "Rig Config")
+        tabs.addTab(self.phone_page, "Phone remote")
+        tabs.addTab(self.safety_page, "Safety")
+        # the phone page owns the address row; the names stay on the window
+        self.phone_row, self.l_phone = self.phone_page.phone_row, self.phone_page.l_phone
 
-        self.header = self._build_header()
-        self.footer = self._build_footer(rig_path)
+        self.lights_header = LightsHeader()
+        self.lights_header.seg_buttons[0].clicked.connect(lambda: self.tabs.setCurrentWidget(self.venue_tab))
+        self.lights_header.seg_buttons[1].clicked.connect(lambda: self.tabs.setCurrentWidget(self.rig_tab))
+        self.lights_header.b_test.clicked.connect(self._explain_fixture_test)
+        self.lights_header.hide()
+
+        main = QtWidgets.QWidget()
+        mv = QtWidgets.QVBoxLayout(main)
+        mv.setContentsMargins(0, 0, 0, 0)
+        mv.setSpacing(0)
+        mv.addWidget(self.lights_header)
+        mv.addWidget(tabs, 1)
+        central = QtWidgets.QWidget()
+        ch = QtWidgets.QHBoxLayout(central)
+        ch.setContentsMargins(0, 0, 0, 0)
+        ch.setSpacing(0)
+        ch.addWidget(self._build_sidebar(rig_path))
+        ch.addWidget(main, 1)
+        self.setCentralWidget(central)
         tabs.currentChanged.connect(self._tab_changed)
-        self.setCentralWidget(shell(self.header, tabs, self.footer))
+        self.setMinimumSize(1200, 760)
         self.resize(1440, 900)
 
         self._install_shortcuts()
-
-    def _tab_changed(self, idx: int) -> None:
-        if self.tabs.widget(idx) is not self.venue_tab:
-            self.venue_tab.deactivate()
-            self.venue_tab.plan.select("")
-        # the Venue plan is rebuilt on edits; the Show mini-map shares the
-        # same rig objects, so re-layout it whenever we come back to Show
-        if idx == 0:
-            self.rig_view.refresh_layout()
-        b = self._nav_buttons.get(idx)
-        if b is not None and not b.isChecked():
-            b.setChecked(True)
+        pro = bool(self._settings is not None and self._settings.value("pro", False, type=bool))
+        self.pro_switch.setChecked(pro)
+        self._set_pro(pro)
+        self.pro_switch.toggled.connect(self._set_pro)
+        self.glow_source.start()
 
     # ------------------------------------------------------------------ shell
-    def _build_header(self) -> AppHeader:
-        h = AppHeader(mode="demo" if getattr(self.app.config, "demo", False) else "live")
-        nav_icons = {"Show": ("Show", "show"), "Laser Show": ("Lasers", "laser"),
-                     "Venue": ("Venue", "venue"), "Rig Config": ("Rig", "rig")}
-        self._nav_buttons: dict[int, QtWidgets.QPushButton] = {}
-        for i in range(self.tabs.count()):
-            text, ic = nav_icons.get(self.tabs.tabText(i), (self.tabs.tabText(i), "show"))
-            b = h.add_nav(text, ic)
-            b.clicked.connect(lambda _c=False, i=i: self.tabs.setCurrentIndex(i))
-            self._nav_buttons[i] = b
-        self._nav_buttons[0].setChecked(True)
-        ft = h.add_nav("Fixture test", "fixture_test", checkable=False)
-        ft.setToolTip("Raw DMX channel test. Runs as its own mode, with the show stopped.")
-        ft.clicked.connect(self._explain_fixture_test)
+    def _build_sidebar(self, rig_path: str | None) -> QtWidgets.QFrame:
+        side = QtWidgets.QFrame()
+        side.setObjectName("sidebar")
+        side.setFixedWidth(240)
+        v = QtWidgets.QVBoxLayout(side)
+        v.setContentsMargins(10, 12, 10, 12)
+        v.setSpacing(2)
 
-        # Live-state pill: only shown while a kill switch / failsafe holds the rig.
-        self.pill_live = StatusPill([("BLACKOUT", "bad")])
-        self.pill_live.set_strong(True)
-        self.pill_live.hide()
-        self.pill_bpm = StatusPill([("BPM", "ok")], mono_value=True)
-        self.pill_state = StatusPill([("--", "idle")])
-        # Connection dots: one capsule, four segments (kept as dot_* for callers).
-        self.pill_conn = StatusPill([("Audio", "bad"), ("Link", "bad"), ("MIDI", "bad"), ("DMX", "bad")])
-        self.pill_conn.setToolTip("Audio / Pro DJ Link / MIDI turn green once real data is flowing, "
-                                  "DMX once a hardware output (not the log fallback) is open.")
-        for w in (self.pill_live, self.pill_bpm, self.pill_state, self.pill_conn):
-            h.add_right(w)
-        return h
-
-    def _build_footer(self, rig_path: str | None) -> Footer:
-        f = Footer()
-        self.l_health = label("", "footerMono")
-        f.row.addWidget(self.l_health)
-        f.row.addStretch(1)
         rig = self.app.rig
-        n_ch = sum(len(fx.channels()) for fx in rig.fixtures)
-        rig_name = os.path.basename(rig_path) if rig_path else "default rig"
-        f.row.addWidget(label(f"{rig_name}  ·  {len(rig.fixtures)} fixtures  ·  {n_ch} ch", "footerMono"))
-        f.row.addWidget(label("B blackout  F freeze  Space strobe  C build  D drop  → skip  T tap  K/J laser  L arm  S synth",
-                           "footerMono"))
-        return f
+        name = (getattr(rig, "name", "") or "").strip() or (
+            os.path.splitext(os.path.basename(rig_path))[0] if rig_path else "Default rig")
+        n = len(rig.fixtures)
+        venue = QtWidgets.QWidget()
+        vh = QtWidgets.QHBoxLayout(venue)
+        vh.setContentsMargins(8, 8, 8, 8)
+        vh.setSpacing(10)
+        vh.addWidget(VenueTile(self.glow))
+        txt = QtWidgets.QVBoxLayout()
+        txt.setSpacing(0)
+        self.l_venue = label(name, "strong")
+        set_css(self.l_venue, "font-size: 13px;")
+        txt.addWidget(self.l_venue)
+        txt.addWidget(label(f"{n} light{'s' if n != 1 else ''}", "hint"))
+        vh.addLayout(txt, 1)
+        venue.setToolTip(rig_path or "The built-in default rig")
+        v.addWidget(venue)
+        v.addSpacing(12)
+
+        self.nav_group = QtWidgets.QButtonGroup(side)
+        self.nav_group.setExclusive(True)
+        self.nav_live = NavButton("Live", "live", self.glow)
+        self.nav_lights = NavButton("Lights", "lights", self.glow)
+        self.nav_phone = NavButton("Phone remote", "phone", self.glow)
+        self.nav_safety = NavButton("Safety", "shield", self.glow)
+        if not self._demo:
+            self.nav_live.set_badge("On")
+        targets = ((self.nav_live, 0), (self.nav_lights, self.venue_tab), (self.nav_phone, self.phone_page),
+                   (self.nav_safety, self.safety_page))
+        for b, target in targets:
+            self.nav_group.addButton(b)
+            if isinstance(target, int):
+                b.clicked.connect(lambda _c=False, i=target: self.tabs.setCurrentIndex(i))
+            else:
+                b.clicked.connect(lambda _c=False, w=target: self.tabs.setCurrentWidget(w))
+        v.addWidget(self.nav_live)
+        v.addWidget(self.nav_lights)
+        v.addWidget(label("Room", "group"))
+        v.addWidget(self.nav_phone)
+        v.addWidget(self.nav_safety)
+        self.nav_live.setChecked(True)
+        v.addStretch(1)
+
+        brand = QtWidgets.QWidget()
+        bh = QtWidgets.QHBoxLayout(brand)
+        bh.setContentsMargins(8, 10, 8, 2)
+        bh.setSpacing(8)
+        from . import icons
+        logo = QtWidgets.QLabel()
+        logo.setPixmap(icons.pixmap("logo", TEXT, 20))
+        bh.addWidget(logo)
+        bh.addWidget(label("LiveReact", "wordmark"))
+        bh.addStretch(1)
+        bh.addWidget(label("Demo" if self._demo else "Live show", "modeBadge"))
+        v.addWidget(hair())
+        v.addWidget(brand)
+        return side
+
+    def _tab_changed(self, idx: int) -> None:
+        w = self.tabs.widget(idx)
+        if w is not self.venue_tab:
+            self.venue_tab.deactivate()
+            self.venue_tab.plan.select("")
+        if idx != 0:
+            self.sheet.close_sheet()
+        # the Venue plan is rebuilt on edits; the Live stage shares the
+        # same rig objects, so re-layout it whenever we come back to Live
+        if idx == 0:
+            self.rig_view.refresh_layout()
+        lights = w in (self.venue_tab, self.rig_tab)
+        self.lights_header.setVisible(lights)
+        if lights:
+            self.lights_header.seg_buttons[0 if w is self.venue_tab else 1].setChecked(True)
+        nav = {0: self.nav_live}.get(idx) or (self.nav_lights if lights else
+                                             self.nav_phone if w is self.phone_page else self.nav_safety)
+        if not nav.isChecked():
+            nav.setChecked(True)
 
     def _explain_fixture_test(self) -> None:
         # A tooltip, never a dialog: a modal box opened by a stray click
@@ -226,408 +305,510 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         b = self.sender()
         QtWidgets.QToolTip.showText(
             b.mapToGlobal(QtCore.QPoint(0, b.height() + 6)),
-            "Fixture test runs on its own: it drives raw DMX channels straight to the output and "
+            "Light test runs on its own: it drives raw DMX channels straight to the output and "
             "bypasses the show, so it never runs alongside a live set.\n"
-            "Close the console, then start it with:  python -m livereact --fixture-test", b)
+            "Close LiveReact, then start it with:  python -m livereact --fixture-test\n"
+            "(The launch window's \"Flash each light\" does the same before a show.)", b)
 
-    # ------------------------------------------------------------------ show page
-    def _build_show_page(self) -> QtWidgets.QWidget:
-        show = QtWidgets.QWidget()
-        outer = QtWidgets.QHBoxLayout(show)
-        outer.setContentsMargins(theme.SP4, theme.SP4, theme.SP4, theme.SP4)
-        outer.setSpacing(0)
-        split = QtWidgets.QSplitter()
-        split.setChildrenCollapsible(False)
-        split.addWidget(self._build_left_column())
-        split.addWidget(self._build_right_column())
-        split.setStretchFactor(0, 11)
-        split.setStretchFactor(1, 9)
-        split.setSizes([780, 620])
-        outer.addWidget(split)
-        return show
+    # ------------------------------------------------------------------ live page
+    def _build_live_page(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        page.setObjectName("live")
+        v = QtWidgets.QVBoxLayout(page)
+        v.setContentsMargins(theme.SP8, theme.SP5, theme.SP8, theme.SP5)
+        v.setSpacing(theme.SP5)
 
-    def _build_hero(self) -> Card:
-        """Energy state, the big BPM, the beat, and the band meters: the
-        "where are we in the music" read, between mixes, from arm's length."""
-        hero = Card()
-        hero.body.setContentsMargins(0, 0, 0, 0)
-        row = QtWidgets.QHBoxLayout()
-        row.setSpacing(0)
-        # a bucket-coloured edge down the card's left side
-        self.hero_edge = QtWidgets.QFrame()
-        self.hero_edge.setFixedWidth(4)
-        row.addWidget(self.hero_edge)
-        inner = QtWidgets.QVBoxLayout()
-        inner.setContentsMargins(theme.SP6, theme.SP4, theme.SP4, theme.SP4)
-        inner.setSpacing(theme.SP4)
-        row.addLayout(inner, 1)
-        hero.body.addLayout(row)
-        top = QtWidgets.QHBoxLayout()
-        top.setSpacing(theme.SP6)
-
-        state = QtWidgets.QVBoxLayout()
-        state.setSpacing(theme.SP2)
-        state.addWidget(overline("Energy state"))
-        # Energy bucket (core/show_state.py's debounced `bucket`) -- the single
-        # most useful "what does the show think is happening" readout.
-        self.l_bucket = label("--", "heroState")
-        self.l_bucket.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.l_bucket.setMinimumWidth(170)
-        state.addWidget(self.l_bucket, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
-        state.addSpacing(theme.SP1)
-        self.l_scene = label("--", "heroScene")
-        state.addWidget(self.l_scene)
-        # Laser profile + mood (2026-10-01): "ACCENT" on the home rig; on the
-        # bar's feature rig the lasers are the main light, so what they are
-        # doing right now (engines/laser_feature.py's mood) sits beside the
-        # bucket that drives it.
-        self.l_laser = label("--", "bucket")
-        self.l_deck = label("--", "heroMeta")
-        state.addLayout(hbox(overline("Laser"), self.l_laser, overline("Deck"), self.l_deck,
-                             spacing=theme.SP2, stretch_at=4))
-        state.addStretch(1)
-        top.addLayout(state, 1)
-
-        bpm = QtWidgets.QVBoxLayout()
-        bpm.setSpacing(0)
-        bpm.addWidget(overline("Tempo"), 0, QtCore.Qt.AlignmentFlag.AlignRight)
-        self.l_bpm = label("--.-", "bpm")
-        self.l_bpm.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        self.l_bpm.setMinimumWidth(QtGui.QFontMetrics(theme.font(76, QtGui.QFont.Weight.Bold, mono=True))
-                                   .horizontalAdvance("188.8") + 8)
-        bpm.addWidget(self.l_bpm)
-        self.beat_pulse = BeatPulse()
-        self.l_beat = label("--", "heroMeta")
-        bpm.addLayout(hbox(self.l_beat, self.beat_pulse, spacing=theme.SP3, stretch_at=0))
-        bpm.addStretch(1)
-        top.addLayout(bpm)
-
-        self.b_tap = CueButton("Tap", "T", "tap")
-        self.b_tap.setFixedWidth(96)
-        self.b_tap.setToolTip("Tap tempo: tap along on the beat to set the BPM when there is no beat grid.")
-        top.addWidget(self.b_tap)
-        inner.addLayout(top)
-
-        meters = QtWidgets.QGridLayout()
-        meters.setContentsMargins(0, 0, 0, 0)
-        meters.setHorizontalSpacing(theme.SP4)
-        meters.setVerticalSpacing(theme.SP1 + 2)
-        self.pb_energy = Meter(ACCENT)
-        self.pb_low = Meter(theme.BUCKET_COLORS["drop"])
-        self.pb_mid = Meter(theme.BUCKET_COLORS["build"])
-        self.pb_high = Meter(theme.BUCKET_COLORS["break"])
-        for col, (cap, m) in enumerate((("Energy", self.pb_energy), ("Low", self.pb_low),
-                                        ("Mid", self.pb_mid), ("High", self.pb_high))):
-            meters.addWidget(overline(cap), 0, col)
-            meters.addWidget(m, 1, col)
-        inner.addLayout(meters)
-        return hero
-
-    def _build_left_column(self) -> QtWidgets.QWidget:
-        """Hero + live mini-map + the activity banners."""
-        w = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(w)
-        v.setContentsMargins(0, 0, theme.SP1, 0)
-        v.setSpacing(theme.SP3)
         # --force-start skipped the gear gate: say so for the whole set.
         note = self.app.config.force_start_note
-        self.l_forced = label(f"▲ {note}", "banner", wrap=True)
-        set_css(self.l_forced, _TONES["bad"])
+        self.l_forced = label(note or "", "body", wrap=True)
+        set_css(self.l_forced, f"background:{theme.rgba(DANGER, 0.08)}; border:1px solid {theme.rgba(DANGER, 0.32)};"
+                               f" border-radius:{theme.R_SM}px; padding:10px 14px;")
         v.addWidget(self.l_forced)
         self.l_forced.setVisible(bool(note))
-        v.addWidget(self._build_hero())
 
-        rig = Card("Rig", "venue")
-        rig.add_accessory(label("LIVE VIEW", "modeBadge"))
-        split = QtWidgets.QHBoxLayout()
-        split.setSpacing(theme.SP4)
-        split.addWidget(self.rig_view, 1)
-        rig.body.addLayout(split, 1)
-        # Banner labels: what the automation is doing right now.
-        self.l_cue = label("", "banner", wrap=True)
-        self.l_arm = label("", "banner", wrap=True)
-        self.l_laser_flash = label("", "banner", wrap=True)
-        self.l_synth = label("", "banner", wrap=True)
-        # docs/14 §2: distinguishes the system's auto-blackout (no music detected)
-        # from the operator's manual toggle — they're independent triggers,
-        # so the manual button's own checked-state won't reflect the auto one.
-        self.l_auto_blackout = label("", "banner", wrap=True)
-        # FAIL-01: Pro DJ Link went quiet mid-set; the show holds its look.
-        self.l_pdl_lost = label("", "banner", wrap=True)
-        self.l_idle = label("○ Automation is running the show. Nothing needs you right now.", "idle", wrap=True)
-        acts_w = QtWidgets.QWidget()
-        acts_w.setFixedWidth(272)
-        acts = QtWidgets.QVBoxLayout(acts_w)
-        acts.setContentsMargins(0, 0, 0, 0)
-        acts.setSpacing(theme.SP2)
-        acts.addWidget(overline("Activity"))
-        for lbl in (self.l_pdl_lost, self.l_auto_blackout, self.l_cue, self.l_arm,
-                    self.l_laser_flash, self.l_synth):
-            lbl.hide()
-            acts.addWidget(lbl)
-        acts.addWidget(self.l_idle)
-        acts.addStretch(1)
-        split.addWidget(acts_w)
-        v.addWidget(rig, 1)
-        return w
+        bar = QtWidgets.QHBoxLayout()
+        bar.setSpacing(18)
+        self.chip_onair = OnAirChip(live=not self._demo)
+        self.st_music = StatusLine("Listening for music", "off")
+        self.st_lights = StatusLine("", "off")
+        self.st_phone = StatusLine("Phone remote off", "off")
+        self.pro_switch = ProSwitch()
+        for w in (self.chip_onair, self.st_music, self.st_lights, self.st_phone):
+            bar.addWidget(w)
+        bar.addStretch(1)
+        bar.addWidget(self.pro_switch)
+        v.addLayout(bar)
 
-    def _build_right_column(self) -> QtWidgets.QWidget:
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(theme.SP5)
+        grid.setVerticalSpacing(theme.SP5)
+        self.stage_frame = self._build_stage()
+        grid.addWidget(self.stage_frame, 0, 0)
+        self._rack = self._build_rack()
+        grid.addWidget(self._rack, 0, 1, _ALIGN.AlignTop)
+        grid.setColumnStretch(0, 1)
+        grid.setRowStretch(0, 1)
+        self.pro_rack = self._build_pro()
+        grid.addWidget(self.pro_rack, 1, 0, 1, 2)
+        v.addLayout(grid, 1)
+        # The confirmation sheet covers the page but not the rack column: the
+        # Blackout key stays reachable while it is up.
+        self.sheet = Sheet(page, area=lambda: QtCore.QRect(
+            0, 0, self._rack.geometry().left() - theme.SP2, page.height()))
+
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        area.setWidget(page)
+        self.live_page = area
+        return area
+
+    def _build_stage(self) -> QtWidgets.QFrame:
+        frame = QtWidgets.QFrame()
+        frame.setObjectName("stage")
+        set_css(frame, f"QFrame#stage {{ background:{theme.ROOM}; border:1px solid {theme.LINE_2};"
+                       f" border-radius:{theme.R_LG}px; }}")
+        v = QtWidgets.QVBoxLayout(frame)
+        v.setContentsMargins(1, 1, 1, 1)
+        v.setSpacing(0)
+        self.rig_view.setMinimumHeight(200)
+        self.rig_view.installEventFilter(self)
+        v.addWidget(self.rig_view, 1)
+
+        deck = QtWidgets.QFrame()
+        deck.setObjectName("deck")
+        set_css(deck, f"QFrame#deck {{ background:{theme.DECK}; border:none; border-top:1px solid {theme.LINE};"
+                      f" border-bottom-left-radius:{theme.R_LG - 1}px; border-bottom-right-radius:{theme.R_LG - 1}px; }}")
+        dh = QtWidgets.QHBoxLayout(deck)
+        dh.setContentsMargins(20, 16, 20, 18)
+        dh.setSpacing(24)
+        now = QtWidgets.QVBoxLayout()
+        now.setSpacing(3)
+        self.beat_leds = BeatLeds(self.glow)
+        now.addWidget(self.beat_leds)
+        now.addSpacing(6)
+        self.l_read_title = label("", "readTitle")
+        self.l_read_text = label("", "readText", wrap=True)
+        now.addWidget(self.l_read_title)
+        now.addWidget(self.l_read_text)
+        now.addStretch(1)
+        now_w = QtWidgets.QWidget()
+        now_w.setLayout(now)
+        now_w.setFixedWidth(250)
+        dh.addWidget(now_w)
+        track = QtWidgets.QVBoxLayout()
+        track.setSpacing(4)
+        self.section_strip = SectionStrip(self.glow)
+        track.addWidget(self.section_strip)
+        self.l_track_cap = label("", "hint")
+        track.addLayout(hbox(label("Last 2 minutes", "hint"), self.l_track_cap, stretch_at=1))
+        dh.addLayout(track, 1)
+        v.addWidget(deck)
+        return frame
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt override)
+        # round the stage view's top corners to the frame's
+        if obj is self.rig_view and event.type() == QtCore.QEvent.Type.Resize:
+            r = QtCore.QRectF(self.rig_view.rect())
+            path = QtGui.QPainterPath()
+            rad = theme.R_LG - 1
+            path.addRoundedRect(r.adjusted(0, 0, 0, rad), rad, rad)
+            self.rig_view.setMask(QtGui.QRegion(path.toFillPolygon().toPolygon()))
+        return super().eventFilter(obj, event)
+
+    def _build_rack(self) -> QtWidgets.QWidget:
         m = self.app.manual
-        w = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(w)
-        v.setContentsMargins(theme.SP1, 0, 0, 0)
+        col = QtWidgets.QWidget()
+        col.setFixedWidth(320)
+        v = QtWidgets.QVBoxLayout(col)
+        v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(theme.SP3)
 
-        # --- SAFETY / OVERRIDES: the hard switches ----------------------
-        # Kill switches first: the same spot on every rig and every window
-        # size, right under the header, never shuffled by profile-specific cards.
-        safe = QtWidgets.QHBoxLayout()
-        safe.setSpacing(theme.SP2)
-        self.b_black = CueButton("Blackout", "B", "power", role="danger", checkable=True, variant="xl")
-        self.b_black.setToolTip("One press kills every fixture. Press again to bring the show back.")
-        self.b_freeze = CueButton("Freeze", "F", "freeze", role="danger", checkable=True, variant="xl")
-        self.b_freeze.setToolTip("Hold the current look. Press again to release.")
-        # A crash relaunch restores blackout before the window exists, and the
-        # phone console writes these fields at any time: start from the model,
-        # and refresh() keeps every hard switch and fader in step with it.
-        self.b_black.setChecked(m.blackout)
-        self.b_freeze.setChecked(m.freeze)
-        safe.addWidget(self.b_black, 3)
-        safe.addWidget(self.b_freeze, 2)
-        v.addLayout(safe)
-        # Phone console (--phone): its URL, token included, once the app has
-        # one. Selectable so it can be copied; hidden until then.
-        self.l_phone = label("", "value")
-        self.l_phone.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.l_phone.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)   # never steals B / F / Space
-        self.l_phone.setToolTip("Open this on a phone on the same network. Select the text to copy it.")
-        self.phone_row = QtWidgets.QWidget()
-        self.phone_row.setLayout(hbox(overline("Phone"), self.l_phone, spacing=theme.SP2, stretch_at=2))
-        self.phone_row.hide()
-        v.addWidget(self.phone_row)
+        rack = QtWidgets.QFrame()
+        rack.setObjectName("panel")
+        rv = QtWidgets.QVBoxLayout(rack)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
+        ch = QtWidgets.QVBoxLayout()
+        ch.setContentsMargins(18, 16, 18, 18)
+        ch.setSpacing(10)
+        self.l_bright_v = label("", "value")
+        self.l_bright_v.setAlignment(_ALIGN.AlignRight | _ALIGN.AlignVCenter)
+        ch.addLayout(hbox(icon_label("sun"), label("Brightness", "strong"), self.l_bright_v, stretch_at=2))
+        self.s_bright = GlowFader(0, 100, round(m.master_brightness * 100), self.glow)
+        self.s_bright.setAccessibleName("Brightness")
+        ch.addWidget(self.s_bright)
+        rv.addLayout(ch)
+        rv.addWidget(hair())
+        look = QtWidgets.QHBoxLayout()
+        look.setContentsMargins(18, 14, 18, 16)
+        look.setSpacing(12)
+        look.addWidget(VenueTile(self.glow))
+        lt = QtWidgets.QVBoxLayout()
+        lt.setSpacing(0)
+        self.l_look = label("", "strong")
+        lt.addWidget(self.l_look)
+        lt.addWidget(label("Look now showing", "hint"))
+        look.addLayout(lt, 1)
+        rv.addLayout(look)
+        v.addWidget(rack)
 
-        # --- CUES: what Josh reaches for mid-set --------------------------
-        cues = Card("Cues", "show")
-        cl = QtWidgets.QGridLayout()
-        cl.setSpacing(theme.SP2)
+        # Blackout: one press kills every fixture; again brings the show back.
+        # A crash relaunch restores blackout before the window exists, and the
+        # phone console writes it at any time: start from the model, and
+        # refresh() keeps it in step.
+        self.b_black = BlackoutKey()
+        self.b_black.setToolTip("One press kills every fixture. Press again to bring the show back.")
+        self.b_black.setChecked(m.blackout)
+        v.addWidget(self.b_black)
+        foot = label("Everything else is automatic. You can leave this screen alone all night.", "footNote", wrap=True)
+        foot.setAlignment(_ALIGN.AlignHCenter)
+        v.addWidget(foot)
+        v.addStretch(1)
+
+        self.s_bright.valueChanged.connect(lambda x: setattr(m, "master_brightness", x / 100))
+        self.s_bright.valueChanged.connect(lambda x: self.l_bright_v.setText(f"{x}%"))
+        self.l_bright_v.setText(f"{self.s_bright.value()}%")
+        self.b_black.toggled.connect(self._set_blackout)
+        return col
+
+    # ------------------------------------------------------------------ pro rack
+    def _section(self, title: str, icon_name: str, hint: str = "") -> tuple[QtWidgets.QWidget, QtWidgets.QVBoxLayout]:
+        w = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(w)
+        v.setContentsMargins(16, 16, 16, 16)
+        v.setSpacing(8)
+        v.addLayout(heading(title, icon_name))
+        if hint:
+            h = label(hint, "hint", wrap=True)
+            v.addWidget(h)
+        return w, v
+
+    def _build_pro(self) -> QtWidgets.QFrame:
+        m = self.app.manual
+        rack = QtWidgets.QFrame()
+        rack.setObjectName("panel")
+        row = QtWidgets.QHBoxLayout(rack)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+
+        # --- Moments: what Josh reaches for mid-set ------------------------
+        moments, mv = self._section("Moments", "bolt", "Push the show yourself. It goes back to automatic after.")
+        pads = QtWidgets.QGridLayout()
+        pads.setSpacing(6)
+        g = self.glow
         # DJ build cue (2026-09-16, core/metronome.py's cue_build): BUILD now,
         # held until the drop lands (or 32 bars, or a second press cancels).
-        self.b_cue = CueButton("Cue build", "C", "cue_build")
+        self.b_cue = CueButton("Build up now", "C", "trend", glow=g)
         self.b_cue.setToolTip("BUILD now, held until the drop lands. Press again to cancel.")
         # DJ drop arm (2026-09-17, core/metronome.py's arm_drop): the next
         # drop-level kick commits the drop instantly. Pressed again while
         # armed (2026-09-19): the drop CUTS on the next downbeat regardless.
-        self.b_arm = CueButton("Arm drop", "D", "arm_drop")
+        self.b_arm = CueButton("Drop on the next kick", "D", "drop", glow=g)
         self.b_arm.setToolTip("The next drop-level kick commits the drop. Press again to cut on the next downbeat.")
-        self.b_burst = CueButton("Strobe burst", "Space", "strobe")
-        self.b_skip = CueButton("Skip scene", "→", "skip")
+        self.b_burst = CueButton("Strobe burst", "Space", "flash", glow=g)
+        self.b_burst.setToolTip("A short strobe on every light with a strobe channel, up to the strobe limit.")
+        self.b_skip = CueButton("Next look", "→", "skip", glow=g)
+        self.b_freeze = CueButton("Freeze the look", "F", "freeze", checkable=True, glow=g)
+        self.b_freeze.setToolTip("Hold the current look. Press again to release.")
+        self.b_freeze.setChecked(m.freeze)
+        self.b_tap = CueButton("Tap tempo", "T", "tap", glow=g)
+        self.b_tap.setToolTip("Tap along on the beat to set the BPM when there is no beat grid.")
+        for i, b in enumerate((self.b_cue, self.b_arm, self.b_burst, self.b_skip, self.b_freeze, self.b_tap)):
+            pads.addWidget(b, i // 2, i % 2)
+        mv.addLayout(pads)
+        mv.addStretch(1)
+
+        # --- Lasers ----------------------------------------------------------
+        profile = getattr(self.app.rig, "laser_profile", "") or ""
+        hint = ("On for the demo, so its drops can show them. Only this computer can turn them on."
+                if self._demo else _LASER_HINT.get(profile, _LASER_HINT_DEFAULT))
+        lasers, lv = self._section("Lasers", "laser", hint)
+        # Arming is per run, per track (2026-09-16): never persisted, off at
+        # every launch on the accent rigs. L toggles it; the first arming of a
+        # run that started disarmed asks first (the laser sheet).
+        self.cb_laser = ToggleRow("Lasers on", "Arm per song", key="L", compact=True)
+        self.cb_laser.setChecked(m.laser_enable)
+        self.cb_laser.before_on = self._laser_gate
+        lv.addWidget(self.cb_laser)
+        lpads = QtWidgets.QGridLayout()
+        lpads.setSpacing(6)
+        # 2026-10-06 (trigger profile): one laser moment NOW. A counter on ManualParams.
+        self.b_laser_hit = CueButton("Laser hit", "J", "flash", glow=g)
         # Manual laser cue (2026-09-30, engines/laser.py MANUAL CUE): held
-        # (checkable), the dotted line shows with its sweep speed following
-        # the mids + highs. Also drivable from a MIDI-learned "laser_cue"
-        # control (inputs/midi_map.py); refresh() mirrors that back here.
-        self.b_laser_cue = CueButton("Cue laser", "K", "laser", checkable=True)
+        # (checkable), the lasers show while it is on. Also drivable from a
+        # MIDI-learned "laser_cue" control; refresh() mirrors that back here.
+        self.b_laser_cue = CueButton("Hold lasers", "K", "pause", checkable=True, glow=g)
         self.b_laser_cue.setChecked(m.laser_cue)
-        # 2026-10-06 (trigger profile): one laser moment NOW -- the operator's
-        # "manual scene button" for the lasers. A counter on ManualParams.
-        self.b_laser_hit = CueButton("Laser hit", "J", "laser_hit")
-        for i, b in enumerate((self.b_cue, self.b_arm, self.b_burst,
-                               self.b_skip, self.b_laser_cue, self.b_laser_hit)):
-            cl.addWidget(b, i // 3, i % 3)
-        cues.body.addLayout(cl)
-        cues.cap_height()
-        v.addWidget(cues, 3)
+        lpads.addWidget(self.b_laser_hit, 0, 0)
+        lpads.addWidget(self.b_laser_cue, 0, 1)
+        lv.addLayout(lpads)
+        self._build_laser_profile_controls(lasers, lv, profile)
+        lv.addStretch(1)
 
-        # --- LASER SCENES (laser profile "manual", 2026-10-10, Junior Crib) --
-        # Sophia's Laser Show look buttons, on the Show tab: press a scene to
-        # cue it on every head, OFF (the launch state) to kill them. Nothing
-        # listens to the music (engines/laser_manual.py). Only rigs on that
-        # profile get this group -- every other rig's Show tab is unchanged.
-        self.laser_scene_buttons: dict[str, QtWidgets.QPushButton] = {}
-        if getattr(self.app.rig, "laser_profile", "") == "manual":
-            from ..engines.laser_manual import manual_scene_names as scene_names
-            eng = self.app.laser_engine
-            lasers = Card("Laser scenes", "laser")
-            lasers.add_accessory(label("Press a scene to cue it. Off at launch.", "hint"))
-            ll = QtWidgets.QGridLayout()
-            ll.setSpacing(theme.SP2)
-            self._laser_scene_group = QtWidgets.QButtonGroup(w)
-            self._laser_scene_group.setExclusive(True)
-            names = ["OFF"] + scene_names()
-            for i, name in enumerate(names):
-                b = _button(name, "danger" if name == "OFF" else "look", checkable=True)
-                self.laser_scene_buttons[name] = b
-                self._laser_scene_group.addButton(b)
-                ll.addWidget(b, i // 4, i % 4)
-                if name == "OFF":
-                    b.clicked.connect(eng.off)
-                else:
-                    b.clicked.connect(lambda _c=False, n=name: eng.cue(n))
-            self.laser_scene_buttons[eng.scene or "OFF"].setChecked(True)
-            lasers.body.addLayout(ll)
-            v.addWidget(lasers)
-
-        # --- FEEL: biases/caps, never overrides ---------------------------
-        feel = Card("Feel  ·  bias and caps, never overrides", "sun")
-        fl = QtWidgets.QGridLayout()
-        fl.setHorizontalSpacing(theme.SP4)
-        fl.setVerticalSpacing(theme.SP1)
-        self.s_bright = _slider(0, 100, round(m.master_brightness * 100))
-        self.s_strobe = _slider(0, 100, round(m.strobe_cap * 100))
-        self.s_warm = _slider(-100, 100, int(m.warm_cool_bias * 100), role="bipolar")
-        self.l_bright_v = label("", "value")
+        # --- Feel: biases/caps, never overrides --------------------------------
+        feel, fv = self._section("Feel", "sliders", "These bias the show. They never take it over.")
+        self.s_strobe = GlowFader(0, 100, round(m.strobe_cap * 100), g, small=True)
+        self.s_strobe.setAccessibleName("Strobe limit")
+        self.s_warm = GlowFader(-100, 100, int(m.warm_cool_bias * 100), small=True, mono=True)
+        self.s_warm.setAccessibleName("Warm to cool")
         self.l_strobe_v = label("", "value")
         self.l_warm_v = label("", "value")
-        for r, (cap, s, val) in enumerate((("Master brightness", self.s_bright, self.l_bright_v),
-                                           ("Strobe cap", self.s_strobe, self.l_strobe_v),
-                                           ("Warm  ·  Cool", self.s_warm, self.l_warm_v))):
-            val.setMinimumWidth(48)
-            val.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-            fl.addWidget(label(cap, "body2"), r, 0)
-            fl.addWidget(s, r, 1)
-            fl.addWidget(val, r, 2)
-        fl.setColumnStretch(1, 1)
-        feel.body.addLayout(fl)
+        fv.addLayout(hbox(label("Strobe limit", "body2"), self.l_strobe_v, stretch_at=1))
+        fv.addWidget(self.s_strobe)
+        fv.addSpacing(4)
+        fv.addLayout(hbox(label("Warm", "body2"), self.l_warm_v, label("Cool", "body2"), stretch_at=1))
+        fv.itemAt(fv.count() - 1).layout().insertStretch(3, 1)
+        fv.addWidget(self.s_warm)
+        fv.addSpacing(4)
         # Synth Sync (Josh, 2026-09-15): wash follows the synths/stabs (the mid
-        # band) and strobes pause -- see engines/reactive.py's SYNTH_* block.
-        self.cb_synth = QtWidgets.QCheckBox("Synth Sync (S)")
-        self.cb_synth.setToolTip("The wash follows the synths (the mid band) and strobes pause.")
+        # band); the automated strobes still cut through (engines/reactive.py).
+        self.cb_synth = ToggleRow("Follow the synths", "The wash rides the synths. Strobes still cut through.",
+                                  key="S", compact=True)
         self.cb_synth.setChecked(m.synth_sync)
-        # Arming is per run, per track (2026-09-16): never persisted, off at
-        # every launch -- Josh picks the tunes that get the laser, since the
-        # software can't (see engines/laser.py). L toggles it.
-        self.cb_laser = QtWidgets.QCheckBox("Arm lasers (L)")
-        self.cb_laser.setToolTip("Off at launch. Arm per track.")
-        self.cb_laser.setChecked(m.laser_enable)
-        toggles = hbox(self.cb_synth, self.cb_laser, spacing=theme.SP6, stretch_at=2)
-        toggles.setContentsMargins(0, theme.SP1, 0, 0)
-        feel.body.addLayout(toggles)
-        v.addWidget(feel)
-        v.addStretch(1)
+        fv.addWidget(self.cb_synth)
+        fv.addStretch(1)
+
+        # --- Under the hood -----------------------------------------------------
+        hood, hv = self._section("Under the hood", "gauge")
+        self.l_bpm = label("--.-", "bpm")
+        bpm = QtWidgets.QHBoxLayout()
+        bpm.setSpacing(6)
+        bpm.addWidget(self.l_bpm, 0, _ALIGN.AlignBottom)
+        bpm.addWidget(label("BPM", "bpmUnit"), 0, _ALIGN.AlignBottom)
+        bpm.addStretch(1)
+        self.beat_leds_hood = BeatLeds(g)
+        bpm.addWidget(self.beat_leds_hood, 0, _ALIGN.AlignBottom)
+        hv.addLayout(bpm)
+        read = QtWidgets.QGridLayout()
+        read.setHorizontalSpacing(12)
+        read.setVerticalSpacing(2)
+        self.l_beat = label("--", "value")
+        # Energy bucket (core/show_state.py's debounced `bucket`): the single
+        # most useful "what does the show think is happening" readout.
+        self.l_bucket = label("--", "bucket")
+        self.l_scene = label("--", "value")
+        # Laser profile + mood (2026-10-01): on the bar's feature rig the
+        # lasers are the main light, so what they are doing sits here too.
+        self.l_laser = label("--", "bucket")
+        self.l_deck = label("--", "value")
+        self.l_output = label("", "value")
+        self.l_grid = label("", "value")
+        for r, (cap, w) in enumerate((("Bar", self.l_beat), ("Section", self.l_bucket), ("Look", self.l_scene),
+                                      ("Laser", self.l_laser), ("Deck", self.l_deck),
+                                      ("Light output", self.l_output), ("Beat grid", self.l_grid))):
+            read.addWidget(label(cap, "hint"), r, 0)
+            read.addWidget(w, r, 1, _ALIGN.AlignRight)
+        read.setColumnStretch(1, 1)
+        hv.addLayout(read)
+        meters = QtWidgets.QGridLayout()
+        meters.setHorizontalSpacing(8)
+        meters.setVerticalSpacing(4)
+        self.pb_low = Meter(g)
+        self.pb_mid = Meter(g)
+        self.pb_high = Meter(g)
+        for r, (cap, mtr) in enumerate((("Low", self.pb_low), ("Mid", self.pb_mid), ("High", self.pb_high))):
+            c = label(cap, "hint")
+            c.setFixedWidth(44)
+            meters.addWidget(c, r, 0)
+            meters.addWidget(mtr, r, 1)
+        hv.addLayout(meters)
+        # Connection dots: Audio / Pro DJ Link / MIDI / DMX.
+        self.pill_conn = StatusPill([("Audio", "bad"), ("Link", "bad"), ("MIDI", "bad"), ("DMX", "bad")])
+        self.pill_conn.setToolTip("Audio / Pro DJ Link / MIDI turn green once real data is flowing, "
+                                  "DMX once a hardware output (not the log fallback) is open.")
+        hv.addWidget(self.pill_conn)
+        self.l_health = label("", "health")
+        hv.addWidget(self.l_health)
+        # Activity: what the automation is doing right now.
+        self.l_cue = label("", "banner", wrap=True)
+        self.l_arm = label("", "banner", wrap=True)
+        self.l_laser_flash = label("", "banner", wrap=True)
+        self.l_synth = label("", "banner", wrap=True)
+        # docs/14 §2: the system's auto-blackout (no music detected) is
+        # independent of the operator's manual toggle.
+        self.l_auto_blackout = label("", "banner", wrap=True)
+        # FAIL-01: Pro DJ Link went quiet mid-set; the show holds its look.
+        self.l_pdl_lost = label("", "banner", wrap=True)
+        self.l_idle = label("○ Automation is running the show. Nothing needs you right now.", "idle", wrap=True)
+        # each line sits under the column it is about
+        for lbl, col in ((self.l_pdl_lost, hv), (self.l_auto_blackout, hv), (self.l_cue, mv), (self.l_arm, mv),
+                         (self.l_laser_flash, lv), (self.l_synth, fv)):
+            lbl.hide()
+            col.insertWidget(col.count() - 1, lbl)     # above the column's closing stretch
+        hv.addWidget(self.l_idle)
+        hv.addStretch(1)
+
+        for i, sec in enumerate((moments, lasers, feel, hood)):
+            if i:
+                row.addWidget(hair(vertical=True))
+            row.addWidget(sec, 1)
+
         # wiring
-        self.s_bright.valueChanged.connect(lambda x: setattr(m, "master_brightness", x / 100))
         self.s_strobe.valueChanged.connect(lambda x: setattr(m, "strobe_cap", x / 100))
         self.s_warm.valueChanged.connect(lambda x: setattr(m, "warm_cool_bias", x / 100))
-        self.s_bright.valueChanged.connect(lambda x: self.l_bright_v.setText(f"{x}%"))
         self.s_strobe.valueChanged.connect(lambda x: self.l_strobe_v.setText(f"{x}%"))
         self.s_warm.valueChanged.connect(self._show_warm)
-        self.l_bright_v.setText(f"{self.s_bright.value()}%")
         self.l_strobe_v.setText(f"{self.s_strobe.value()}%")
         self._show_warm(self.s_warm.value())
         self.cb_laser.toggled.connect(lambda on: setattr(m, "laser_enable", on))
         self.b_laser_cue.toggled.connect(lambda on: setattr(m, "laser_cue", on))
         self.b_laser_hit.clicked.connect(lambda: setattr(m, "laser_hit", m.laser_hit + 1))
         self.cb_synth.toggled.connect(lambda on: setattr(m, "synth_sync", on))
-        self.b_black.toggled.connect(self._set_blackout)
         self.b_freeze.toggled.connect(lambda on: setattr(m, "freeze", on))
         self.b_skip.clicked.connect(self.app.phrase_engine.skip)
         self.b_tap.clicked.connect(self._do_tap)
         self.b_burst.clicked.connect(self._strobe_burst)
         self.b_cue.clicked.connect(self.app.metronome.cue_build)
         self.b_arm.clicked.connect(self.app.metronome.arm_drop)
-        return w
+        return rack
+
+    def _build_laser_profile_controls(self, parent: QtWidgets.QWidget, lv: QtWidgets.QVBoxLayout,
+                                      profile: str) -> None:
+        """The profile-specific laser controls, in the Lasers section."""
+        m = self.app.manual
+        self.laser_scene_buttons: dict[str, QtWidgets.QPushButton] = {}
+        self.laser_look_buttons: dict[str, QtWidgets.QPushButton] = {}
+        self._laser_mode_buttons: dict[str, QtWidgets.QRadioButton] = {}
+        if profile == "manual":
+            # Laser profile "manual" (2026-10-10, Junior Crib): press a scene to
+            # cue it on every head, Off (the launch state) to kill them.
+            # Nothing listens to the music (engines/laser_manual.py).
+            from ..engines.laser_manual import manual_scene_names as scene_names
+            eng = self.app.laser_engine
+            lv.addWidget(label("Scenes", "label"))
+            grid = QtWidgets.QGridLayout()
+            grid.setSpacing(4)
+            self._laser_scene_group = QtWidgets.QButtonGroup(parent)
+            self._laser_scene_group.setExclusive(True)
+            for i, name in enumerate(["OFF"] + scene_names()):
+                b = _look_button("Off" if name == "OFF" else name, "lookOff" if name == "OFF" else "look")
+                self.laser_scene_buttons[name] = b
+                self._laser_scene_group.addButton(b)
+                grid.addWidget(b, i // 3, i % 3)
+                if name == "OFF":
+                    b.clicked.connect(eng.off)
+                else:
+                    b.clicked.connect(lambda _c=False, n=name: eng.cue(n))
+            self.laser_scene_buttons[eng.scene or "OFF"].setChecked(True)
+            lv.addLayout(grid)
+        elif profile == "show":
+            # Laser SHOW profile (2026-10-08, engines/laser_show.py): the mode
+            # (follow the music / rotate / hold one look), the looks (pressing
+            # one holds it) and the drop accent. ManualParams fields only.
+            seg = QtWidgets.QFrame()
+            seg.setObjectName("seg")
+            sh = QtWidgets.QHBoxLayout(seg)
+            sh.setContentsMargins(3, 3, 3, 3)
+            sh.setSpacing(2)
+            self.rb_laser_follow = QtWidgets.QRadioButton("Follow music")
+            self.rb_laser_rotate = QtWidgets.QRadioButton("Rotate")
+            self.rb_laser_hold = QtWidgets.QRadioButton("Hold one")
+            self.rb_laser_follow.setToolTip("break: Slow Rainbow, build: Tension ramp, armed: chop, "
+                                            "drop: Fan 8 bars then Rainbow, peak: Ping-Pong")
+            self.rb_laser_rotate.setToolTip("The static scenes in turn every 16 bars, from the picked one.")
+            self.rb_laser_hold.setToolTip("Manual override: show the picked look and nothing else.")
+            self._laser_mode_buttons = {MODE_FOLLOW: self.rb_laser_follow, MODE_ROTATE: self.rb_laser_rotate,
+                                        MODE_HOLD: self.rb_laser_hold}
+            for rb in self._laser_mode_buttons.values():
+                rb.setObjectName("segItem")
+                rb.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+                rb.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+                sh.addWidget(rb, 1)
+            self._laser_mode_buttons.get(m.laser_mode, self.rb_laser_follow).setChecked(True)
+            lv.addWidget(seg)
+            grid = QtWidgets.QGridLayout()
+            grid.setSpacing(4)
+            self._laser_look_group = QtWidgets.QButtonGroup(parent)
+            self._laser_look_group.setExclusive(True)
+            for i, name in enumerate(look_names()):
+                b = _look_button(name)
+                self.laser_look_buttons[name] = b
+                self._laser_look_group.addButton(b)
+                grid.addWidget(b, i // 3, i % 3)
+            if m.laser_scene in self.laser_look_buttons:
+                self.laser_look_buttons[m.laser_scene].setChecked(True)
+            lv.addLayout(grid)
+            self.cb_laser_accent = ToggleRow("Drop accent", "Chop the lasers for 2 bars when a drop lands "
+                                                            "(rotate and hold)", compact=True)
+            self.cb_laser_accent.setChecked(m.laser_drop_accent)
+            lv.addWidget(self.cb_laser_accent)
+            for mode, rb in self._laser_mode_buttons.items():
+                rb.toggled.connect(lambda on, mode=mode: on and setattr(m, "laser_mode", mode))
+            for name, b in self.laser_look_buttons.items():
+                b.clicked.connect(lambda _=False, name=name: self._hold_laser_look(name))
+            self.cb_laser_accent.toggled.connect(lambda on: setattr(m, "laser_drop_accent", on))
 
     def _show_warm(self, x: int) -> None:
         self.l_warm_v.setText("0" if x == 0 else (f"W{-x}" if x < 0 else f"C{x}"))
-
-    def _build_laser_show_tab(self) -> QtWidgets.QWidget:
-        """Sophia's Thai (2026-10-08): the laser mode (follow the music /
-        rotate / hold), the manual override grid (one button per look --
-        pressing one holds it), the drop accent, and the light bar's Synth
-        Sync. Everything here is a ManualParams field read by
-        engines/laser_show.py or the Synth Sync path in engines/reactive.py
-        (unchanged)."""
-        m = self.app.manual
-        w = QtWidgets.QWidget()
-        outer = QtWidgets.QHBoxLayout(w)
-        outer.setContentsMargins(theme.SP4, theme.SP4, theme.SP4, theme.SP4)
-        outer.setSpacing(theme.SP3)
-        left = QtWidgets.QVBoxLayout()
-        left.setSpacing(theme.SP3)
-
-        modes = Card("Laser mode", "laser")
-        self.rb_laser_follow = QtWidgets.QRadioButton(
-            "Follow the music\nbreak: Slow Rainbow · build: Tension ramp · armed: chop · "
-            "drop: Fan 8 bars then Rainbow · peak: Ping-Pong")
-        self.rb_laser_rotate = QtWidgets.QRadioButton("Rotate\nthe static scenes every 16 bars, starting from the picked one")
-        self.rb_laser_hold = QtWidgets.QRadioButton("Hold one look\nmanual override: pick it on the right")
-        self._laser_mode_buttons = {MODE_FOLLOW: self.rb_laser_follow, MODE_ROTATE: self.rb_laser_rotate,
-                                    MODE_HOLD: self.rb_laser_hold}
-        self._laser_mode_buttons.get(m.laser_mode, self.rb_laser_follow).setChecked(True)
-        for rb in self._laser_mode_buttons.values():
-            rb.setObjectName("option")
-            modes.body.addWidget(rb)
-        self.cb_laser_accent = QtWidgets.QCheckBox("Drop accent in rotate / hold\n"
-                                                   "chop the lasers at 8th notes for 2 bars when a drop lands")
-        self.cb_laser_accent.setChecked(m.laser_drop_accent)
-        modes.body.addWidget(self.cb_laser_accent)
-        left.addWidget(modes)
-
-        status = Card("Now playing", "show")
-        self.l_laser_show = label("", "banner", wrap=True)
-        status.body.addWidget(self.l_laser_show)
-        left.addWidget(status)
-
-        bar = Card("Light bar", "rig")
-        self.cb_synth_bar = QtWidgets.QCheckBox("SynthSync (light bar)")
-        self.cb_synth_bar.setChecked(m.synth_sync)
-        bar.body.addWidget(self.cb_synth_bar)
-        left.addWidget(bar)
-        left.addStretch(1)
-
-        looks = Card("Looks", "laser_hit")
-        looks.add_accessory(label("Press one to hold it (manual override)", "hint"))
-        gl = QtWidgets.QGridLayout()
-        gl.setSpacing(theme.SP2)
-        self.laser_look_buttons: dict[str, QtWidgets.QPushButton] = {}
-        self._laser_look_group = QtWidgets.QButtonGroup(w)
-        self._laser_look_group.setExclusive(True)
-        for i, name in enumerate(look_names()):
-            b = _button(name, "look", checkable=True)  # #look / #look:checked in ui/theme.py
-            b.setProperty("variant", "tall")
-            b.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
-            b.setMaximumHeight(140)
-            self.laser_look_buttons[name] = b
-            self._laser_look_group.addButton(b)
-            gl.addWidget(b, i // 3, i % 3)
-        if m.laser_scene in self.laser_look_buttons:
-            self.laser_look_buttons[m.laser_scene].setChecked(True)
-        looks.body.addLayout(gl, 4)
-        looks.body.addStretch(1)       # once the buttons hit their cap, the rest pools below
-
-        lw = QtWidgets.QWidget()
-        lw.setLayout(left)
-        outer.addWidget(lw, 5)
-        outer.addWidget(looks, 6)
-
-        for mode, rb in self._laser_mode_buttons.items():
-            rb.toggled.connect(lambda on, mode=mode: on and setattr(m, "laser_mode", mode))
-        for name, b in self.laser_look_buttons.items():
-            b.clicked.connect(lambda _=False, name=name: self._hold_laser_look(name))
-        self.cb_laser_accent.toggled.connect(lambda on: setattr(m, "laser_drop_accent", on))
-        # Same flag as the Show tab's Synth Sync box (S); refresh() keeps both in step.
-        self.cb_synth_bar.toggled.connect(lambda on: setattr(m, "synth_sync", on))
-        return w
 
     def _hold_laser_look(self, name: str) -> None:
         """A look button: pick it and switch to the manual hold."""
         self.app.manual.laser_scene = name
         self.rb_laser_hold.setChecked(True)      # its toggled slot writes laser_mode
 
+    # ------------------------------------------------------------------ pro / keys
     def _install_shortcuts(self) -> None:
         def sc(key, fn):
-            QtGui.QShortcut(QtGui.QKeySequence(key), self, activated=fn)
+            return QtGui.QShortcut(QtGui.QKeySequence(key), self, activated=fn)
 
+        # B works always; the rest are Pro controls and only work while shown.
         sc("B", self.b_black.toggle)
-        sc("F", self.b_freeze.toggle)
-        sc(QtCore.Qt.Key.Key_Right, self.app.phrase_engine.skip)
-        sc("T", self._do_tap)
-        sc("S", self.cb_synth.toggle)
-        sc("L", self.cb_laser.toggle)
-        sc("K", self.b_laser_cue.toggle)
-        sc("J", self.b_laser_hit.click)
-        sc("C", self.app.metronome.cue_build)
-        sc("D", self.app.metronome.arm_drop)
-        sc(QtCore.Qt.Key.Key_Space, self._strobe_burst)
+        self._pro_shortcuts = [
+            sc("F", self.b_freeze.toggle),
+            sc(QtCore.Qt.Key.Key_Right, self.app.phrase_engine.skip),
+            sc("T", self._do_tap),
+            sc("S", self.cb_synth.toggle),
+            sc("L", self._laser_key),
+            sc("K", self.b_laser_cue.toggle),
+            sc("J", self.b_laser_hit.click),
+            sc("C", self.app.metronome.cue_build),
+            sc("D", self.app.metronome.arm_drop),
+            sc(QtCore.Qt.Key.Key_Space, self._strobe_burst),
+        ]
+
+    def _set_pro(self, on: bool) -> None:
+        self.pro_rack.setVisible(on)
+        for s in self._pro_shortcuts:
+            s.setEnabled(on)
+        if self._settings is not None:
+            self._settings.setValue("pro", on)
+
+    def _laser_gate(self) -> bool:
+        """May the lasers be armed right now? Asks first (the sheet) the
+        first time in a run that started with them off."""
+        if self._lasers_confirmed:
+            return True
+        self.tabs.setCurrentIndex(0)
+        self.sheet.ask(
+            "Turn lasers on?",
+            "Lasers can damage eyes. LiveReact can't see where the beams go, so check the room first. "
+            "Blackout (B) turns them off with everything else.",
+            ["The lasers are mounted above head height\nand aimed over the crowd",
+             "Nobody is standing on a stage or balcony\nin the beam path"],
+            "Turn lasers on", self._lasers_ok, icon_name="laser", danger=True)
+        return False
+
+    def _lasers_ok(self) -> None:
+        self._lasers_confirmed = True
+        self.cb_laser.setChecked(True)
+
+    def _laser_key(self) -> None:
+        if self.cb_laser.isChecked():
+            self.cb_laser.setChecked(False)
+        elif self._laser_gate():
+            self.cb_laser.setChecked(True)
+
+    def resizeEvent(self, e) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(e)
+        if not self.sheet.isHidden():
+            QtCore.QTimer.singleShot(0, lambda: self.sheet.setGeometry(self.sheet.area()))
+
+    def keyPressEvent(self, e) -> None:  # noqa: N802 (Qt override)
+        if e.key() == QtCore.Qt.Key.Key_Escape and self.sheet.isVisible():
+            self.sheet.close_sheet()
+            return
+        super().keyPressEvent(e)
 
     # ------------------------------------------------------------------ actions
     def _set_blackout(self, on: bool) -> None:
@@ -652,22 +833,17 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         return True
 
     def _refresh_status(self, snap) -> None:
-        """Header pills + hero: the parts of refresh that are pure display."""
+        """The status bar and Under the hood: the parts of refresh that are pure display."""
         bpm = f"{snap.bpm:.1f}"
         self.l_bpm.setText(bpm)
-        self.pill_bpm.set(0, value=bpm)
-        self.l_beat.setText(f"BAR {snap.bar}")
-        self.beat_pulse.set_beat(snap.beat_in_bar, self.app.clock.monotonic())
+        self.l_beat.setText(str(snap.bar))
         self.l_deck.setText(str(snap.master_deck) if snap.master_deck else "--")
-        self.l_scene.setText(self.app.phrase_engine.current_scene_name)
+        scene = self.app.phrase_engine.current_scene_name.replace(" -> ", " → ")
+        self.l_scene.setText(scene)
+        self.l_look.setText(scene)
         self.l_bucket.setText(snap.bucket.upper())
         if self._changed("bucket", snap.bucket):
-            color = bucket_color(snap.bucket)
-            set_css(self.l_bucket, chip_css(color, border=False, radius=theme.R_MD))
-            set_css(self.hero_edge, f"background:{color}; border-top-left-radius:{theme.R_LG}px;"
-                                    f" border-bottom-left-radius:{theme.R_LG}px;")
-            self.pill_state.set(0, label=snap.bucket.upper(), tone="ok", color=color)
-        self.pb_energy.setValue(int(snap.energy * 100))
+            set_css(self.l_bucket, chip_css(TEXT))
         low, mid, high = band_levels(snap)
         self.pb_low.setValue(int(low * 100))
         self.pb_mid.setValue(int(mid * 100))
@@ -680,12 +856,15 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         pdl = "fresh" if snap.pdl_fresh else "LOST, look held" if pdl_lost else "STALE"
         midi = "fresh" if snap.midi_fresh else "stale"
         self.l_health.setText(f"clock {clock}  ·  PDL {pdl}  ·  MIDI {midi}{trans}")
+        self.l_grid.setText("Pro DJ Link" if snap.pdl_fresh else "Held (DJ Link lost)" if pdl_lost
+                            else "Free-running" if snap.free_running else "Locked")
 
         # connection dots: PDL/MIDI green only once real beat data is flowing (not
         # just a device seen on the wire); DMX green only once a real hardware
         # backend (not the null/log fallback) has successfully opened.
         _set_dot(self.pill_conn, 0, snap.audio_fresh)
-        if pdl_lost and not snap.pdl_fresh:
+        lost = pdl_lost and not snap.pdl_fresh
+        if lost:
             self.pill_conn.set(1, tone="warn")
         else:
             _set_dot(self.pill_conn, 1, snap.pdl_fresh)
@@ -695,19 +874,80 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         # every write.
         writer = self.app.writer
         hardware = writer.backend.name != "null-log"
-        _set_dot(self.pill_conn, 3, hardware and bool(getattr(writer, "output_ok", writer.is_open)))
-        if pdl_lost and not snap.pdl_fresh:
-            _say(self.l_pdl_lost, "○ DJ LINK LOST, look held", "warn")
-        else:
-            _say(self.l_pdl_lost, "")
+        dmx_ok = hardware and bool(getattr(writer, "output_ok", writer.is_open))
+        _set_dot(self.pill_conn, 3, dmx_ok)
+        _say(self.l_pdl_lost, "○ DJ LINK LOST, look held" if lost else "", "warn")
 
-        manual = self.app.manual
-        live = ("BLACKOUT" if manual.blackout else "NO MUSIC · AUTO-BLACKOUT"
-                if self.app.show_engine.silence.active else "FROZEN" if manual.freeze else "")
-        if self._changed("live", live):
-            if live:
-                self.pill_live.set(0, label=live, tone="warn" if live == "FROZEN" else "bad")
-            self.pill_live.setVisible(bool(live))
+        # the plain-language status bar
+        if lost:
+            music = ("DJ Link lost, look held", "warn")
+        elif self._demo and (snap.audio_fresh or snap.pdl_fresh):
+            music = ("Hearing the demo music", "ok")
+        elif snap.audio_fresh:
+            music = ("Hearing the DJ board" if snap.pdl_fresh else "Hearing the music", "ok")
+        elif snap.pdl_fresh:
+            music = ("DJ Link beats, no audio", "warn")
+        else:
+            music = ("No music coming in", "warn")
+        self.st_music.set(*music)
+        n = len(self.app.rig.fixtures)
+        if not hardware:
+            lights = ("Demo, nothing sent to the lights" if self._demo else "No light adapter", "off" if self._demo else "bad")
+        elif dmx_ok:
+            lights = (f"Sending to {n} light{'s' if n != 1 else ''}", "ok")
+        else:
+            lights = ("Light adapter not sending", "bad")
+        self.st_lights.set(*lights)
+        self.l_output.setText(f"{writer.backend.name}, {'open' if dmx_ok else 'not sending'}"
+                              if hardware else "None (demo)" if self._demo else "None")
+        self.chip_onair.set_clock(_clock(self.app.clock.monotonic() - self._t0))
+
+    def _refresh_live(self, snap) -> None:
+        """The stage HUD and the deck: plain language only."""
+        m = self.app.manual
+        silent = self.app.show_engine.silence.active
+        lost = getattr(snap, "pdl_lost", False) and not snap.pdl_fresh
+        if m.blackout:
+            title, sub = "Blackout.", "The lights are off. Press B or the Blackout key to bring them back."
+        elif silent:
+            title, sub = "Waiting for music.", "Play something and the lights will pick it up."
+        elif m.freeze:
+            title, sub = "Frozen.", "The look is held. Turn off Freeze to follow the music again."
+        elif lost:
+            title, sub = "Holding the look.", "DJ Link went quiet. The lights keep this look until it comes back."
+        else:
+            title, sub = "Listening.", "Your lights are following the music."
+        met = self.app.metronome
+        left = []
+        if met.build_cue_active:
+            left.append("Build held" if met.build_cue_source != "auto" else "Building (auto)")
+        if met.drop_armed:
+            left.append("Drop on the next downbeat" if met.drop_cut_pending else "Drop armed")
+        if self.app.reactive_engine.synth_sync_active:
+            left.append("Following the synths")
+        right = ((self.l_look.text(), ""),
+                 ("Lasers on", "ok") if m.laser_enable else ("Lasers off", "off"))
+        self.rig_view.set_hud(title, sub, tuple(left), right, m.blackout)
+        self.b_cue.set_lit(met.build_cue_active)
+        self.b_arm.set_lit(met.drop_armed)
+
+        read = _SILENT if silent else _READ.get(snap.bucket, _READ["break"])
+        if not silent and snap.bucket == "build":
+            read = (read[0], "The drop is armed for the next kick." if met.drop_armed
+                    else "Energy is rising. A drop may be close." if snap.rising else read[1])
+        if self._changed("read", read):
+            self.l_read_title.setText(read[0])
+            self.l_read_text.setText(read[1])
+        beat = 0 if (silent or m.blackout) else int(snap.beat_in_bar)
+        self.beat_leds.set_beat(beat)
+        self.beat_leds_hood.set_beat(beat)
+        if self.section_strip.add(self.app.clock.monotonic(), snap.bucket, snap.energy_norm):
+            sec, secs = self.section_strip.current_run()
+            cap = f"{SECTION_NAMES.get(sec, sec.title())} for {int(secs) // 60}:{int(secs) % 60:02d}"
+            if self._changed("track_cap", cap):
+                self.l_track_cap.setText(cap)
+        url = getattr(self.app, "phone_url", None)
+        self.st_phone.set("Phone remote on" if url else "Phone remote off", "ok" if url else "off")
 
     def _mirror_manual(self) -> None:
         """Show what ManualParams holds right now. The phone console and the
@@ -718,12 +958,14 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         _mirror_check(self.b_black, m.blackout)
         _mirror_check(self.b_freeze, m.freeze)
         _mirror_check(self.cb_laser, m.laser_enable)
+        _mirror_check(self.cb_synth, m.synth_sync)
+        # A MIDI "laser_cue" control writes manual.laser_cue directly.
+        _mirror_check(self.b_laser_cue, m.laser_cue)
         _mirror_slider(self.s_bright, self.l_bright_v, m.master_brightness)
         _mirror_slider(self.s_strobe, self.l_strobe_v, m.strobe_cap)
         url = getattr(self.app, "phone_url", None)
         if self._changed("phone_url", url):
-            self.l_phone.setText(url or "")
-            self.phone_row.setVisible(bool(url))
+            self.phone_page.set_url(url)
 
     def refresh(self) -> None:
         snap = self.app.show_state.snapshot()
@@ -736,112 +978,13 @@ class ConsoleWindow(QtWidgets.QMainWindow):
 
         self._mirror_manual()
         self._refresh_status(snap)
+        self._refresh_live(snap)
 
         if self.app.show_engine.silence.active:
             _say(self.l_auto_blackout, "● AUTO-BLACKOUT · no music detected", "bad")
         else:
             _say(self.l_auto_blackout, "")
-
-        laser = self.app.laser_engine
-        # A MIDI "laser_cue" control writes manual.laser_cue directly; keep
-        # the button showing the real state without re-firing its toggled slot.
-        if self.b_laser_cue.isChecked() != self.app.manual.laser_cue:
-            self.b_laser_cue.blockSignals(True)
-            self.b_laser_cue.setChecked(self.app.manual.laser_cue)
-            self.b_laser_cue.blockSignals(False)
-        mood = getattr(laser, "mood", None)  # engines/laser_feature.py and laser_trigger.py have one
-        trigger = getattr(laser, "trigger", None)  # only engines/laser_trigger.py (2026-10-06)
-        scene_name = getattr(laser, "scene_name", None)  # only engines/laser_show.py (2026-10-08)
-        if scene_name is not None:
-            # Show profile: the chip names the scene; the banner says what the
-            # rotation / accent are doing. Keep the Laser Show tab's Synth
-            # Sync box in step with the Show tab's (one flag, two boxes).
-            if self.laser_show_tab is not None and self.cb_synth_bar.isChecked() != self.app.manual.synth_sync:
-                self.cb_synth_bar.blockSignals(True)
-                self.cb_synth_bar.setChecked(self.app.manual.synth_sync)
-                self.cb_synth_bar.blockSignals(False)
-            if self.cb_synth.isChecked() != self.app.manual.synth_sync:
-                self.cb_synth.blockSignals(True)
-                self.cb_synth.setChecked(self.app.manual.synth_sync)
-                self.cb_synth.blockSignals(False)
-            accent = bool(getattr(laser, "accent", False))
-            mode = getattr(laser, "mode", "")
-            self.l_laser.setText(f"SHOW · {scene_name.upper()}" + (" · ACCENT" if accent else ""))
-            lit = scene_name.lower() not in ("off", "dark")
-            set_css(self.l_laser, chip_css(theme.BUCKET_COLORS["drop"] if accent else ACCENT if lit else TEXT_2))
-            if self.app.manual.blackout:
-                text, tone = "○ LASERS BLACKED OUT (B)", "bad"
-            elif not self.app.manual.laser_enable:
-                text, tone = "○ LASERS DISARMED · press L (show profile arms at launch)", "bad"
-            else:
-                reason = getattr(laser, "reason", "")
-                nxt = getattr(laser, "bars_to_next", None)
-                if getattr(laser, "rotating", False):
-                    tail = f"rotating · next in {int(nxt)} bars" if nxt is not None else "rotating on the clock (no beat grid)"
-                    if reason:
-                        tail = f"{reason} · {tail}"
-                else:
-                    tail = reason or mode
-                tail = tail.replace(" — ", " · ")
-                text = f"● LASER SHOW [{mode}] · {scene_name}{' · DROP ACCENT' if accent else ''} · {tail}"
-                tone = "ok"
-            _say(self.l_laser_flash, text, tone)
-            if self.laser_show_tab is not None:
-                _say(self.l_laser_show, text, tone)
-                # the grid highlights what is showing NOW (follow / rotate
-                # move it around; in hold it is the picked look)
-                b = self.laser_look_buttons.get(scene_name)
-                if b is not None and not b.isChecked():
-                    b.setChecked(True)
-                rb = self._laser_mode_buttons.get(mode)
-                if rb is not None and not rb.isChecked():
-                    rb.blockSignals(True); rb.setChecked(True); rb.blockSignals(False)
-            mood = None
-        elif mood is None:
-            self.l_laser.setText("ACCENT")
-            set_css(self.l_laser, chip_css(TEXT_2))
-        elif trigger is not None:
-            lit = bool(laser.active)
-            self.l_laser.setText(f"TRIGGER · {mood.upper()} · {laser.budget:.0%} of {int(DUTY_WINDOW_S)} s")
-            set_css(self.l_laser, chip_css(ACCENT if lit else TEXT_2))
-            if not self.app.manual.laser_enable:
-                _say(self.l_laser_flash, "○ LASERS NOT ARMED · press L (trigger profile: 2-bar moments on the drop / PEAK blocks / a big wub; J = hit now, K = hold)", "bad")
-            elif mood == MOOD_OFF:
-                _say(self.l_laser_flash, "○ LASER OFF · waiting for real audio", "bad")
-            elif lit:
-                _say(self.l_laser_flash, f"● LASER MOMENT · {trigger.upper()} · {laser_color_name(laser.color)}", "ok")
-            else:
-                _say(self.l_laser_flash, "○ lasers dark, ready · next moment on the drop hit, a PEAK block, a big wub, J or K", "muted")
-            mood = None  # the feature-profile banners below do not apply
-        else:
-            self.l_laser.setText(f"FEATURE · {mood.upper()}")
-            set_css(self.l_laser, chip_css(_MOOD_COLORS.get(mood, TEXT_2)))
-        if scene_name is not None:
-            pass  # the show-profile banner above is final
-        elif mood is not None:
-            # Feature profile banners: the lasers ARE the light here, so "not
-            # armed" is the loudest thing the console can say.
-            colors = f"{laser_color_name(laser.color_l)} / {laser_color_name(laser.color_r)}"
-            if not self.app.manual.laser_enable:
-                _say(self.l_laser_flash, "○ LASERS NOT ARMED · press L (feature profile: the lasers are the light)", "bad")
-            elif mood == MOOD_OFF:
-                _say(self.l_laser_flash, "○ LASER OFF · waiting for real audio", "bad")
-            else:
-                forced = " (K forcing the fan)" if laser.source == "manual" else ""
-                _say(self.l_laser_flash,
-                     f"● LASER {mood.upper()}{forced} · {colors} · sweep {int(laser.sweep * 100)}%", "ok")
-        elif laser.manual_cued and not self.app.manual.laser_enable:
-            _say(self.l_laser_flash, "○ LASER CUED but not armed · press L to arm", "bad")
-        elif laser.manual_cued and laser.source == "manual":
-            _say(self.l_laser_flash, f"● LASER CUED (K) · sweep follows mids+highs · {int(laser.sweep * 100)}%", "ok")
-        elif laser.manual_cued:
-            _say(self.l_laser_flash, "○ LASER CUED · waiting for real audio", "bad")
-        elif laser.active:
-            _say(self.l_laser_flash, "● LASER SWEEP", "ok")
-        elif laser.primed:
-            _say(self.l_laser_flash, "○ laser primed · next 8-bar block", "muted")
-        else:
-            _say(self.l_laser_flash, "")
+        self._refresh_laser()
 
         if self.app.metronome.build_cue_active:
             if self.app.metronome.build_cue_source == "auto":
@@ -872,18 +1015,102 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         else:
             _say(self.l_synth, "")
 
-        held = self.app.manual.blackout or self.app.manual.freeze   # the header pill says which
+        held = self.app.manual.blackout or self.app.manual.freeze   # the stage says which
         quiet = not held and all(lbl.isHidden() for lbl in (self.l_pdl_lost, self.l_auto_blackout, self.l_cue,
                                                             self.l_arm, self.l_laser_flash, self.l_synth))
         if self.l_idle.isHidden() == quiet:
             self.l_idle.setVisible(quiet)
+
+    def _refresh_laser(self) -> None:
+        """The laser chip and activity line, per laser profile."""
+        laser = self.app.laser_engine
+        manual = self.app.manual
+        mood = getattr(laser, "mood", None)  # engines/laser_feature.py and laser_trigger.py have one
+        trigger = getattr(laser, "trigger", None)  # only engines/laser_trigger.py (2026-10-06)
+        scene_name = getattr(laser, "scene_name", None)  # only engines/laser_show.py (2026-10-08)
+        if scene_name is not None:
+            # Show profile: the chip names the scene; the line says what the
+            # rotation / accent are doing.
+            accent = bool(getattr(laser, "accent", False))
+            mode = getattr(laser, "mode", "")
+            self.l_laser.setText(f"SHOW · {scene_name.upper()}" + (" · ACCENT" if accent else ""))
+            lit = scene_name.lower() not in ("off", "dark")
+            set_css(self.l_laser, chip_css(TEXT if lit else TEXT_3))
+            if manual.blackout:
+                text, tone = "○ LASERS BLACKED OUT (B)", "bad"
+            elif not manual.laser_enable:
+                text, tone = "○ LASERS DISARMED · press L (show profile arms at launch)", "bad"
+            else:
+                reason = getattr(laser, "reason", "")
+                nxt = getattr(laser, "bars_to_next", None)
+                if getattr(laser, "rotating", False):
+                    tail = f"rotating · next in {int(nxt)} bars" if nxt is not None else "rotating on the clock (no beat grid)"
+                    if reason:
+                        tail = f"{reason} · {tail}"
+                else:
+                    tail = reason or mode
+                tail = tail.replace(" — ", " · ")
+                text = f"● LASER SHOW [{mode}] · {scene_name}{' · DROP ACCENT' if accent else ''} · {tail}"
+                tone = "ok"
+            _say(self.l_laser_flash, text, tone)
+            # the looks highlight what is showing NOW (follow / rotate move it
+            # around; in hold it is the picked look)
+            b = self.laser_look_buttons.get(scene_name)
+            if b is not None and not b.isChecked():
+                b.setChecked(True)
+            rb = self._laser_mode_buttons.get(mode)
+            if rb is not None and not rb.isChecked():
+                rb.blockSignals(True); rb.setChecked(True); rb.blockSignals(False)
+        elif mood is None:
+            self.l_laser.setText("ACCENT")
+            set_css(self.l_laser, chip_css(TEXT_2))
+            if laser.manual_cued and not manual.laser_enable:
+                _say(self.l_laser_flash, "○ LASER CUED but not armed · press L to arm", "bad")
+            elif laser.manual_cued and laser.source == "manual":
+                _say(self.l_laser_flash, f"● LASER CUED (K) · sweep follows mids+highs · {int(laser.sweep * 100)}%", "ok")
+            elif laser.manual_cued:
+                _say(self.l_laser_flash, "○ LASER CUED · waiting for real audio", "bad")
+            elif laser.active:
+                _say(self.l_laser_flash, "● LASER SWEEP", "ok")
+            elif laser.primed:
+                _say(self.l_laser_flash, "○ laser primed · next 8-bar block", "muted")
+            else:
+                _say(self.l_laser_flash, "")
+        elif trigger is not None:
+            lit = bool(laser.active)
+            self.l_laser.setText(f"TRIGGER · {mood.upper()} · {laser.budget:.0%} of {int(DUTY_WINDOW_S)} s")
+            set_css(self.l_laser, chip_css(TEXT if lit else TEXT_2))
+            if not manual.laser_enable:
+                _say(self.l_laser_flash, "○ LASERS NOT ARMED · press L (trigger profile: 2-bar moments on the drop / "
+                                         "PEAK blocks / a big wub; J = hit now, K = hold)", "bad")
+            elif mood == MOOD_OFF:
+                _say(self.l_laser_flash, "○ LASER OFF · waiting for real audio", "bad")
+            elif lit:
+                _say(self.l_laser_flash, f"● LASER MOMENT · {trigger.upper()} · {laser_color_name(laser.color)}", "ok")
+            else:
+                _say(self.l_laser_flash, "○ lasers dark, ready · next moment on the drop hit, a PEAK block, "
+                                         "a big wub, J or K", "muted")
+        else:
+            # Feature profile: the lasers ARE the light here, so "not armed"
+            # is the loudest thing the console can say.
+            self.l_laser.setText(f"FEATURE · {mood.upper()}")
+            set_css(self.l_laser, chip_css(TEXT_3 if mood == MOOD_OFF else TEXT))
+            colors = f"{laser_color_name(laser.color_l)} / {laser_color_name(laser.color_r)}"
+            if not manual.laser_enable:
+                _say(self.l_laser_flash, "○ LASERS NOT ARMED · press L (feature profile: the lasers are the light)", "bad")
+            elif mood == MOOD_OFF:
+                _say(self.l_laser_flash, "○ LASER OFF · waiting for real audio", "bad")
+            else:
+                forced = " (K forcing the fan)" if laser.source == "manual" else ""
+                _say(self.l_laser_flash,
+                     f"● LASER {mood.upper()}{forced} · {colors} · sweep {int(laser.sweep * 100)}%", "ok")
 
 
 def run_console(app, fps: int = 30) -> int:
     """Open the console and refresh it at ``fps`` (blocks until the window closes)."""
     qt = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     apply_theme(qt)
-    win = ConsoleWindow(app)
+    win = ConsoleWindow(app, remember=True)
     win.show()
     timer = QtCore.QTimer()
     timer.timeout.connect(win.refresh)

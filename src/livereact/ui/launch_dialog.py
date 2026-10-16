@@ -36,7 +36,7 @@ from PySide6 import QtCore, QtWidgets
 
 from .. import devices
 from . import icons, theme
-from .widgets import Card, hbox, label
+from .widgets import Card, Dot, hbox, label
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ def _field(title: str, widget: QtWidgets.QWidget | QtWidgets.QLayout,
            hint: str = "") -> QtWidgets.QVBoxLayout:
     v = QtWidgets.QVBoxLayout()
     v.setSpacing(theme.SP2 - 2)
-    v.addWidget(label(title.upper(), "overline"))
+    v.addWidget(label(title, "label"))
     if isinstance(widget, QtWidgets.QLayout):
         v.addLayout(widget)
     else:
@@ -158,7 +158,7 @@ class LaunchDialog(QtWidgets.QDialog):
         outer.setSpacing(theme.SP4)
 
         logo = QtWidgets.QLabel()
-        logo.setPixmap(icons.pixmap("logo", theme.ACCENT, 22))
+        logo.setPixmap(icons.pixmap("logo", theme.TEXT, 22))
         outer.addLayout(hbox(logo, label("LiveReact", "wordmark"), stretch_at=2))
         outer.addWidget(label("Pick the rig and how to run it, then start the show.", "body2", wrap=True))
 
@@ -259,16 +259,20 @@ class LaunchDialog(QtWidgets.QDialog):
         gear = Card("Gear", "dmx")
         gear.body.setSpacing(theme.SP3)
         self.gear_rows = []
+        self._gear_dots = []
         for _ in range(2):                        # light adapter, DJ board
-            head = label("", "body2", wrap=True)
+            dot = Dot("bad")
+            head = label("", "strong", wrap=True)
             detail = label("", "hint", wrap=True)
             detail.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
             v = QtWidgets.QVBoxLayout()
             v.setSpacing(2)
-            v.addWidget(head)
+            v.addLayout(hbox(dot, head, spacing=theme.SP2))
+            detail.setContentsMargins(21, 0, 0, 0)
             v.addWidget(detail)
             gear.body.addLayout(v)
             self.gear_rows.append((head, detail))
+            self._gear_dots.append(dot)
         self.l_fixtures = label("", "hint", wrap=True)
         self.b_flash = QtWidgets.QPushButton("Flash each light")
         self.b_flash.setIcon(icons.icon("flash", theme.TEXT_2, size=16))
@@ -376,9 +380,10 @@ class LaunchDialog(QtWidgets.QDialog):
         self._pick_rig_for_adapter()
 
     def _update_gear(self) -> None:
-        for (ok, head, details), (l_head, l_detail) in zip(devices.checklist(self.detection), self.gear_rows):
-            l_head.setText(f"{'●' if ok else '○'}  {head}")
-            theme.set_css(l_head, f"color:{theme.ACCENT if ok else theme.DANGER_TEXT};")
+        for (ok, head, details), (l_head, l_detail), dot in zip(devices.checklist(self.detection), self.gear_rows,
+                                                                 self._gear_dots):
+            l_head.setText(head)
+            dot.set_tone("ok" if ok else "bad")
             l_detail.setText("\n".join(details))
             l_detail.setVisible(bool(details))
         a = self.detection.adapter
