@@ -206,7 +206,7 @@ def test_venue_tab_is_present_and_width_edits_the_live_rig(qapp):
     app = _app()
     win = ConsoleWindow(app)
     labels = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    assert labels == ["Show", "Venue", "Rig Config"]
+    assert labels == ["Show", "Venue", "Rig Config", "Phone remote", "Safety"]
     assert app.rig.venue is not None            # the Venue tab gives an unplanned rig a default room
     win.venue_tab.sb_width.setValue(42.0)
     assert app.rig.venue.width_m == pytest.approx(ft_to_m(42.0))
@@ -616,3 +616,128 @@ def test_a_forced_start_shows_a_warning_banner_for_the_set(qapp):
     win = ConsoleWindow(forced)
     win.refresh()
     assert not win.l_forced.isHidden() and "no DJ board" in win.l_forced.text()
+
+
+# --- design v2 (2026-10-16): Pro controls, the laser sheet, the glow ------------
+
+def test_pro_controls_hide_the_rack_but_every_shortcut_keeps_working(qapp):
+    from PySide6 import QtGui
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    shortcuts = win.findChildren(QtGui.QShortcut)
+    assert not win.pro_switch.isChecked() and win.pro_rack.isHidden()
+    assert shortcuts and all(sc.isEnabled() for sc in shortcuts)
+    # a key latched with the rack hidden still shows on the stage
+    app.manual.freeze = True
+    app.manual.blackout = True
+    app.manual.laser_cue = True
+    win.refresh()
+    left = win.rig_view._left
+    assert "Frozen (F)" in left and "Lasers held (K)" in left
+    assert ("Lasers on", "ok") not in win.rig_view._right    # blacked out
+    win.pro_switch.click()
+    assert not win.pro_rack.isHidden()
+    assert all(sc.isEnabled() for sc in shortcuts)
+
+
+def test_arming_lasers_asks_first_when_the_run_started_disarmed(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    app.manual.laser_enable = False          # a live accent rig: off at launch
+    win = ConsoleWindow(app)
+    win.pro_switch.click()
+    win._laser_key()                          # L
+    assert app.manual.laser_enable is False and not win.sheet.isHidden()
+    assert not win.sheet.b_ok.isEnabled()     # both checks first
+    win.b_black.toggle()                      # B still works while the sheet is up
+    assert app.manual.blackout is True
+    win.sheet.checks[0].setChecked(True)
+    assert not win.sheet.b_ok.isEnabled()
+    win.sheet.checks[1].setChecked(True)
+    win.sheet.b_ok.click()
+    assert app.manual.laser_enable is True and win.sheet.isHidden()
+    win._laser_key()                          # off: no question
+    assert app.manual.laser_enable is False
+    win._laser_key()                          # and back on: asked once per run
+    assert app.manual.laser_enable is True and win.sheet.isHidden()
+
+
+def test_clicking_the_laser_switch_goes_through_the_sheet_and_not_now_leaves_them_off(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    app.manual.laser_enable = False
+    win = ConsoleWindow(app)
+    win.cb_laser.click()
+    assert app.manual.laser_enable is False and not win.cb_laser.isChecked() and not win.sheet.isHidden()
+    win.sheet.b_no.click()
+    assert app.manual.laser_enable is False and win.sheet.isHidden()
+
+
+def test_lasers_armed_at_launch_do_not_ask(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()                              # demo pre-arms, like the show / manual profiles
+    assert app.manual.laser_enable
+    win = ConsoleWindow(app)
+    win._laser_key()
+    win._laser_key()
+    assert app.manual.laser_enable is True and win.sheet.isHidden()
+
+
+def test_glow_follows_the_output_colour_and_holds_the_hue_when_dark(qapp):
+    from livereact.ui.glow import Glow, GlowSource, output_color
+
+    app = _app()
+    rig = app.rig
+    assert output_color(rig, bytes(rig.boot_universe())) is None   # nothing lit: no hue
+
+    class FB:
+        def __init__(self):
+            self.uni = b""
+
+        def latest(self):
+            return self.uni
+
+    fb = FB()
+    glow = Glow()
+    src = GlowSource(glow, rig, fb)
+    seen = []
+    glow.changed.connect(lambda: seen.append(glow.color().name()))
+    from livereact.ui.visualizer import build_demo_universe
+    fb.uni = bytes(build_demo_universe(rig, 1.0))
+    hue, lit = output_color(rig, fb.uni)
+    for _ in range(40):
+        src._t -= 0.05                         # 50 ms per tick, no sleeping
+        src.tick()
+    from livereact.ui.glow import MIN_LUMA, lift
+    c = glow.color()
+    assert seen, "the glow never moved"
+    for got, want in zip((c.red(), c.green(), c.blue()), lift(hue)):
+        assert abs(got - want) <= 12
+    # a deep blue is lifted just enough to show in a dark booth, hue kept
+    r, g, b = lift((0.0, 0.0, 255.0))
+    assert b == 255 and r == g and 0.2126 * r + 0.7152 * g + 0.0722 * b >= MIN_LUMA * 255 - 0.01
+
+
+def test_stage_and_deck_say_what_is_happening(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    win.refresh()
+    assert win.rig_view.hud_text()[0] in {"Listening.", "Waiting for music."}
+    assert win.l_read_title.text()
+    app.manual.blackout = True
+    win.refresh()
+    assert win.rig_view.hud_text()[0] == "Blackout."
+    assert win.b_black.isChecked()
+    app.manual.blackout = False
+    app.manual.freeze = True
+    win.refresh()
+    if not app.show_engine.silence.active:
+        assert win.rig_view.hud_text()[0] == "Frozen."
+    assert win.chip_onair.word() == "Demo"     # demo is never called live

@@ -12,8 +12,9 @@ instance attributes from the outside.
 
 ``shots`` writes <tag>-<screen>-<W>x<H>.png for every screen at 1440x900 and
 1920x1080. ``frametime`` prints the console's refresh cost (UI thread), the
-show-engine tick cost and the DMX writer's 40 Hz send interval while the
-console runs on the Show tab.
+glow timer's cost (design v2), the show-engine tick cost and the DMX
+writer's 40 Hz send interval while the console runs on the Live page
+(``--pro``: with the Pro controls shown).
 ``safety`` grabs the Show tab in two states written to ``app.manual`` from
 outside the console: a crash relaunch that restored blackout, laser disarm and
 lowered faders before the window was built, and the phone console (its URL set
@@ -88,38 +89,69 @@ def _tab_index(win, label: str) -> int:
     raise KeyError(label)
 
 
+def _show(win, label: str, pro: bool = False) -> None:
+    win.tabs.setCurrentIndex(_tab_index(win, label))
+    if win.pro_switch.isChecked() != pro:
+        win.pro_switch.click()
+
+
 def shots(out_dir: str, tag: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
-    # (rig file, screen name, tab label) -- the default rig carries the
-    # accent-profile Show tab, Venue and Rig Config; the other rigs add the
-    # profile-specific screens.
+    # (rig file, [(screen name, page label, pro controls)]) -- the default rig
+    # carries the accent laser profile, the Lights pages, Phone and Safety;
+    # the other rigs add the profile-specific laser controls.
     plans = [
-        (None, [("show", "Show"), ("venue", "Venue"), ("rig", "Rig Config")]),
-        ("sophias_thai.json", [("laser-show", "Laser Show")]),
-        ("junior_crib.json", [("show-manual-lasers", "Show")]),
+        (None, [("live", "Show", False), ("live-pro", "Show", True), ("lights-room", "Venue", False),
+                ("lights-addresses", "Rig Config", False), ("phone-off", "Phone remote", False),
+                ("safety", "Safety", False)]),
+        ("sophias_thai.json", [("live-pro-laser-show", "Show", True), ("safety-show-lasers", "Safety", False)]),
+        ("junior_crib.json", [("live-pro-laser-scenes", "Show", True)]),
     ]
     for rig, screens in plans:
         app, win, timer = _console(rig)
         try:
             _pump(6.0)                       # let the demo music reach a lit state
-            for name, label in screens:
-                win.tabs.setCurrentIndex(_tab_index(win, label))
+            for name, label, pro in screens:
+                _show(win, label, pro)
                 _grab(win, out_dir, tag, name)
             if rig is None:
-                # the active states: blackout held, a build cued, the laser cue held
-                win.tabs.setCurrentIndex(0)
+                # the active states: blackout held, a build cued, the drop armed, the laser cue held
+                _show(win, "Show", True)
                 win.b_black.toggle()
                 app.metronome.cue_build()
+                app.metronome.arm_drop()
                 win.b_laser_cue.toggle()
-                _grab(win, out_dir, tag, "show-states")
+                _grab(win, out_dir, tag, "live-states")
                 win.b_laser_cue.toggle()
+                app.metronome.arm_drop()
+                app.metronome.arm_drop()
                 app.metronome.cue_build()
                 win.b_black.toggle()
+                # the laser sheet: a run that started with the lasers off
+                app.manual.laser_enable = False
+                win._lasers_confirmed = False
+                win.refresh()
+                win._laser_key()
+                win.sheet.checks[0].setChecked(True)
+                _grab(win, out_dir, tag, "live-laser-sheet")
+                win.sheet.close_sheet()
+                # the phone console on
         finally:
             timer.stop()
             win.close()
             app.stop_event.set()
             app.shutdown()
+
+    app, win, timer = _console(None, _with_phone)
+    try:
+        _pump(3.0)
+        _show(win, "Phone remote")
+        _grab(win, out_dir, tag, "phone-on")
+    finally:
+        timer.stop()
+        win.close()
+        app.stop_event.set()
+        app.shutdown()
 
     from livereact.core.frame_buffer import DmxFrameBuffer
     from livereact.fixtures.rig import load_rig
@@ -145,6 +177,11 @@ _RESTORED = {"blackout": True, "laser_enable": False, "master_brightness": 0.4, 
 _PHONE_URL = "http://192.168.1.20:8765/?k=7F3K9Q"
 
 
+def _with_phone(app) -> None:
+    """Give this one App a phone console address (a read-only property)."""
+    app.__class__ = type("ShotApp", (type(app),), {"phone_url": property(lambda _self: _PHONE_URL)})
+
+
 def _write_manual(app) -> None:
     for k, v in _RESTORED.items():
         setattr(app.manual, k, v)
@@ -154,14 +191,14 @@ def safety(out_dir: str, tag: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
     for name, before_build, after_build in (
         ("show-relaunch-restored", _write_manual, None),
-        ("show-phone", lambda app: setattr(app, "phone_url", _PHONE_URL), _write_manual),
+        ("show-phone", _with_phone, _write_manual),
     ):
         app, win, timer = _console(None, before_build)
         try:
             _pump(6.0)
             if after_build is not None:
                 after_build(app)
-            win.tabs.setCurrentIndex(0)
+            _show(win, "Show", True)
             _grab(win, out_dir, tag, name)
         finally:
             timer.stop()
@@ -234,10 +271,22 @@ def _stats(xs: list[float]) -> str:
             f"p95={p(0.95):.2f} p99={p(0.99):.2f} max={xs[-1]:.2f} ms")
 
 
-def frametime(seconds: float, rig: str | None) -> None:
+def frametime(seconds: float, rig: str | None, pro: bool = False) -> None:
     app, win, timer = _console(rig)
     win.resize(1920, 1080)
     win.show()
+    glow_ms: list[float] = []
+    if pro:
+        win.pro_switch.click()
+    orig_glow = win.glow_source.tick
+
+    def timed_glow() -> None:
+        t0 = time.perf_counter()
+        orig_glow()
+        glow_ms.append((time.perf_counter() - t0) * 1000)
+
+    win.glow_source.timer.timeout.disconnect()
+    win.glow_source.timer.timeout.connect(timed_glow)
 
     refresh_ms: list[float] = []
     orig_refresh = win.refresh
@@ -273,7 +322,7 @@ def frametime(seconds: float, rig: str | None) -> None:
     # Paint cost lands in the UI event loop, so it is in the busy fraction.
     try:
         _pump(3.0)                           # warm-up
-        refresh_ms.clear(); tick_ms.clear(); send_t.clear()
+        refresh_ms.clear(); tick_ms.clear(); send_t.clear(); glow_ms.clear()
         busy = 0.0
         t_start = time.monotonic()
         qt = _qt()
@@ -290,8 +339,10 @@ def frametime(seconds: float, rig: str | None) -> None:
         app.shutdown()
 
     intervals = [(b - a) * 1000 for a, b in zip(send_t, send_t[1:])]
-    print(f"rig={rig or 'default'} seconds={wall:.1f}")
+    print(f"rig={rig or 'default'} pro={'on' if pro else 'off'} seconds={wall:.1f}")
     print(f"console refresh (UI thread):   {_stats(refresh_ms)}")
+    if glow_ms:
+        print(f"glow tick (UI thread):         {_stats(glow_ms)}")
     print(f"show-engine tick:              {_stats(tick_ms)}")
     print(f"DMX writer send interval:      {_stats(intervals)}  (target 25.00)")
     print(f"writer rate:                   {len(send_t) / wall:.2f} Hz")
@@ -310,6 +361,7 @@ def main() -> int:
     f = sub.add_parser("frametime")
     f.add_argument("--seconds", type=float, default=30.0)
     f.add_argument("--rig", default=None)
+    f.add_argument("--pro", action="store_true", help="with the Pro controls shown (design v2)")
     la = sub.add_parser("launch")
     la.add_argument("out_dir")
     args = p.parse_args()
@@ -321,7 +373,7 @@ def main() -> int:
     elif args.cmd == "launch":
         launch(args.out_dir)
     else:
-        frametime(args.seconds, args.rig)
+        frametime(args.seconds, args.rig, args.pro)
     return 0
 
 
