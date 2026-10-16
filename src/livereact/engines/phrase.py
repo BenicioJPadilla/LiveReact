@@ -167,8 +167,9 @@ class PhraseEngine:
             # drifting off the track's phrases. Hold the current look rather
             # than rotate on it. A bucket change (the audio says the music
             # moved) and the operator's skip still rotate; the cadence
-            # resumes once beats come back. Never on an audio-only night
-            # (pdl_lost needs DJ Link to have been seen first).
+            # resumes once beats come back, or after core/metronome.py's
+            # PDL_LOST_HOLD_BARS. Never on an audio-only night (pdl_lost
+            # needs DJ Link to have been seen first).
             return
         if not (self._skip_requested or self._bucket_rotation_requested):
             # Scheduled cadence only: while a higher-ranked look of the same
