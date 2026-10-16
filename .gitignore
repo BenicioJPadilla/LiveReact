@@ -31,3 +31,6 @@ Thumbs.db
 .vscode/
 .idea/
 logs/
+
+# macOS app build venv (packaging/macos/build_app.sh)
+.build-venv/

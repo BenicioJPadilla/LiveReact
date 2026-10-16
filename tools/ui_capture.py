@@ -7,12 +7,18 @@ instance attributes from the outside.
 
     QT_QPA_PLATFORM=offscreen python tools/ui_capture.py shots  OUT_DIR [--tag before]
     QT_QPA_PLATFORM=offscreen python tools/ui_capture.py frametime [--seconds 30]
+    QT_QPA_PLATFORM=offscreen python tools/ui_capture.py safety OUT_DIR [--tag before]
     QT_QPA_PLATFORM=offscreen python tools/ui_capture.py launch OUT_DIR
 
 ``shots`` writes <tag>-<screen>-<W>x<H>.png for every screen at 1440x900 and
 1920x1080. ``frametime`` prints the console's refresh cost (UI thread), the
 show-engine tick cost and the DMX writer's 40 Hz send interval while the
-console runs on the Show tab. ``launch`` writes the ``--choose`` launch
+console runs on the Show tab.
+``safety`` grabs the Show tab in two states written to ``app.manual`` from
+outside the console: a crash relaunch that restored blackout, laser disarm and
+lowered faders before the window was built, and the phone console (its URL set
+on the app) blacking out, disarming and pulling the faders down mid-set.
+``launch`` writes the ``--choose`` launch
 dialog at its natural size, live and demo, listing the repo's rigs/.
 """
 
@@ -48,12 +54,14 @@ def _pump(seconds: float) -> None:
         time.sleep(0.005)
 
 
-def _console(rig: str | None):
+def _console(rig: str | None, before_build=None):
     from livereact.ui.console import ConsoleWindow
     from livereact.ui.theme import apply_theme
 
     rig_path = os.path.join(ROOT, "rigs", rig) if rig else None
     app = App(AppConfig(demo=True, config_path=None, rig_path=rig_path))
+    if before_build is not None:
+        before_build(app)
     apply_theme(_qt())
     win = ConsoleWindow(app)
     app.start()
@@ -130,6 +138,36 @@ def shots(out_dir: str, tag: str) -> None:
     viz.update_from_universe(build_demo_universe(rig, 1.0))
     _grab(viz, out_dir, tag, "visualizer")
     viz.close()
+
+
+# What the relaunch supervisor / phone console write (outside the console).
+_RESTORED = {"blackout": True, "laser_enable": False, "master_brightness": 0.4, "strobe_cap": 0.0}
+_PHONE_URL = "http://192.168.1.20:8765/?k=7F3K9Q"
+
+
+def _write_manual(app) -> None:
+    for k, v in _RESTORED.items():
+        setattr(app.manual, k, v)
+
+
+def safety(out_dir: str, tag: str) -> None:
+    os.makedirs(out_dir, exist_ok=True)
+    for name, before_build, after_build in (
+        ("show-relaunch-restored", _write_manual, None),
+        ("show-phone", lambda app: setattr(app, "phone_url", _PHONE_URL), _write_manual),
+    ):
+        app, win, timer = _console(None, before_build)
+        try:
+            _pump(6.0)
+            if after_build is not None:
+                after_build(app)
+            win.tabs.setCurrentIndex(0)
+            _grab(win, out_dir, tag, name)
+        finally:
+            timer.stop()
+            win.close()
+            app.stop_event.set()
+            app.shutdown()
 
 
 def launch(out_dir: str) -> None:
@@ -238,6 +276,9 @@ def main() -> int:
     s = sub.add_parser("shots")
     s.add_argument("out_dir")
     s.add_argument("--tag", default="after")
+    sf = sub.add_parser("safety")
+    sf.add_argument("out_dir")
+    sf.add_argument("--tag", default="after")
     f = sub.add_parser("frametime")
     f.add_argument("--seconds", type=float, default=30.0)
     f.add_argument("--rig", default=None)
@@ -247,6 +288,8 @@ def main() -> int:
     _qt()
     if args.cmd == "shots":
         shots(args.out_dir, args.tag)
+    elif args.cmd == "safety":
+        safety(args.out_dir, args.tag)
     elif args.cmd == "launch":
         launch(args.out_dir)
     else:

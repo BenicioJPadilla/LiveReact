@@ -53,3 +53,15 @@ def test_network_diagnostics_report():
     assert isinstance(has_link_local([("eth", RECOMMENDED_HOST_IP)]), bool)
     assert has_link_local([("eth", "169.254.1.2")]) is True
     assert has_link_local([("eth", "192.168.1.5")]) is False
+
+
+def test_hardware_mode_keeps_the_enttec_backend_when_none_is_plugged_in(monkeypatch):
+    """2026-10-16: no Enttec at launch no longer means a NullLog night; the
+    real backend is kept so the writer can find the device when it appears."""
+    from serial.tools import list_ports
+
+    from livereact.output.enttec import EnttecSerialBackend
+
+    monkeypatch.setattr(list_ports, "comports", lambda: [])
+    app = _hw_app()
+    assert isinstance(app.backend, EnttecSerialBackend)
