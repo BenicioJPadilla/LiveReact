@@ -67,6 +67,7 @@ _TONES = {
     "ok": f"color:{ACCENT}; background:{rgba(ACCENT, 0.07)}; border:1px solid {rgba(ACCENT, 0.28)};",
     "bad": f"color:{DANGER_TEXT}; background:{rgba(DANGER, 0.08)}; border:1px solid {rgba(DANGER, 0.32)};",
     "muted": f"color:{TEXT_2}; background:{SURFACE_2}; border:1px solid {LINE_2};",
+    "warn": f"color:{WARN}; background:{rgba(WARN, 0.07)}; border:1px solid {rgba(WARN, 0.30)};",
 }
 # Feature-profile laser moods (engines/laser_feature.py) -> chip colors, calm
 # to fan reading cool to hot like the bucket chip does.
@@ -90,6 +91,26 @@ def _say(lbl: QtWidgets.QLabel, text: str, tone: str = "ok") -> None:
 
 def _set_dot(pill: StatusPill, seg: int, ok: bool) -> None:
     pill.set(seg, tone="ok" if ok else "bad")
+
+
+def _mirror_check(w: QtWidgets.QAbstractButton, on: bool) -> None:
+    """Show ``on`` without firing the control's slot: the mirror never writes
+    ManualParams back, so an outside writer (phone, relaunch, MIDI) wins."""
+    if w.isChecked() != on:
+        w.blockSignals(True)
+        w.setChecked(on)
+        w.blockSignals(False)
+
+
+def _mirror_slider(s: QtWidgets.QSlider, val: QtWidgets.QLabel, value: float) -> None:
+    """Move a 0..100 fader to an outside write of ``value`` (0..1), signals
+    blocked. Only when it is more than one step away, so a value between two
+    steps never makes the handle hunt."""
+    if abs(value * 100 - s.value()) > 1:
+        s.blockSignals(True)
+        s.setValue(round(value * 100))
+        s.blockSignals(False)
+        val.setText(f"{s.value()}%")
 
 
 def _button(text: str, role: str | None = None, checkable: bool = False) -> QtWidgets.QPushButton:
@@ -331,6 +352,8 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         # from the operator's manual toggle — they're independent triggers,
         # so the manual button's own checked-state won't reflect the auto one.
         self.l_auto_blackout = label("", "banner", wrap=True)
+        # FAIL-01: Pro DJ Link went quiet mid-set; the show holds its look.
+        self.l_pdl_lost = label("", "banner", wrap=True)
         self.l_idle = label("○ Automation is running the show. Nothing needs you right now.", "idle", wrap=True)
         acts_w = QtWidgets.QWidget()
         acts_w.setFixedWidth(272)
@@ -338,7 +361,8 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         acts.setContentsMargins(0, 0, 0, 0)
         acts.setSpacing(theme.SP2)
         acts.addWidget(overline("Activity"))
-        for lbl in (self.l_auto_blackout, self.l_cue, self.l_arm, self.l_laser_flash, self.l_synth):
+        for lbl in (self.l_pdl_lost, self.l_auto_blackout, self.l_cue, self.l_arm,
+                    self.l_laser_flash, self.l_synth):
             lbl.hide()
             acts.addWidget(lbl)
         acts.addWidget(self.l_idle)
@@ -363,9 +387,24 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.b_black.setToolTip("One press kills every fixture. Press again to bring the show back.")
         self.b_freeze = CueButton("Freeze", "F", "freeze", role="danger", checkable=True, variant="xl")
         self.b_freeze.setToolTip("Hold the current look. Press again to release.")
+        # A crash relaunch restores blackout before the window exists, and the
+        # phone console writes these fields at any time: start from the model,
+        # and refresh() keeps every hard switch and fader in step with it.
+        self.b_black.setChecked(m.blackout)
+        self.b_freeze.setChecked(m.freeze)
         safe.addWidget(self.b_black, 3)
         safe.addWidget(self.b_freeze, 2)
         v.addLayout(safe)
+        # Phone console (--phone): its URL, token included, once the app has
+        # one. Selectable so it can be copied; hidden until then.
+        self.l_phone = label("", "value")
+        self.l_phone.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.l_phone.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)   # never steals B / F / Space
+        self.l_phone.setToolTip("Open this on a phone on the same network. Select the text to copy it.")
+        self.phone_row = QtWidgets.QWidget()
+        self.phone_row.setLayout(hbox(overline("Phone"), self.l_phone, spacing=theme.SP2, stretch_at=2))
+        self.phone_row.hide()
+        v.addWidget(self.phone_row)
 
         # --- CUES: what Josh reaches for mid-set --------------------------
         cues = Card("Cues", "show")
@@ -432,8 +471,8 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         fl = QtWidgets.QGridLayout()
         fl.setHorizontalSpacing(theme.SP4)
         fl.setVerticalSpacing(theme.SP1)
-        self.s_bright = _slider(0, 100, int(m.master_brightness * 100))
-        self.s_strobe = _slider(0, 100, int(m.strobe_cap * 100))
+        self.s_bright = _slider(0, 100, round(m.master_brightness * 100))
+        self.s_strobe = _slider(0, 100, round(m.strobe_cap * 100))
         self.s_warm = _slider(-100, 100, int(m.warm_cool_bias * 100), role="bipolar")
         self.l_bright_v = label("", "value")
         self.l_strobe_v = label("", "value")
@@ -636,7 +675,9 @@ class ConsoleWindow(QtWidgets.QMainWindow):
 
         clock = "free-run" if snap.free_running else "locked"
         trans = "  ·  TRANSITION" if snap.in_transition else ""
-        pdl = "fresh" if snap.pdl_fresh else "STALE"
+        # FAIL-01: DJ Link beats were heard, then stopped; the look is held on purpose.
+        pdl_lost = getattr(snap, "pdl_lost", False)
+        pdl = "fresh" if snap.pdl_fresh else "LOST, look held" if pdl_lost else "STALE"
         midi = "fresh" if snap.midi_fresh else "stale"
         self.l_health.setText(f"clock {clock}  ·  PDL {pdl}  ·  MIDI {midi}{trans}")
 
@@ -644,10 +685,21 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         # just a device seen on the wire); DMX green only once a real hardware
         # backend (not the null/log fallback) has successfully opened.
         _set_dot(self.pill_conn, 0, snap.audio_fresh)
-        _set_dot(self.pill_conn, 1, snap.pdl_fresh)
+        if pdl_lost and not snap.pdl_fresh:
+            self.pill_conn.set(1, tone="warn")
+        else:
+            _set_dot(self.pill_conn, 1, snap.pdl_fresh)
         _set_dot(self.pill_conn, 2, snap.midi_fresh)
+        # DMX: a real backend that is open and (when the writer reports it)
+        # actually getting frames out; a wedged interface can reopen yet fail
+        # every write.
         writer = self.app.writer
-        _set_dot(self.pill_conn, 3, writer.is_open and writer.backend.name != "null-log")
+        hardware = writer.backend.name != "null-log"
+        _set_dot(self.pill_conn, 3, hardware and bool(getattr(writer, "output_ok", writer.is_open)))
+        if pdl_lost and not snap.pdl_fresh:
+            _say(self.l_pdl_lost, "○ DJ LINK LOST, look held", "warn")
+        else:
+            _say(self.l_pdl_lost, "")
 
         manual = self.app.manual
         live = ("BLACKOUT" if manual.blackout else "NO MUSIC · AUTO-BLACKOUT"
@@ -656,6 +708,22 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             if live:
                 self.pill_live.set(0, label=live, tone="warn" if live == "FROZEN" else "bad")
             self.pill_live.setVisible(bool(live))
+
+    def _mirror_manual(self) -> None:
+        """Show what ManualParams holds right now. The phone console and the
+        relaunch supervisor write blackout / freeze / laser arm / faders
+        directly, so a stale widget would make the next B or L press a no-op
+        (or worse, re-assert the old state). Display only: never writes the model."""
+        m = self.app.manual
+        _mirror_check(self.b_black, m.blackout)
+        _mirror_check(self.b_freeze, m.freeze)
+        _mirror_check(self.cb_laser, m.laser_enable)
+        _mirror_slider(self.s_bright, self.l_bright_v, m.master_brightness)
+        _mirror_slider(self.s_strobe, self.l_strobe_v, m.strobe_cap)
+        url = getattr(self.app, "phone_url", None)
+        if self._changed("phone_url", url):
+            self.l_phone.setText(url or "")
+            self.phone_row.setVisible(bool(url))
 
     def refresh(self) -> None:
         snap = self.app.show_state.snapshot()
@@ -666,6 +734,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         elif self.tabs.currentIndex() == 0:
             self.rig_view.update_from_universe(latest)         # only while it is on screen
 
+        self._mirror_manual()
         self._refresh_status(snap)
 
         if self.app.show_engine.silence.active:
@@ -804,8 +873,8 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             _say(self.l_synth, "")
 
         held = self.app.manual.blackout or self.app.manual.freeze   # the header pill says which
-        quiet = not held and all(lbl.isHidden() for lbl in (self.l_auto_blackout, self.l_cue, self.l_arm,
-                                                            self.l_laser_flash, self.l_synth))
+        quiet = not held and all(lbl.isHidden() for lbl in (self.l_pdl_lost, self.l_auto_blackout, self.l_cue,
+                                                            self.l_arm, self.l_laser_flash, self.l_synth))
         if self.l_idle.isHidden() == quiet:
             self.l_idle.setVisible(quiet)
 
