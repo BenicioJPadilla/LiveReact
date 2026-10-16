@@ -39,7 +39,8 @@ Known rough edges, tracked in the repo rather than hidden:
   passing fails the run until its marker comes off.
 - Python 3.14's garbage collector has segfaulted inside the show-engine thread
   on live nights. Shows run on Python 3.13 (`.venv313`), which has not
-  reproduced it; `pyproject.toml` caps installs below 3.14. Every show run
+  reproduced it; `pyproject.toml` caps installs below 3.14, and the app's own
+  supervisor (`src/livereact/supervisor.py`) relaunches the engine after a crash. Every show run
   arms a crash log (`logs/crash-*.log`, Python stacks of every thread even on
   a segfault; empty ones are removed on a clean exit), and `--hardware` runs
   always write `logs/launch-*.log` when no other log file is given.
@@ -55,10 +56,15 @@ Known rough edges, tracked in the repo rather than hidden:
 # Demo mode: synthetic music, no hardware, operator console + virtual rig
 .venv/bin/python -m livereact --demo --visualize
 
-# A live night (preferred): relaunch loop, hardware, recording, a specific rig
+# A live night: hardware, recording, a specific rig. Any --hardware run is
+# supervised: if the engine crashes it is relaunched within ~1 s, with the
+# operator's blackout / brightness / strobe cap / laser disarm restored
+# (logs/supervisor.log says when and why). --no-supervise turns that off.
+python -m livereact --hardware --visualize --record --rig rigs/junior_crib.json --audio-device 1
+#   or, with the .venv313 interpreter and a per-night log:
 nohup tools/run_show.sh --hardware --visualize --record --rig rigs/junior_crib.json \
     --audio-device 1 > logs/watchdog.log 2>&1 & disown
-#   stop it: touch logs/STOP  then close the window (or kill the python PID)
+#   stop it: close the window (or touch logs/STOP, then close it)
 
 # Bring-up and diagnostics
 python -m livereact --fixture-test           # drive raw DMX channels
@@ -162,7 +168,7 @@ src/livereact/
   recorder.py, diagnostics.py, network.py, tap_tempo.py, dynamics.py
 rigs/                    rig JSON files (fixtures, addresses, venue geometry, laser profile)
 spec/                    LIGHTING_BIBLE.md + conformance.md
-tools/                   run_show.sh relaunch loop, laser_probe.py, offline simulators / replays
+tools/                   run_show.sh (picks .venv313), laser_probe.py, offline simulators / replays
 tests/                   pytest suite (deterministic via FakeClock); golden_frames.py hashes
                          every rig's demo show so a PR proves the looks are unchanged
 ```
