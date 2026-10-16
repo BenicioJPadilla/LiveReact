@@ -473,8 +473,10 @@ def test_hardware_enttec_gets_a_write_timeout(monkeypatch):
     from livereact.output import enttec
 
     class FakeSerial:
-        def __init__(self, port, baudrate, timeout):
-            self.port, self.write_timeout = port, None
+        # **kwargs: the hot-plug branch's backend already passes write_timeout.
+        def __init__(self, port, baudrate, timeout, write_timeout=None, **kwargs):
+            self.port, self.write_timeout = port, write_timeout
+
 
         def close(self) -> None:
             pass
