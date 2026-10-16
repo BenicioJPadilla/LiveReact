@@ -61,6 +61,7 @@ python -m livereact --fixture-test           # drive raw DMX channels
 python -m livereact --midi-monitor           # discover the XDJ's MIDI CCs
 python -m livereact --net-check              # Pro DJ Link network readiness
 python -m livereact --doctor                 # environment + detected-devices report
+python -m livereact --strobe-calibrate --hardware --rig rigs/josh_rig.json   # measure strobe byte -> Hz (bench only, TESTING.md Test 7)
 ```
 
 Useful flags: `--rig <json>` (fixtures + laser profile), `--audio-device
