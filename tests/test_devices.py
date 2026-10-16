@@ -52,7 +52,7 @@ def test_an_unnamed_ftdi_cable_counts_since_the_output_would_open_it():
     """Lenient: a clone or re-flashed adapter that reports only FTDI ids."""
     [a] = find_dmx_adapters([port("COM4", 0x0403, 0x6015, "A50285BI", "FTDI", "FT230X Basic UART")])
     assert not a.exact and a.output_opens
-    assert "not named as an Enttec" in a.model and a.serial == "A50285BI"
+    assert "does not say Enttec" in a.model and a.serial == "A50285BI"
 
 
 def test_a_dmx_device_by_name_without_ftdi_ids_counts_with_a_warning():
@@ -235,6 +235,7 @@ def test_data_home_is_livereact_home_or_the_users_livereact(monkeypatch, tmp_pat
 def no_app(monkeypatch):
     """Record the AppConfig instead of starting a show."""
     built = {}
+    monkeypatch.delenv(cli.FORCE_NOTE_ENV, raising=False)   # restored after each test
 
     class FakeApp:
         def __init__(self, config):
@@ -283,6 +284,7 @@ def test_force_start_starts_anyway_with_a_banner(monkeypatch, tmp_path, capsys, 
     assert cli.main(["--hardware", "--force-start"]) == 0
     note = no_app["config"].force_start_note
     assert "light adapter and the DJ board" in note
+    assert os.environ[cli.FORCE_NOTE_ENV] == note            # for a supervised engine child
     assert "WARNING" in capsys.readouterr().err
 
 
@@ -295,13 +297,18 @@ def test_demo_and_the_tools_are_never_gated(monkeypatch, tmp_path, no_app):
 
 
 def test_an_engine_child_is_never_gated(monkeypatch, tmp_path, no_app):
-    """A crash relaunch mid-set (the supervisor's child) must never be held up."""
+    """A crash relaunch mid-set (the supervisor's child) must never be held up;
+    it shows the banner its parent's forced start passed on."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(devices, "detect_once", lambda *a, **k: pytest.fail("gated"))
     ns = cli._build_parser().parse_args(["--hardware"])
     ns.engine_child = True
     monkeypatch.setattr(cli, "_parse_args", lambda argv: ns)
     assert cli.main(["--hardware"]) == 0
+    assert no_app["config"].force_start_note == ""
+    monkeypatch.setenv(cli.FORCE_NOTE_ENV, "Forced start: no DJ board at launch. Check the gear.")
+    assert cli.main(["--hardware"]) == 0
+    assert "no DJ board" in no_app["config"].force_start_note
 
 
 def test_the_dialogs_start_is_the_gate(monkeypatch, tmp_path, no_app):
@@ -361,3 +368,51 @@ def test_a_hung_scan_still_frees_the_djlink_port_and_never_restarts_portaudio(mo
     release.set()
     w.join(3)
     assert refreshed == []
+
+
+def test_windows_ftdi_ports_lose_the_port_letter_so_the_rig_memory_matches():
+    """pyserial on Windows: no product string, serial "EN123456A" from FTDIBUS."""
+    [a] = find_dmx_adapters([port("COM3", 0x0403, 0x6001, "EN123456A", "FTDI", None, "USB Serial Port (COM3)")])
+    assert a.serial == "EN123456" and a.output_opens and not a.exact
+    det = Detection(adapters=[a])
+    assert "Light adapter: connected (not confirmed as an Enttec)" in describe(det)
+
+
+def test_a_hung_probe_does_not_freeze_the_others(monkeypatch):
+    import threading
+
+    import mido
+
+    release = threading.Event()
+    monkeypatch.setattr(mido, "get_input_names", lambda: release.wait(5) and ["XDJ-XZ (2)"])
+    import serial.tools.list_ports as lp
+
+    monkeypatch.setattr(lp, "comports", lambda: [ENTTEC])
+    devices._probes.pop("MIDI ports", None)
+    det = devices.scan_usb(refresh_audio=False, timeout=0.2)
+    assert det.light_ok                                   # serial answered
+    assert any("MIDI ports: no answer" in e for e in det.errors)
+    det = devices.scan_usb(refresh_audio=False, timeout=0.2)   # still stuck: not a second thread
+    assert sum(t.name == "probe-MIDI ports" for t in threading.enumerate()) == 1
+    release.set()
+    time.sleep(0.2)
+    det = devices.scan_usb(refresh_audio=False, timeout=1.0)
+    assert [d.name for d in det.midi] == ["XDJ-XZ (2)"] and not any("MIDI" in e for e in det.errors)
+    devices._probes.pop("MIDI ports", None)
+
+
+def test_portaudio_is_never_left_shut_down(monkeypatch):
+    calls = []
+
+    class SD:
+        def _terminate(self):
+            calls.append("t")
+
+        def _initialize(self):
+            calls.append("i")
+            if calls.count("i") < 2:
+                raise OSError("busy")
+
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    devices._refresh_portaudio(SD())
+    assert calls == ["t", "i", "i"]

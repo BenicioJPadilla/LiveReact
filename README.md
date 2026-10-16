@@ -88,7 +88,8 @@ when that adapter was used with a rig before (`rig-by-adapter.json` in
 `~/LiveReact`, or `$LIVEREACT_HOME`); the first time, it asks. `--hardware`
 on the command line does the same check and refuses to start, printing what is
 missing. **`--force-start` is for emergencies only**: it starts anyway, and the
-console shows a red warning banner for the whole set. Once a show is running
+console shows a red warning banner for the whole set (in the Mac app, add it to
+the `--choose` line of `~/LiveReact/launch-args.txt`). Once a show is running
 nothing is gated: a pulled cable is handled by hot-plug and the failsafes.
 Plain DMX is one-way, so the lights themselves cannot be detected (LiveReact
 has no RDM); the Gear card lists the rig's fixtures and **Flash each light**

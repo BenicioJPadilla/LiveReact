@@ -275,8 +275,8 @@ class LaunchDialog(QtWidgets.QDialog):
         self.b_flash.setAutoDefault(False)
         self.b_flash.clicked.connect(self._flash_lights)
         fx = _field("Lights in this rig", self.l_fixtures,
-                    "DMX only sends, so LiveReact cannot see the lights themselves (no RDM). "
-                    "Flash each one and watch it light to confirm it is patched.")
+                    "LiveReact only sends DMX and does not use RDM, so it cannot see the lights "
+                    "themselves. Flash each one and watch it light to confirm it is patched.")
         fx.addWidget(self.b_flash, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         gear.body.addLayout(fx)
         gear.body.addStretch(1)
@@ -389,7 +389,11 @@ class LaunchDialog(QtWidgets.QDialog):
         elif self.force_start:
             text = f"Emergency start (--force-start): starting without the {' and the '.join(missing)}."
         else:
-            text = f"Start is off until the {' and the '.join(missing)} {'is' if len(missing) == 1 else 'are'} connected."
+            text = (f"Start is off until the {' and the '.join(missing)} "
+                    f"{'is' if len(missing) == 1 else 'are'} connected. "
+                    "Emergencies only: --force-start (README).")
+        if live and self.detection.errors:
+            text += " Could not check: " + "; ".join(self.detection.errors) + "."
         self.gate_note.setText(text)
         theme.set_css(self.gate_note, "" if not live or not missing else
                       f"color:{theme.WARN if self.force_start else theme.DANGER_TEXT};")

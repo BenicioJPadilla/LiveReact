@@ -140,12 +140,14 @@ def find_dmx_adapters(ports) -> list[DmxAdapter]:
         if not (ftdi or named):
             continue
         serial = str(getattr(p, "serial_number", None) or "").strip()
+        if ftdi and device.upper().startswith("COM") and len(serial) > 1 and serial.endswith("A"):
+            serial = serial[:-1]      # Windows' FTDIBUS id adds the port letter: EN123456A
         product = str(getattr(p, "product", None) or "").strip()
         maker = str(getattr(p, "manufacturer", None) or "").strip()
         if named:
             model = " ".join(s for s in (maker, product) if s) or getattr(p, "description", "") or "DMX adapter"
         else:
-            model = f"FTDI USB serial device (PID 0x{pid or 0:04x}), not named as an Enttec"
+            model = f"FTDI USB serial device (PID 0x{pid or 0:04x}), its name does not say Enttec"
         ids = f"USB {vid:04x}:{pid or 0:04x}" if vid is not None else "no USB id"
         matched = f"{ids}, {'name ' + repr(text) if named else 'FTDI vendor id'}"
         if not ftdi:
@@ -284,37 +286,83 @@ def _refresh_portaudio(sd) -> None:
     a board plugged in after launch shows up (well under 1 ms on macOS)."""
     try:
         sd._terminate()
-        sd._initialize()
     except Exception:  # noqa: BLE001 - a private API: worst case the list is stale
         log.debug("Could not refresh the audio device list", exc_info=True)
+        return
+    for attempt in range(3):      # never leave PortAudio shut down for the engine
+        try:
+            sd._initialize()
+            return
+        except Exception:  # noqa: BLE001
+            log.warning("PortAudio restart failed (attempt %d)", attempt + 1, exc_info=True)
+            time.sleep(0.1)
 
 
-def scan_usb(audio_device: str = "", refresh_audio: bool = True, stopped=lambda: False) -> Detection:
-    """One look at the serial ports, audio devices and MIDI ports. Never
-    raises: a probe that fails says so in ``errors``. ``stopped`` is checked
-    before restarting PortAudio: once the dialog has closed, a show may be
-    using it, and a restart would cut its audio stream."""
-    det = Detection()
-    try:
+PROBE_TIMEOUT_S = 4.0
+_probes: dict[str, dict] = {}       # probe name -> {"thread", "last", "started"}
+_probes_lock = threading.Lock()
+
+
+def _bounded(name: str, fn, timeout: float = PROBE_TIMEOUT_S):
+    """``fn()`` on its own thread, waited for up to ``timeout``: (value,
+    error). A probe that hangs (a wedged MIDI server, CoreAudio stalling)
+    must not freeze the others, so until it returns its last answer stands
+    in (lenient: it does not flip to "not found") and the error says so."""
+    with _probes_lock:
+        st = _probes.setdefault(name, {"thread": None, "last": [], "started": 0.0})
+        if st["thread"] is None or not st["thread"].is_alive():
+            box: dict = {}
+
+            def run():
+                try:
+                    box["value"] = fn()
+                except Exception as exc:  # noqa: BLE001
+                    box["error"] = exc
+
+            st["thread"] = threading.Thread(target=run, name=f"probe-{name}", daemon=True)
+            st["box"], st["started"] = box, time.monotonic()
+            st["thread"].start()
+        thread, box = st["thread"], st["box"]
+    thread.join(timeout)
+    if thread.is_alive():
+        return st["last"], f"{name}: no answer for {time.monotonic() - st['started']:.0f} s, still checking"
+    if "error" in box:
+        return [], f"{name}: {box['error']}"
+    st["last"] = box["value"]
+    return box["value"], None
+
+
+def scan_usb(audio_device: str = "", refresh_audio: bool = True, stopped=lambda: False,
+             timeout: float = PROBE_TIMEOUT_S) -> Detection:
+    """One look at the serial ports, audio devices and MIDI ports, each
+    bounded by ``timeout``. Never raises: a probe that fails or hangs says
+    so in ``errors``. ``stopped`` is checked before restarting PortAudio:
+    once the dialog has closed, a show may be using it, and a restart would
+    cut its audio stream."""
+    def serial_ports():
         from serial.tools import list_ports
 
-        det.adapters = find_dmx_adapters(list_ports.comports())
-    except Exception as exc:  # noqa: BLE001
-        det.errors.append(f"serial ports: {exc}")
-    try:
+        return find_dmx_adapters(list_ports.comports())
+
+    def audio():
         import sounddevice as sd
 
         if refresh_audio and not stopped():
             _refresh_portaudio(sd)
-        det.audio = find_dj_audio(sd.query_devices(), audio_device)
-    except Exception as exc:  # noqa: BLE001
-        det.errors.append(f"audio devices: {exc}")
-    try:
+        return find_dj_audio(sd.query_devices(), audio_device)
+
+    def midi():
         import mido
 
-        det.midi = find_dj_midi(mido.get_input_names())
-    except Exception as exc:  # noqa: BLE001
-        det.errors.append(f"MIDI ports: {exc}")
+        return find_dj_midi(mido.get_input_names())
+
+    det = Detection()
+    for name, fn, attr in (("serial ports", serial_ports, "adapters"),
+                           ("audio devices", audio, "audio"), ("MIDI ports", midi, "midi")):
+        value, err = _bounded(name, fn, timeout)
+        setattr(det, attr, value)
+        if err:
+            det.errors.append(err)
     return det
 
 
@@ -365,7 +413,7 @@ class DeviceWatcher(threading.Thread):
 
 def detect_once(audio_device: str = "", djlink_wait_s: float = 3.0) -> Detection:
     """The CLI's check. Listens for DJ Link only when USB found no DJ board."""
-    det = scan_usb(audio_device)
+    det = scan_usb(audio_device, refresh_audio=False)   # fresh process: PortAudio's list is current
     if not det.dj_ok and djlink_wait_s > 0:
         probe = DjLinkProbe()
         probe.open()
@@ -382,7 +430,7 @@ def checklist(det: Detection) -> list[tuple[bool, str, list[str]]]:
     """(ok, headline, detail lines) for the light adapter and the DJ board."""
     a = det.adapter
     if a:
-        light = (True, "Light adapter: connected", [
+        light = (True, "Light adapter: connected" + ("" if a.exact else " (not confirmed as an Enttec)"), [
             f"{a.model}" + (f", serial {a.serial}" if a.serial else ", no serial number"),
             f"{a.device} (matched: {a.matched})"] + [
             f"also: {o.model} on {o.device}" for o in det.adapters[1:]])
@@ -395,7 +443,8 @@ def checklist(det: Detection) -> list[tuple[bool, str, list[str]]]:
         dj = (True, "DJ board: connected", dj_lines)
     else:
         dj = (False, "DJ board: not found, plug in its USB cable (or Ethernet for DJ Link)",
-              [det.djlink_note] if det.djlink_note else [])
+              ["Plugged in but named differently? Type its audio device name; that counts."]
+              + ([det.djlink_note] if det.djlink_note else []))
     return [light, dj]
 
 

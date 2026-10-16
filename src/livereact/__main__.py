@@ -125,6 +125,9 @@ def _choose(argv: list[str]) -> list[str] | None:
     return _passthrough(argv) + chosen
 
 
+FORCE_NOTE_ENV = "LIVEREACT_FORCE_START_NOTE"   # the banner, for a supervised engine child
+
+
 def _is_tool(args: argparse.Namespace) -> bool:
     """A bring-up tool that runs and exits (never gated: it is how gear is checked)."""
     return bool(args.doctor or args.bundle is not None or args.net_check
@@ -137,7 +140,8 @@ def _gear_gate(args: argparse.Namespace) -> tuple[bool, str]:
     is not detected, unless --force-start; "" note when nothing is missing."""
     from .devices import describe, detect_once
 
-    det = detect_once(args.audio_device or "")
+    # --force-start (a run_show.sh relaunch mid-set): no 3 s DJ Link wait
+    det = detect_once(args.audio_device or "", djlink_wait_s=0.0 if args.force_start else 3.0)
     if det.ok:
         print(f"Gear check:\n{describe(det)}")
         return True, ""
@@ -145,7 +149,8 @@ def _gear_gate(args: argparse.Namespace) -> tuple[bool, str]:
     if not args.force_start:
         print(f"livereact: not starting the live show, the {missing} "
               f"{'is' if len(det.missing()) == 1 else 'are'} not connected.\n{describe(det)}\n"
-              "Plug it in and start again, or use --demo. Emergencies only: --force-start.",
+              "Plug it in and start again. If it IS plugged in under another name, pass "
+              "--audio-device NAME (that counts), or send --doctor. Emergencies only: --force-start.",
               file=sys.stderr)
         return False, ""
     print(f"WARNING: --force-start: starting without the {missing}.\n{describe(det)}", file=sys.stderr)
@@ -231,11 +236,15 @@ def main(argv: list[str] | None = None) -> int:
     # behind. Not for the tools, not for an engine child (a crash relaunch
     # mid-set must never be held up), and not after the launch dialog, whose
     # Start already was the gate (except --force-start: the banner needs it).
-    force_note = ""
+    # A supervised engine child is never gated; it gets the parent's banner
+    # note through the environment instead.
+    force_note = os.environ.get(FORCE_NOTE_ENV, "") if engine_child else ""
     if not demo and not _is_tool(args) and not engine_child and (not chose or args.force_start):
         ok, force_note = _gear_gate(args)
         if not ok:
             return 2
+        if force_note:
+            os.environ[FORCE_NOTE_ENV] = force_note
 
     # Resolve a session directory if recording, and route logs into it.
     session_dir = None
