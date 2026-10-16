@@ -102,17 +102,24 @@ capture motion-box bounds, save rig), and **Rig Config**.
 on the laptop's network so a phone on the same Wi-Fi can make the show
 **safer**, never more intense:
 
-- **Blackout**: on only. Releasing it is the laptop's job (B / the console button).
+- **Blackout**: on only. Releasing it is the laptop's job (B / the console button),
+  so use `--phone` with `--visualize`: headless, only a restart clears it (a
+  warning is logged).
 - **Dim**: brightness can only go down (-10 %, 50 %, 25 %).
 - **Strobe**: the strobe cap can only go down (cap 50 %, strobe off).
 - **Lasers**: disarm only, never arm.
+
+Blackout and disarm also release FREEZE, since a held frame may contain a lit
+laser (and blackout always wins over freeze in the show engine anyway).
 
 The server enforces these rules, not just the page: anything that would raise
 intensity is refused and changes nothing. The page also shows the bucket, BPM,
 scene, the current caps, whether DMX is connected, and which phone controls
 have been used. Access needs a 6-character code generated at every launch; the
 full URL including it (`http://<laptop IP>:8765/?k=XXXXXX`) is logged at
-startup. Dim and strobe-cap changes are saved to `config.json` at shutdown, like
+startup. Each request has a 10 s deadline and at most 16 connections are
+served at once, so a misbehaving client on the Wi-Fi can lock the phone out but
+cannot pile up threads on the laptop. Dim and strobe-cap changes are saved to `config.json` at shutdown, like
 the laptop sliders. Stdlib only, no new dependencies; see `src/livereact/remote/`
 and TESTING.md Test 8. On a Mac, allow incoming connections when the firewall asks.
 

@@ -605,7 +605,9 @@ undone on the laptop.
 9. **Disarm lasers** (arm with **L** first, on a track where they fire):
    lasers go dark. Re-arm on the laptop (the checkbox may still look ticked:
    press L until the lasers come back).
-10. Afterwards: note in `NOTES.md` how quickly each press landed, and check
+10. **Freeze + Blackout**: press F on the laptop to freeze, then Blackout on
+    the phone: the rig still goes dark (and the freeze is released).
+11. Afterwards: note in `NOTES.md` how quickly each press landed, and check
     the log has a `Phone console (<phone IP>): ...` line for each press.
 
 Note: dim and strobe-cap changes are saved to `config.json` at shutdown, the
