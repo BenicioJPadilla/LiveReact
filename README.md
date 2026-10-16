@@ -98,11 +98,13 @@ capture motion-box bounds, save rig), and **Rig Config**.
 
 ## Quick start
 
-Python **3.12 or 3.13** (3.14 currently crashes under load — see Status).
+Python **3.13** for shows (3.12 also works). `pyproject.toml` refuses 3.14,
+whose garbage collector crashed mid-set (see Status), and the app warns at
+launch if it finds itself on one anyway.
 
 ```bash
 # macOS / Linux
-python3 -m venv .venv
+python3.13 -m venv .venv
 .venv/bin/python -m pip install -e ".[ui,hardware,dev]"
 .venv/bin/python -m livereact --demo --duration 3     # short headless demo
 .venv/bin/python -m pytest                            # test suite
