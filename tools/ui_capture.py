@@ -8,6 +8,7 @@ instance attributes from the outside.
     QT_QPA_PLATFORM=offscreen python tools/ui_capture.py shots  OUT_DIR [--tag before]
     QT_QPA_PLATFORM=offscreen python tools/ui_capture.py frametime [--seconds 30]
     QT_QPA_PLATFORM=offscreen python tools/ui_capture.py safety OUT_DIR [--tag before]
+    QT_QPA_PLATFORM=offscreen python tools/ui_capture.py launch OUT_DIR
 
 ``shots`` writes <tag>-<screen>-<W>x<H>.png for every screen at 1440x900 and
 1920x1080. ``frametime`` prints the console's refresh cost (UI thread), the
@@ -17,6 +18,8 @@ console runs on the Show tab.
 outside the console: a crash relaunch that restored blackout, laser disarm and
 lowered faders before the window was built, and the phone console (its URL set
 on the app) blacking out, disarming and pulling the faders down mid-set.
+``launch`` writes the ``--choose`` launch
+dialog at its natural size, live and demo, listing the repo's rigs/.
 """
 
 from __future__ import annotations
@@ -167,6 +170,33 @@ def safety(out_dir: str, tag: str) -> None:
             app.shutdown()
 
 
+def launch(out_dir: str) -> None:
+    import shutil
+    import tempfile
+
+    from livereact.__main__ import _build_parser
+    from livereact.ui.launch_dialog import LaunchDialog, save_last_launch
+    from livereact.ui.theme import apply_theme
+
+    os.makedirs(out_dir, exist_ok=True)
+    apply_theme(_qt())
+    phone = "--phone" in _build_parser()._option_string_actions
+    with tempfile.TemporaryDirectory() as cwd:   # the repo's rigs, a clean memory file
+        shutil.copytree(os.path.join(ROOT, "rigs"), os.path.join(cwd, "rigs"))
+        for name, choice in [
+            ("live", {"mode": "live", "rig": os.path.join("rigs", "junior_crib.json"), "record": True}),
+            ("demo", {"mode": "demo", "rig": os.path.join("rigs", "sophias_thai.json"), "record": False}),
+        ]:
+            save_last_launch(cwd, choice)
+            dlg = LaunchDialog(cwd, phone_supported=phone)
+            dlg.show()
+            _pump(0.4)
+            path = os.path.join(out_dir, f"launch-dialog-{name}.png")
+            dlg.grab().save(path)
+            print("wrote", path)
+            dlg.close()
+
+
 def _stats(xs: list[float]) -> str:
     if not xs:
         return "n=0"
@@ -252,12 +282,16 @@ def main() -> int:
     f = sub.add_parser("frametime")
     f.add_argument("--seconds", type=float, default=30.0)
     f.add_argument("--rig", default=None)
+    la = sub.add_parser("launch")
+    la.add_argument("out_dir")
     args = p.parse_args()
     _qt()
     if args.cmd == "shots":
         shots(args.out_dir, args.tag)
     elif args.cmd == "safety":
         safety(args.out_dir, args.tag)
+    elif args.cmd == "launch":
+        launch(args.out_dir)
     else:
         frametime(args.seconds, args.rig)
     return 0

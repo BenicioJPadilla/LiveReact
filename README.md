@@ -85,6 +85,14 @@ music stops), `--no-norm-seed` (cold-start the energy normaliser at a new venue)
 A double-click macOS app (no terminal or venv) can be built with
 `packaging/macos/build_app.sh`; see `packaging/macos/README.md`.
 
+No terminal needed: `python -m livereact --choose` opens a launch dialog first
+(rig from `rigs/` in the current folder or Browse..., Live show or Demo, Record
+this session, audio device). Start runs exactly the command line those choices
+stand for, with the console; Quit exits. The last choice is remembered in
+`last-launch.json` next to `rigs/` and prefilled next time. Any other flags on
+the `--choose` command line (`--log-file`, `--rate`, ...) are kept. Not for
+`tools/run_show.sh`: its crash relaunch would ask again.
+
 ### Rigs and laser profiles
 
 `--rig rigs/<file>.json` picks the fixtures, their DMX addresses, the venue
