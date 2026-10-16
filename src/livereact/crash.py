@@ -7,8 +7,11 @@ report, and nothing said which thread or which line. ``install()`` arms
 :mod:`faulthandler` on a per-launch file in ``logs/``, which the interpreter
 writes from its signal handler (every thread's Python stack) even on a hard
 crash, and routes uncaught exceptions on any thread into the same file and
-the normal log. A launch that ends cleanly removes its empty crash file, so
-whatever is left in ``logs/crash-*.log`` is a real crash.
+the normal log. A launch that ends cleanly removes its empty crash file. A
+file left with stacks in it is a crash; one left with only its header means
+the process was killed (force quit, kill -9, a closed terminal), since then
+nothing at all runs on the way out. On Windows faulthandler also reports
+some exceptions that were later handled, so read those entries with care.
 """
 
 from __future__ import annotations
@@ -47,12 +50,14 @@ def install(log_dir: str = "logs") -> str:
     fh.flush()
     header_size = fh.tell()
     faulthandler.enable(file=fh, all_threads=True)
+    lock = threading.Lock()  # two threads failing at once must not interleave
 
     def record(title: str, exc_type, exc, tb) -> None:
         text = "".join(traceback.format_exception(exc_type, exc, tb))
         try:
-            fh.write(f"\n{time.strftime('%H:%M:%S')} {title}\n{text}")
-            fh.flush()
+            with lock:
+                fh.write(f"\n{time.strftime('%H:%M:%S')} {title}\n{text}")
+                fh.flush()
         except Exception:  # noqa: BLE001 - never let crash logging raise
             pass
         log.critical("%s\n%s", title, text.rstrip())
@@ -66,6 +71,8 @@ def install(log_dir: str = "logs") -> str:
         record("Uncaught exception", exc_type, exc, tb)
 
     def thread_excepthook(args: threading.ExceptHookArgs) -> None:
+        if issubclass(args.exc_type, SystemExit):
+            return  # what the default hook does too: a thread asking to end isn't a crash
         name = args.thread.name if args.thread is not None else "?"
         record(f"Uncaught exception in thread {name}", args.exc_type, args.exc_value, args.exc_traceback)
 
@@ -76,7 +83,8 @@ def install(log_dir: str = "logs") -> str:
         # A clean exit: drop the file if nothing beyond the header was written.
         try:
             faulthandler.disable()
-            empty = fh.tell() <= header_size
+            with lock:
+                empty = fh.tell() <= header_size
             fh.close()
             if empty:
                 os.remove(path)

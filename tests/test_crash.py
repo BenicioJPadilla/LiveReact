@@ -44,6 +44,14 @@ def test_an_uncaught_thread_exception_is_kept(tmp_path):
     assert "ValueError: engine blew up" in text
 
 
+def test_a_thread_ending_with_systemexit_is_not_a_crash(tmp_path):
+    proc = _run("from livereact import crash; crash.install('logs')\n"
+                "import sys, threading\n"
+                "t = threading.Thread(target=sys.exit); t.start(); t.join()\n", tmp_path)
+    assert proc.returncode == 0
+    assert _crash_files(tmp_path) == []
+
+
 def test_a_clean_exit_removes_its_empty_crash_log(tmp_path):
     proc = _run("from livereact import crash; crash.install('logs')", tmp_path)
     assert proc.returncode == 0
