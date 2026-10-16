@@ -62,6 +62,12 @@ class DmxWriter(threading.Thread):
         """True once the backend's ``open()`` has succeeded (console health indicator)."""
         return self._is_open
 
+    @property
+    def output_ok(self) -> bool:
+        """Open AND frames are actually going out (a wedged Enttec can reopen
+        fine and still fail every write). For the console's DMX light."""
+        return self._is_open and self._down_since is None
+
     def run(self) -> None:  # pragma: no cover - thin wrapper around _run_loop
         # Outer guard: even an unexpected error in the loop scaffolding itself
         # must not kill the thread silently without a trace.

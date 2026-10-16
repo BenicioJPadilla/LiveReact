@@ -66,3 +66,34 @@ def test_open_bounds_writes_so_a_wedged_device_cannot_stall_the_writer(monkeypat
     EnttecSerialBackend(port="/dev/cu.usbserial-TEST").open()
     assert seen["port"] == "/dev/cu.usbserial-TEST"
     assert seen["kwargs"]["write_timeout"] == WRITE_TIMEOUT_S
+
+
+def test_reopen_sticks_to_the_port_that_worked(monkeypatch):
+    """After a pull, a different FTDI device on the bus must not get the DMX
+    stream: the backend waits for its own port to come back."""
+    import serial
+    from serial.tools import list_ports
+
+    from livereact.output.enttec import EnttecSerialBackend
+
+    opened = []
+
+    class FakeSerial:
+        def __init__(self, port, **kwargs):
+            opened.append(port)
+
+        def reset_output_buffer(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(serial, "Serial", FakeSerial)
+    ports = [_Port("/dev/cu.usbserial-ENTTEC", FTDI_VID, 0x6001)]
+    monkeypatch.setattr(list_ports, "comports", lambda: ports)
+    backend = EnttecSerialBackend()
+    backend.open()
+    backend.close()
+    ports[:] = [_Port("/dev/cu.usbserial-OTHER", FTDI_VID, 0x6015)]  # Enttec pulled, another FTDI in
+    backend.open()
+    assert opened == ["/dev/cu.usbserial-ENTTEC", "/dev/cu.usbserial-ENTTEC"]

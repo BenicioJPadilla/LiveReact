@@ -169,6 +169,7 @@ def test_enttec_missing_at_launch_is_picked_up_when_plugged_in(caplog):
     assert sum(1 for r in warnings if r.exc_info) == 1
     assert len(warnings) <= 1 + 120 // 30
     assert any("back on" in r.getMessage() for r in caplog.records if r.levelname == "INFO")
+    assert writer.output_ok is False  # closed again on stop
 
 
 def test_enttec_unplugged_mid_set_comes_back_on_replug():

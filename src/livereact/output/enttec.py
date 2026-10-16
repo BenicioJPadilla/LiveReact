@@ -63,6 +63,7 @@ class EnttecSerialBackend(OutputBackend):
         self._baud = baud
         self._serial = None
         self._port: str | None = None
+        self._logged_port: str | None = None
 
     @property
     def name(self) -> str:
@@ -72,14 +73,20 @@ class EnttecSerialBackend(OutputBackend):
         import serial  # lazy: only needed in hardware mode
         from serial.tools import list_ports
 
-        self._port = self._port_hint or select_enttec_port(list_ports.comports())
+        # Once a port has worked, reopens go back to THAT port only (2026-10-16):
+        # the writer now retries all night, and some other FTDI cable plugged in
+        # mid-set must never be handed a DMX stream. macOS (cu.usbserial-<serial
+        # number>) and Windows' FTDI driver keep the name across a replug.
+        self._port = self._port_hint or self._port or select_enttec_port(list_ports.comports())
         if not self._port:
             raise RuntimeError("No Enttec DMX USB Pro found (no FTDI device on the bus)")
         # timeout=0 -> non-blocking reads (none are made); the chip clocks DMX
         # itself. Writes are bounded by WRITE_TIMEOUT_S, see above.
         self._serial = serial.Serial(self._port, baudrate=self._baud, timeout=0,
                                      write_timeout=WRITE_TIMEOUT_S)
-        log.info("Enttec opened on %s", self._port)
+        if self._port != self._logged_port:  # the writer reports reconnects itself
+            log.info("Enttec opened on %s", self._port)
+            self._logged_port = self._port
 
     def send(self, universe: bytes) -> None:
         if self._serial is None:
@@ -89,6 +96,12 @@ class EnttecSerialBackend(OutputBackend):
     def close(self) -> None:
         if self._serial is not None:
             try:
+                try:
+                    # A write that timed out may have left half a packet queued;
+                    # drop it rather than send it ahead of the next frame.
+                    self._serial.reset_output_buffer()
+                except Exception:  # noqa: BLE001 - a vanished device can't be flushed
+                    pass
                 self._serial.close()
             finally:
                 self._serial = None
