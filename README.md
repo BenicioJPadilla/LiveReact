@@ -71,6 +71,14 @@ Useful flags: `--rig <json>` (fixtures + laser profile), `--audio-device
 music stops), `--no-norm-seed` (cold-start the energy normaliser at a new venue).
 `python -m livereact --help` lists the rest.
 
+No terminal needed: `python -m livereact --choose` opens a launch dialog first
+(rig from `rigs/` in the current folder or Browse..., Live show or Demo, Record
+this session, audio device). Start runs exactly the command line those choices
+stand for, with the console; Quit exits. The last choice is remembered in
+`last-launch.json` next to `rigs/` and prefilled next time. Any other flags on
+the `--choose` command line (`--log-file`, `--rate`, ...) are kept. Not for
+`tools/run_show.sh`: its crash relaunch would ask again.
+
 ### Rigs and laser profiles
 
 `--rig rigs/<file>.json` picks the fixtures, their DMX addresses, the venue
