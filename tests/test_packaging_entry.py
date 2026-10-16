@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,7 @@ NOW = datetime.datetime(2026, 10, 16, 21, 5, 0)
 
 def test_log_file_added_when_nothing_logs_to_a_file():
     assert entry.with_log_file(["--demo", "--visualize"], now=NOW) == [
-        "--demo", "--visualize", "--log-file", "logs/app-20261016-210500.log"]
+        "--demo", "--visualize", "--log-file", os.path.join("logs", "app-20261016-210500.log")]
 
 
 @pytest.mark.parametrize("args", [
@@ -100,6 +101,7 @@ def test_resolve_default_args_expands_tilde_in_rig(tmp_path, monkeypatch):
     (home / "my rigs").mkdir(parents=True)
     (home / "my rigs" / "club.json").write_text("{}")
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # expanduser's home on Windows
     (tmp_path / "launch-args.txt").write_text('--hardware --rig "~/my rigs/club.json"\n')
     args, reason = entry.resolve_default_args(tmp_path)
     assert reason is None
