@@ -16,6 +16,8 @@ from ..core.frame_buffer import UNIVERSE_SIZE, DmxFrameBuffer
 from ..fixtures.profiles import MovingHead, _read16
 from ..fixtures.rig import Rig, RigError, save_rig
 from ..merge.merge import Contribution
+from . import icons, theme
+from .widgets import AppHeader, Footer, StatusPill, label, shell
 
 log = logging.getLogger(__name__)
 
@@ -28,63 +30,81 @@ class FixtureTestPanel(QtWidgets.QMainWindow):
         self.rig_path = rig_path
         self._uni = bytearray(UNIVERSE_SIZE)
         self._sliders: dict[int, QtWidgets.QSlider] = {}  # channel(1-based) -> slider
-        self.setWindowTitle("LiveReact — Fixture Test (manual DMX)")
+        self.setWindowTitle("LiveReact · Fixture test")
+        theme.apply_theme()
 
-        container = QtWidgets.QWidget()
-        outer = QtWidgets.QVBoxLayout(container)
-
-        bar = QtWidgets.QHBoxLayout()
+        header = AppHeader(subtitle="Fixture test", mode="raw dmx")
+        warn = StatusPill([("Show bypassed: sliders drive DMX directly", "warn")])
+        header.add_right(warn)
         all_off = QtWidgets.QPushButton("All off")
+        all_off.setObjectName("ghostDanger")
+        all_off.setIcon(icons.icon("power", theme.DANGER_TEXT, size=16))
+        all_off.setToolTip("Every channel to 0.")
         all_off.clicked.connect(self.all_off)
-        bar.addWidget(all_off)
-        bar.addStretch(1)
-        outer.addLayout(bar)
+        header.add_right(all_off)
 
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner = QtWidgets.QWidget()
-        grid = QtWidgets.QVBoxLayout(inner)
-        for fx in rig.fixtures:
-            grid.addWidget(self._fixture_group(fx))
-        grid.addStretch(1)
+        grid = QtWidgets.QGridLayout(inner)
+        grid.setContentsMargins(theme.SP4, theme.SP4, theme.SP4, theme.SP4)
+        grid.setSpacing(theme.SP3)
+        cols = 2
+        for i, fx in enumerate(rig.fixtures):
+            grid.addWidget(self._fixture_group(fx), i // cols, i % cols, QtCore.Qt.AlignmentFlag.AlignTop)
+        grid.setRowStretch((len(rig.fixtures) + cols - 1) // cols, 1)
         scroll.setWidget(inner)
-        outer.addWidget(scroll)
 
-        self.status = QtWidgets.QLabel("")
-        outer.addWidget(self.status)
+        footer = Footer()
+        self.status = label("", "footerText")
+        footer.row.addWidget(self.status, 1)
+        n_ch = sum(len(fx.channels()) for fx in rig.fixtures)
+        footer.row.addWidget(label(f"{len(rig.fixtures)} fixtures  ·  {n_ch} ch", "footerMono"))
 
-        self.setCentralWidget(container)
-        self.resize(560, 760)
+        self.setCentralWidget(shell(header, scroll, footer))
+        self.resize(1280, 860)
         self._publish()
 
     def _fixture_group(self, fx) -> QtWidgets.QWidget:
-        box = QtWidgets.QGroupBox(f"{fx.label}  (addr {fx.address}, {fx.type_name})")
-        form = QtWidgets.QFormLayout(box)
+        box = QtWidgets.QGroupBox(f"{fx.label.upper()}  ·  ADDR {fx.address}  ·  {fx.type_name.upper()}")
+        form = QtWidgets.QGridLayout(box)
+        form.setHorizontalSpacing(theme.SP3)
+        form.setVerticalSpacing(0)
         kinds = fx.channel_kinds()
         for local, ch in enumerate(fx.channels()):
-            row = QtWidgets.QWidget()
-            hl = QtWidgets.QHBoxLayout(row)
-            hl.setContentsMargins(0, 0, 0, 0)
             slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
             slider.setRange(0, 255)
-            value = QtWidgets.QLabel("0")
-            value.setMinimumWidth(28)
+            value = label("0", "value")
+            value.setMinimumWidth(32)
+            value.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
             slider.valueChanged.connect(lambda v, c=ch, lbl=value: self._on_change(c, v, lbl))
             self._sliders[ch] = slider
-            hl.addWidget(slider)
-            hl.addWidget(value)
-            form.addRow(f"ch {ch} · {kinds[local].name.lower()}", row)
+            form.addWidget(label(f"CH {ch}", "value"), local, 0)
+            form.addWidget(label(kinds[local].name.lower(), "hint"), local, 1)
+            form.addWidget(slider, local, 2)
+            form.addWidget(value, local, 3)
+        form.setColumnStretch(2, 1)
+        btns = QtWidgets.QHBoxLayout()
+        btns.setContentsMargins(0, theme.SP2, 0, 0)
+        btns.setSpacing(theme.SP2)
         flash = QtWidgets.QPushButton(f"Flash {fx.label}")
+        flash.setIcon(icons.icon("flash", theme.TEXT_2, size=16))
+        flash.setToolTip("All off, then this fixture at full white, so you can find it on the truss.")
         flash.clicked.connect(lambda _=False, f=fx: self._flash(f))
-        form.addRow(flash)
+        btns.addWidget(flash)
         if isinstance(fx, MovingHead):
             # docs/14 §4: jog pan/tilt above to point the real fixture at the
             # stage, then save that as its calibrated home — all scene
             # movement will oscillate around it within a bounded range
             # afterward, instead of the raw wide sweep.
-            home_btn = QtWidgets.QPushButton(f"Save as Home Position ({fx.label})")
+            home_btn = QtWidgets.QPushButton("Save as home position")
+            home_btn.setIcon(icons.icon("home", theme.TEXT_2, size=16))
             home_btn.clicked.connect(lambda _=False, f=fx: self._save_home_position(f))
-            form.addRow(home_btn)
+            btns.addWidget(home_btn)
+        btns.addStretch(1)
+        form.addLayout(btns, len(fx.channels()), 0, 1, 4)
         return box
 
     # --- actions ---
@@ -131,15 +151,15 @@ class FixtureTestPanel(QtWidgets.QMainWindow):
             # field -- mount heights, positions, unknown keys -- intact.
             save_rig(self.rig, path, "Home position saved via the fixture-test panel's Save as Home Position.")
         except RigError as exc:
-            self.status.setText(f"Not saved — {exc}")
-            self.status.setStyleSheet("color:#c33;")
+            self.status.setText(f"Not saved: {exc}")
+            theme.set_css(self.status, f"color:{theme.DANGER_TEXT};")
             return
         log.info("Saved %s home position (pan=%.3f tilt=%.3f) to %s", fx.label, pan01, tilt01, path)
         self.status.setText(
-            f"Saved {fx.label} home position (pan={pan01:.2f}, tilt={tilt01:.2f}) to {path} "
-            f"— restart with --rig \"{path}\" to apply."
+            f"Saved {fx.label} home position (pan={pan01:.2f}, tilt={tilt01:.2f}) to {path}. "
+            f"Restart with --rig \"{path}\" to apply."
         )
-        self.status.setStyleSheet("color:#3c6;")
+        theme.set_css(self.status, f"color:{theme.ACCENT};")
 
     def _publish(self) -> None:
         self.frame_buffer.publish(bytes(self._uni))
