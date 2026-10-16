@@ -7,7 +7,9 @@ the frame the DMX writer would send -- on a FakeClock, so a run is exactly
 repeatable and takes no real time. The demo source alone never leaves BREAK
 (the classifier listens to audio), so a scripted song (``song_audio``) and the
 DJ's two cues (C at the build, D before the drop) walk every rig through
-BREAK, BUILD, DROP, PEAK and back to BREAK / OUTRO. Every writer-rate frame is fed into a
+BREAK, BUILD, DROP, PEAK and back to BREAK / OUTRO. Each rig runs twice: as
+the demo boots (lasers armed) and with the lasers disarmed, the state an
+accent / trigger / feature rig boots in at a gig until the operator presses L. Every writer-rate frame is fed into a
 SHA-256; ``tests/golden/frames.json`` stores the whole-run hash and one per
 10-second window, so a mismatch says WHEN the show first differs, not just
 that it does.
@@ -80,7 +82,7 @@ def rig_cases() -> list[tuple[str, str | None]]:
     return cases
 
 
-def run_rig(rig_path: str | None, duration_s: int = DURATION_S) -> dict:
+def run_rig(rig_path: str | None, duration_s: int = DURATION_S, lasers_armed: bool = True) -> dict:
     """Run one rig's demo show; return its frame hashes."""
     from livereact.app import App, AppConfig
     from livereact.clock import FakeClock
@@ -89,6 +91,7 @@ def run_rig(rig_path: str | None, duration_s: int = DURATION_S) -> dict:
     clock = FakeClock()
     app = App(AppConfig(demo=True, config_path=None, rig_path=rig_path),
               clock=clock, backend=NullLogBackend())
+    app.manual.laser_enable = lasers_armed
     demo = app.sources[0]
     whole = hashlib.sha256()
     window = hashlib.sha256()
@@ -120,11 +123,16 @@ def run_rig(rig_path: str | None, duration_s: int = DURATION_S) -> dict:
 
 
 def run_all() -> dict:
+    previous = logging.root.manager.disable
     logging.disable(logging.INFO)  # the metronome logs once a simulated second
     try:
-        return {name: run_rig(path) for name, path in rig_cases()}
+        results = {}
+        for name, path in rig_cases():
+            results[name] = run_rig(path)
+            results[f"{name} (lasers disarmed)"] = run_rig(path, lasers_armed=False)
+        return results
     finally:
-        logging.disable(logging.NOTSET)
+        logging.disable(previous)
 
 
 def diff(expected: dict, actual: dict) -> list[str]:

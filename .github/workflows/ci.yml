@@ -4,6 +4,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -35,7 +36,14 @@ jobs:
       - name: Test suite (includes golden frames and the strict xfail gap tests)
         run: python -m pytest -ra
       - name: Golden frames, readable report
-        if: always()
+        if: failure()
         run: python tests/golden_frames.py
+      # From a scratch folder (no real config.json gets rewritten), failing on
+      # any ERROR or traceback: an engine thread that dies only logs, and the
+      # process would still exit 0.
       - name: Headless demo smoke run
-        run: python -m livereact --demo --duration 3
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/smoke" && cd "$RUNNER_TEMP/smoke"
+          python -m livereact --demo --duration 3 2>&1 | tee smoke.log
+          ! grep -E "ERROR|CRITICAL|Traceback" smoke.log
