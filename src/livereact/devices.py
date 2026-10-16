@@ -36,6 +36,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from .inputs.audio import CHANNELS as ENGINE_AUDIO_CHANNELS
+from .inputs.midi import find_midi_port
+from .inputs.prodj import KEEPALIVE_PORT
 from .output.enttec import FTDI_VID, select_enttec_port
 
 log = logging.getLogger(__name__)
@@ -45,9 +48,8 @@ log = logging.getLogger(__name__)
 DJ_EXACT = "xdj"
 DJ_NAME_TOKENS = ("xdj", "ddj", "djm", "cdj", "pioneer", "alphatheta", "opus-quad", "omnis")
 DMX_NAME_TOKENS = ("enttec", "dmx")
-ENGINE_AUDIO_INPUTS = 6          # inputs/audio.py captures XDJ channels 5 and 6
+ENGINE_AUDIO_INPUTS = max(ENGINE_AUDIO_CHANNELS)   # the auto-detect needs this many inputs
 
-DJLINK_KEEPALIVE_PORT = 50000
 DJLINK_MAGIC = b"Qspt1WmJOL"     # every Pro DJ Link packet starts with this
 DJLINK_FRESH_S = 5.0             # keepalives arrive every ~1.5 s per device
 
@@ -102,10 +104,10 @@ class Detection:
     def missing(self) -> list[str]:
         return [what for what, ok in (("light adapter", self.light_ok), ("DJ board", self.dj_ok)) if not ok]
 
-    def key(self) -> tuple:
-        """Changes when anything shown changes (log only then, not every poll)."""
-        return (tuple(self.adapters), tuple(self.audio), tuple(self.midi), tuple(self.djlink),
-                self.djlink_note, tuple(self.errors))
+    def missing_phrase(self) -> str:
+        """'the light adapter and the DJ board are' / 'the DJ board is'."""
+        missing = self.missing()
+        return f"the {' and the '.join(missing)} {'is' if len(missing) == 1 else 'are'}"
 
 
 def _has_token(text: str, tokens) -> bool:
@@ -113,10 +115,14 @@ def _has_token(text: str, tokens) -> bool:
     return any(t in text for t in tokens)
 
 
+def _attr(p, name: str) -> str:
+    return str(getattr(p, name, None) or "").strip()
+
+
 def _port_text(p) -> str:
     parts = []
     for a in ("manufacturer", "product", "description"):
-        v = str(getattr(p, a, None) or "").strip()
+        v = _attr(p, a)
         if v and v != "n/a" and v not in parts:
             parts.append(v)
     return " ".join(parts)
@@ -139,11 +145,10 @@ def find_dmx_adapters(ports) -> list[DmxAdapter]:
         ftdi = vid == FTDI_VID
         if not (ftdi or named):
             continue
-        serial = str(getattr(p, "serial_number", None) or "").strip()
-        if ftdi and device.upper().startswith("COM") and len(serial) > 1 and serial.endswith("A"):
+        serial = _attr(p, "serial_number")
+        if ftdi and device.upper().startswith("COM") and len(serial) == 9 and serial.endswith("A"):
             serial = serial[:-1]      # Windows' FTDIBUS id adds the port letter: EN123456A
-        product = str(getattr(p, "product", None) or "").strip()
-        maker = str(getattr(p, "manufacturer", None) or "").strip()
+        product, maker = _attr(p, "product"), _attr(p, "manufacturer")
         if named:
             model = " ".join(s for s in (maker, product) if s) or getattr(p, "description", "") or "DMX adapter"
         else:
@@ -192,13 +197,18 @@ def find_dj_audio(devices, wanted: str = "") -> list[DjDevice]:
 
 
 def find_dj_midi(names) -> list[DjDevice]:
-    """DJ-board ports among ``mido.get_input_names()``."""
+    """DJ-board ports among ``mido.get_input_names()``; the one the show
+    listens on (``inputs.midi.find_midi_port``) says so."""
+    names = list(names)
+    used = find_midi_port(names)
     out = []
     for name in names:
         if _has_token(name, DJ_NAME_TOKENS):
             exact = DJ_EXACT in name.lower()
-            out.append(DjDevice(name, f"name {name!r}", exact,
-                                "" if exact else "not an XDJ: the MIDI map is for the XDJ-XZ"))
+            note = "" if exact else "not an XDJ: the MIDI map is for the XDJ-XZ"
+            if name == used and exact:
+                note = "the show listens on this one"
+            out.append(DjDevice(name, f"name {name!r}", exact, note))
     return out
 
 
@@ -216,7 +226,7 @@ class DjLinkProbe:
     Shares the port (SO_REUSEADDR/SO_REUSEPORT) and is closed before the
     engine's own listener binds it."""
 
-    def __init__(self, port: int = DJLINK_KEEPALIVE_PORT) -> None:
+    def __init__(self, port: int = KEEPALIVE_PORT) -> None:
         self.port = port
         self.sock: socket.socket | None = None
         self.note = ""
@@ -239,16 +249,17 @@ class DjLinkProbe:
             self.sock = None
             self.note = f"not listening for DJ Link ({exc})"
 
-    def wait(self, timeout: float) -> None:
-        """Take in keepalives for up to ``timeout`` seconds."""
-        if self.sock is None:
-            time.sleep(max(0.0, timeout))
-            return
+    def wait(self, timeout: float, stop: threading.Event | None = None) -> None:
+        """Take in keepalives for up to ``timeout`` seconds, or until ``stop``
+        (checked every 0.1 s, so the dialog's Start is not held up)."""
         end = time.monotonic() + timeout
-        while True:
-            left = end - time.monotonic()
+        while not (stop and stop.is_set()):
+            left = min(0.1, end - time.monotonic())
             if left <= 0:
                 return
+            if self.sock is None:
+                time.sleep(left)
+                continue
             try:
                 ready, _, _ = select.select([self.sock], [], [], left)
             except (OSError, ValueError):
@@ -260,9 +271,7 @@ class DjLinkProbe:
         while self.sock is not None:
             try:
                 data, _addr = self.sock.recvfrom(2048)
-            except (BlockingIOError, InterruptedError):
-                return
-            except OSError:
+            except OSError:              # BlockingIOError: drained
                 return
             name = parse_djlink_name(data)
             if name:
@@ -299,18 +308,25 @@ def _refresh_portaudio(sd) -> None:
 
 
 PROBE_TIMEOUT_S = 4.0
-_probes: dict[str, dict] = {}       # probe name -> {"thread", "last", "started"}
+
+
+@dataclass
+class _Probe:
+    thread: threading.Thread | None = None
+    box: dict = field(default_factory=dict)     # "value" or "error" once it returns
+    last: list = field(default_factory=list)    # the last answer, while it hangs
+    started: float = 0.0
+
+
+_probes: dict[str, _Probe] = {}
 _probes_lock = threading.Lock()
 
 
-def _bounded(name: str, fn, timeout: float = PROBE_TIMEOUT_S):
-    """``fn()`` on its own thread, waited for up to ``timeout``: (value,
-    error). A probe that hangs (a wedged MIDI server, CoreAudio stalling)
-    must not freeze the others, so until it returns its last answer stands
-    in (lenient: it does not flip to "not found") and the error says so."""
+def _start_probe(name: str, fn) -> _Probe:
+    """Run ``fn`` on its own thread, unless the last run is still going."""
     with _probes_lock:
-        st = _probes.setdefault(name, {"thread": None, "last": [], "started": 0.0})
-        if st["thread"] is None or not st["thread"].is_alive():
+        st = _probes.setdefault(name, _Probe())
+        if st.thread is None or not st.thread.is_alive():
             box: dict = {}
 
             def run():
@@ -319,17 +335,24 @@ def _bounded(name: str, fn, timeout: float = PROBE_TIMEOUT_S):
                 except Exception as exc:  # noqa: BLE001
                     box["error"] = exc
 
-            st["thread"] = threading.Thread(target=run, name=f"probe-{name}", daemon=True)
-            st["box"], st["started"] = box, time.monotonic()
-            st["thread"].start()
-        thread, box = st["thread"], st["box"]
-    thread.join(timeout)
-    if thread.is_alive():
-        return st["last"], f"{name}: no answer for {time.monotonic() - st['started']:.0f} s, still checking"
-    if "error" in box:
-        return [], f"{name}: {box['error']}"
-    st["last"] = box["value"]
-    return box["value"], None
+            st.box, st.started = box, time.monotonic()
+            st.thread = threading.Thread(target=run, name=f"probe-{name}", daemon=True)
+            st.thread.start()
+        return st
+
+
+def _probe_result(name: str, st: _Probe, deadline: float):
+    """(value, error) by ``deadline``. A probe that hangs (a wedged MIDI
+    server, CoreAudio stalling) must not freeze the others, so until it
+    returns its last answer stands in (lenient: it does not flip to "not
+    found") and the error says so."""
+    st.thread.join(max(0.0, deadline - time.monotonic()))
+    if st.thread.is_alive():
+        return st.last, f"{name}: no answer for {time.monotonic() - st.started:.0f} s, still checking"
+    if "error" in st.box:
+        return [], f"{name}: {st.box['error']}"
+    st.last = st.box["value"]
+    return st.last, None
 
 
 def scan_usb(audio_device: str = "", refresh_audio: bool = True, stopped=lambda: False,
@@ -356,10 +379,13 @@ def scan_usb(audio_device: str = "", refresh_audio: bool = True, stopped=lambda:
 
         return find_dj_midi(mido.get_input_names())
 
+    probes = [("serial ports", serial_ports, "adapters"), ("audio devices", audio, "audio"),
+              ("MIDI ports", midi, "midi")]
+    started = [(name, _start_probe(name, fn), attr) for name, fn, attr in probes]   # all at once
+    deadline = time.monotonic() + timeout
     det = Detection()
-    for name, fn, attr in (("serial ports", serial_ports, "adapters"),
-                           ("audio devices", audio, "audio"), ("MIDI ports", midi, "midi")):
-        value, err = _bounded(name, fn, timeout)
+    for name, st, attr in started:
+        value, err = _probe_result(name, st, deadline)
         setattr(det, attr, value)
         if err:
             det.errors.append(err)
@@ -389,12 +415,11 @@ class DeviceWatcher(threading.Thread):
                 started = time.monotonic()
                 det = self.scan(self.audio_device(), stopped=self.stop_event.is_set)
                 det.djlink, det.djlink_note = self.probe.heard(), self.probe.note
-                if det.key() != last:
+                if det != last and not self.stop_event.is_set():   # only what changed
                     log.info("Devices now:\n%s", describe(det))
-                    last = det.key()
-                if not self.stop_event.is_set():
+                    last = det
                     self.on_scan(det)
-                self.probe.wait(max(0.05, self.period_s - (time.monotonic() - started)))
+                self.probe.wait(max(0.05, self.period_s - (time.monotonic() - started)), self.stop_event)
         except Exception:  # noqa: BLE001 - a broken probe must not take the dialog down
             log.exception("Device detection stopped")
         finally:
@@ -413,15 +438,17 @@ class DeviceWatcher(threading.Thread):
 
 def detect_once(audio_device: str = "", djlink_wait_s: float = 3.0) -> Detection:
     """The CLI's check. Listens for DJ Link only when USB found no DJ board."""
-    det = scan_usb(audio_device, refresh_audio=False)   # fresh process: PortAudio's list is current
-    if not det.dj_ok and djlink_wait_s > 0:
-        probe = DjLinkProbe()
-        probe.open()
-        try:
-            probe.wait(djlink_wait_s)
+    probe = DjLinkProbe()
+    if djlink_wait_s > 0:
+        probe.open()                  # keepalives heard during the USB scan count too
+    try:
+        started = time.monotonic()
+        det = scan_usb(audio_device, refresh_audio=False)   # fresh process: PortAudio's list is current
+        if not det.dj_ok and djlink_wait_s > 0:
+            probe.wait(djlink_wait_s - (time.monotonic() - started))
             det.djlink, det.djlink_note = probe.heard(), probe.note
-        finally:
-            probe.close()
+    finally:
+        probe.close()
     return det
 
 
@@ -482,7 +509,10 @@ def remember_rig(serial: str, rig_path: str, home: str | None = None) -> None:
         return
     home = home or data_home()
     rigs = load_rig_memory(home)
-    rigs[serial] = os.path.abspath(rig_path) if rig_path else ""
+    rig = os.path.abspath(rig_path) if rig_path else ""
+    if rigs.get(serial) == rig:
+        return
+    rigs[serial] = rig
     path = os.path.join(home, RIG_MEMORY_FILE)
     try:
         os.makedirs(home, exist_ok=True)

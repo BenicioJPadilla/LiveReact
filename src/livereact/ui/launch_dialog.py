@@ -299,6 +299,14 @@ class LaunchDialog(QtWidgets.QDialog):
                 "phone": bool(self.cb_phone and self.cb_phone.isChecked()),
                 "audio_device": self.audio_edit.text().strip()}
 
+    def _abs(self, path: str) -> str:
+        return path if os.path.isabs(path) else os.path.join(self.cwd, path)
+
+    def _rel(self, path: str) -> str:
+        """``path`` relative to the cwd when it is inside it, else as given."""
+        rel = os.path.relpath(path, self.cwd)
+        return path if rel.startswith(os.pardir) else rel
+
     def _select_rig(self, path: str) -> bool:
         """Select ``path`` (relative to the cwd or absolute), adding it to the
         list when it exists but is not a rigs/ file. False if it is gone."""
@@ -306,8 +314,7 @@ class LaunchDialog(QtWidgets.QDialog):
         if idx >= 0:
             self.rig_combo.setCurrentIndex(idx)
             return True
-        full = path if os.path.isabs(path) else os.path.join(self.cwd, path)
-        if not os.path.isfile(full):
+        if not os.path.isfile(self._abs(path)):
             return False
         self.rig_combo.insertItem(self.rig_combo.count() - 1, os.path.basename(path), path)
         self.rig_combo.setCurrentIndex(self.rig_combo.count() - 2)
@@ -352,8 +359,7 @@ class LaunchDialog(QtWidgets.QDialog):
 
         path = self.rig()
         try:
-            self._rig = load_rig(None if not path else
-                                 path if os.path.isabs(path) else os.path.join(self.cwd, path))
+            self._rig = load_rig(self._abs(path) if path else None)
             lines = [f"{fx.label}  ·  {fx.type_name}  ·  DMX {fx.address}" for fx in self._rig.fixtures]
             self.l_fixtures.setText("\n".join(lines) or "No fixtures in this rig.")
         except Exception as exc:  # noqa: BLE001 - shown, and the show will say it too
@@ -382,15 +388,15 @@ class LaunchDialog(QtWidgets.QDialog):
         live = self.rb_live.isChecked()
         self.b_start.setEnabled(not live or self.live_start_allowed())
         missing = self.detection.missing()
+        phrase = self.detection.missing_phrase()
         if not live:
             text = "Demo needs no gear."
         elif not missing:
             text = "Gear connected. Ready to start."
         elif self.force_start:
-            text = f"Emergency start (--force-start): starting without the {' and the '.join(missing)}."
+            text = f"Emergency start (--force-start): starting without {phrase.rsplit(' ', 1)[0]}."
         else:
-            text = (f"Start is off until the {' and the '.join(missing)} "
-                    f"{'is' if len(missing) == 1 else 'are'} connected. "
+            text = (f"Start is off until {phrase} connected. "
                     "Emergencies only: --force-start (README).")
         if live and self.detection.errors:
             text += " Could not check: " + "; ".join(self.detection.errors) + "."
@@ -412,9 +418,7 @@ class LaunchDialog(QtWidgets.QDialog):
             self._say_rig(f"New light adapter (serial {serial}). Which rig is it for? Pick it above; "
                           "next time it is picked by itself.")
             return
-        rig = memory[serial]
-        rel = os.path.relpath(rig, self.cwd) if rig else ""
-        rig = rel if rig and not rel.startswith(os.pardir) else rig
+        rig = self._rel(memory[serial]) if memory[serial] else ""
         if self._rig_touched:
             self._say_rig(f"Adapter {serial} was last used with {rig or 'the built-in default rig'}.")
         elif not rig:
@@ -454,10 +458,7 @@ class LaunchDialog(QtWidgets.QDialog):
             self, "Choose a rig", start if os.path.isdir(start) else self.cwd, "Rig (*.json)")
         if not path:
             return
-        rel = os.path.relpath(path, self.cwd)
-        if not rel.startswith(os.pardir):
-            path = rel
-        self._select_rig(path)
+        self._select_rig(self._rel(path))
         self._rig_touched = True
         self.rig_note.hide()
 
@@ -469,9 +470,7 @@ class LaunchDialog(QtWidgets.QDialog):
         save_last_launch(self.cwd, self.choice())
         a = self.detection.adapter
         if live and a and a.serial:
-            rig = self.rig() or ""
-            devices.remember_rig(a.serial, rig if not rig or os.path.isabs(rig) else os.path.join(self.cwd, rig),
-                                 self.home)
+            devices.remember_rig(a.serial, self._abs(self.rig()) if self.rig() else "", self.home)
         log.info("Start (%s). Devices:\n%s", self.mode(), devices.describe(self.detection))
         self.accept()
 

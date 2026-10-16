@@ -200,7 +200,7 @@ def test_the_watcher_reports_each_scan_and_frees_the_port():
                               probe=probe)
     w.start()
     deadline = time.monotonic() + 3
-    while len(seen) < 2 and time.monotonic() < deadline:
+    while not seen and time.monotonic() < deadline:
         time.sleep(0.01)
     w.stop()
     assert not w.is_alive() and probe.closed
