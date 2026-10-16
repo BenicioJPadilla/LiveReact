@@ -21,6 +21,10 @@ log = logging.getLogger(__name__)
 FTDI_VID = 0x0403                      # Enttec uses an FTDI chip
 FTDI_PIDS = {0x6001, 0x6010, 0x6014, 0x6015}
 LABEL_OUTPUT_ONLY = 0x06               # "Output Only Send DMX Packet"
+WRITE_TIMEOUT_S = 0.5                  # a 518-byte frame takes ~1 ms; a write still
+                                       # pending after this is a wedged or vanished
+                                       # device, so raise and let the writer reopen
+                                       # instead of blocking the 40 Hz loop forever
 
 
 def build_enttec_frame(universe: bytes) -> bytes:
@@ -71,8 +75,10 @@ class EnttecSerialBackend(OutputBackend):
         self._port = self._port_hint or select_enttec_port(list_ports.comports())
         if not self._port:
             raise RuntimeError("No Enttec DMX USB Pro found (no FTDI device on the bus)")
-        # timeout=0 -> non-blocking writes; the chip clocks DMX itself.
-        self._serial = serial.Serial(self._port, baudrate=self._baud, timeout=0)
+        # timeout=0 -> non-blocking reads (none are made); the chip clocks DMX
+        # itself. Writes are bounded by WRITE_TIMEOUT_S, see above.
+        self._serial = serial.Serial(self._port, baudrate=self._baud, timeout=0,
+                                     write_timeout=WRITE_TIMEOUT_S)
         log.info("Enttec opened on %s", self._port)
 
     def send(self, universe: bytes) -> None:

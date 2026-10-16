@@ -49,3 +49,20 @@ def test_select_enttec_prefers_cu_node_on_macos():
 
 def test_select_enttec_returns_none_when_absent():
     assert select_enttec_port([_Port("COM1", 0x1234, 0x0001)]) is None
+
+
+def test_open_bounds_writes_so_a_wedged_device_cannot_stall_the_writer(monkeypatch):
+    import serial
+
+    from livereact.output.enttec import WRITE_TIMEOUT_S, EnttecSerialBackend
+
+    seen = {}
+
+    class FakeSerial:
+        def __init__(self, port, **kwargs):
+            seen["port"], seen["kwargs"] = port, kwargs
+
+    monkeypatch.setattr(serial, "Serial", FakeSerial)
+    EnttecSerialBackend(port="/dev/cu.usbserial-TEST").open()
+    assert seen["port"] == "/dev/cu.usbserial-TEST"
+    assert seen["kwargs"]["write_timeout"] == WRITE_TIMEOUT_S
