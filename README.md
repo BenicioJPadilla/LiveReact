@@ -107,6 +107,33 @@ blackout, laser arm, cue buttons on `manual` rigs, floor-plan mini-map),
 per-fixture position/height/facing, moving-head calibration: jog live, set aim,
 capture motion-box bounds, save rig), and **Rig Config**.
 
+### Phone console
+
+`--phone [PORT]` (default port 8765, off unless passed) serves a small web page
+on the laptop's network so a phone on the same Wi-Fi can make the show
+**safer**, never more intense:
+
+- **Blackout**: on only. Releasing it is the laptop's job (B / the console button),
+  so use `--phone` with `--visualize`: headless, only a restart clears it (a
+  warning is logged).
+- **Dim**: brightness can only go down (-10 %, 50 %, 25 %).
+- **Strobe**: the strobe cap can only go down (cap 50 %, strobe off).
+- **Lasers**: disarm only, never arm.
+
+Blackout and disarm also release FREEZE, since a held frame may contain a lit
+laser (and blackout always wins over freeze in the show engine anyway).
+
+The server enforces these rules, not just the page: anything that would raise
+intensity is refused and changes nothing. The page also shows the bucket, BPM,
+scene, the current caps, whether DMX is connected, and which phone controls
+have been used. Access needs a 6-character code generated at every launch; the
+full URL including it (`http://<laptop IP>:8765/?k=XXXXXX`) is logged at
+startup. Each request has a 10 s deadline and at most 16 connections are
+served at once, so a misbehaving client on the Wi-Fi can lock the phone out but
+cannot pile up threads on the laptop. Dim and strobe-cap changes are saved to `config.json` at shutdown, like
+the laptop sliders. Stdlib only, no new dependencies; see `src/livereact/remote/`
+and TESTING.md Test 8. On a Mac, allow incoming connections when the firewall asks.
+
 ## Quick start
 
 Python **3.13** for shows (3.12 also works). `pyproject.toml` refuses 3.14,
@@ -166,6 +193,7 @@ src/livereact/
   fixtures/              fixture profiles, rig loader/saver, venue geometry + head calibration
   output/                backend interface, null/log backend, Enttec serial, 40 Hz writer
   ui/                    PySide6 console (Show / Laser Show / Venue / Rig Config), floor plan, visualizer
+  remote/                opt-in phone console (--phone): stdlib web page that can only make the show safer
   recorder.py, diagnostics.py, network.py, tap_tempo.py, dynamics.py
 rigs/                    rig JSON files (fixtures, addresses, venue geometry, laser profile)
 spec/                    LIGHTING_BIBLE.md + conformance.md
