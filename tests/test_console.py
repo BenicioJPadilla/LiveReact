@@ -456,3 +456,147 @@ def test_laser_hit_button_and_j_key_count_moments(qapp):
     win.b_laser_hit.click()
     win.b_laser_hit.click()
     assert app.manual.laser_hit == 2
+
+
+def test_outside_writes_to_manual_params_are_mirrored_and_one_press_releases(qapp):
+    """The phone console and the relaunch supervisor write ManualParams
+    directly; refresh() must show it (signals blocked, never writing back),
+    so ONE press of B releases a phone blackout and one L re-arms."""
+    from PySide6 import QtGui
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    win.refresh()
+    # what the phone thread does
+    app.manual.blackout = True
+    app.manual.laser_enable = False
+    app.manual.master_brightness = 0.4
+    app.manual.strobe_cap = 0.0
+    win.refresh()
+    assert win.b_black.isChecked()
+    assert not win.cb_laser.isChecked()
+    assert win.s_bright.value() == 40 and win.l_bright_v.text() == "40%"
+    assert win.s_strobe.value() == 0 and win.l_strobe_v.text() == "0%"
+    # the mirror wrote nothing back
+    assert app.manual.master_brightness == 0.4 and app.manual.strobe_cap == 0.0
+    win.refresh()
+    assert app.manual.blackout is True and app.manual.laser_enable is False
+
+    win.b_black.toggle()                     # one press releases it
+    assert app.manual.blackout is False
+    win.show()
+    for sc in win.findChildren(QtGui.QShortcut):
+        if sc.key() == QtGui.QKeySequence("L"):
+            sc.activated.emit()              # one press re-arms
+    assert app.manual.laser_enable is True
+    win.refresh()
+    assert not win.b_black.isChecked() and win.cb_laser.isChecked()
+
+    # phone freeze, then the phone's blackout clears it
+    app.manual.freeze = True
+    win.refresh()
+    assert win.b_freeze.isChecked()
+    app.manual.freeze = False
+    win.refresh()
+    assert not win.b_freeze.isChecked()
+
+
+def test_fader_mirror_ignores_values_within_one_step(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    win.s_bright.setValue(50)
+    app.manual.master_brightness = 0.505     # between two steps: no hunting
+    win.refresh()
+    assert win.s_bright.value() == 50
+    assert app.manual.master_brightness == 0.505
+
+
+def test_console_built_after_a_relaunch_shows_the_restored_state(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    app.manual.blackout = True
+    app.manual.laser_enable = False
+    app.manual.master_brightness = 0.4
+    app.manual.strobe_cap = 0.0
+    win = ConsoleWindow(app)
+    assert win.b_black.isChecked()
+    assert not win.cb_laser.isChecked()
+    assert win.s_bright.value() == 40 and win.s_strobe.value() == 0
+    # building the window wrote nothing
+    assert app.manual.blackout is True and app.manual.master_brightness == 0.4
+    win.b_black.toggle()
+    assert app.manual.blackout is False
+
+
+def test_lost_dj_link_reads_look_held(qapp):
+    import dataclasses
+
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    snap = app.show_state.snapshot()
+    win._refresh_status(dataclasses.replace(snap, pdl_fresh=False))
+    assert win.l_pdl_lost.isHidden()                 # plain stale: no banner
+    assert "PDL STALE" in win.l_health.text()
+
+    class Lost:                                      # pdl_lost lives on another branch
+        def __init__(self, s):
+            self._s = s
+
+        def __getattr__(self, k):
+            return getattr(self._s, k)
+
+        pdl_fresh = False
+        pdl_lost = True
+
+    win._refresh_status(Lost(snap))
+    assert not win.l_pdl_lost.isHidden()
+    assert "DJ LINK LOST, look held" in win.l_pdl_lost.text()
+    assert "LOST, look held" in win.l_health.text()
+
+
+def test_dmx_dot_uses_output_ok_when_the_writer_has_it(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    snap = app.show_state.snapshot()
+
+    class W:
+        def __init__(self, name, is_open, **kw):
+            self.backend = type("B", (), {"name": name})()
+            self.is_open = is_open
+            self.__dict__.update(kw)
+
+    app.writer = W("enttec", True)                   # no output_ok: the old logic
+    win._refresh_status(snap)
+    assert win.pill_conn._segs[3][2] == "ok"
+    app.writer = W("enttec", True, output_ok=False)  # open but every write failing
+    win._refresh_status(snap)
+    assert win.pill_conn._segs[3][2] == "bad"
+    app.writer = W("null-log", True, output_ok=True)  # the log fallback is never green
+    win._refresh_status(snap)
+    assert win.pill_conn._segs[3][2] == "bad"
+
+
+def test_phone_url_label_appears_when_the_app_has_one(qapp):
+    from PySide6 import QtCore
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    win.refresh()
+    assert win.phone_row.isHidden()
+    app.phone_url = "http://192.168.1.20:8765/?k=7F3K9Q"
+    win.refresh()
+    assert not win.phone_row.isHidden()
+    assert win.l_phone.text() == "http://192.168.1.20:8765/?k=7F3K9Q"
+    assert win.l_phone.textInteractionFlags() & QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    app.phone_url = None
+    win.refresh()
+    assert win.phone_row.isHidden()
