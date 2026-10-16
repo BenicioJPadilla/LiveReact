@@ -118,3 +118,85 @@ def test_writer_runs_as_a_real_thread_and_joins():
 
     assert not writer.is_alive()
     assert backend.sent >= 3
+
+
+class UnpluggedBackend(CountingBackend):
+    """An Enttec that isn't there for the first ``missing_for`` seconds:
+    open() raises like EnttecSerialBackend's "No Enttec DMX USB Pro found",
+    send() raises while closed."""
+
+    def __init__(self, stop_event, stop_after, clock, missing_for) -> None:
+        super().__init__(stop_event, stop_after)
+        self._clock = clock
+        self._missing_for = missing_for
+        self.open_attempts = 0
+        self.is_open = False
+
+    def open(self) -> None:
+        self.open_attempts += 1
+        if self._clock.monotonic() < self._missing_for:
+            raise RuntimeError("No Enttec DMX USB Pro found (no FTDI device on the bus)")
+        self.is_open = True
+
+    def send(self, universe: bytes) -> None:
+        if not self.is_open:
+            raise RuntimeError("Enttec port not open")
+        super().send(universe)
+
+    def close(self) -> None:
+        self.is_open = False
+
+
+def test_enttec_missing_at_launch_is_picked_up_when_plugged_in(caplog):
+    """2026-10-16: an Enttec absent at launch used to mean a log-only night
+    until a relaunch. Now the writer keeps reopening (at most a second
+    apart) and output starts by itself once the device appears."""
+    clock = FakeClock()
+    stop = threading.Event()
+    backend = UnpluggedBackend(stop, stop_after=40, clock=clock, missing_for=120.0)
+    writer = _make_writer(backend, clock, stop)
+
+    with caplog.at_level("DEBUG", logger="livereact.output.writer"):
+        writer._run_loop()
+
+    assert backend.sent == 40
+    assert writer.frames_sent == 40
+    assert clock.monotonic() < 120.0 + 1.0 + 1.5  # found within ~1 s of appearing, then 40 frames
+    assert backend.open_attempts < 200  # ~1 retry a second, not 40 a second
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    # One traceback when it went down, then one line per DOWN_LOG_INTERVAL_S
+    # (120 s -> 4), not one per retry.
+    assert sum(1 for r in warnings if r.exc_info) == 1
+    assert len(warnings) <= 1 + 120 // 30
+    assert any("back on" in r.getMessage() for r in caplog.records if r.levelname == "INFO")
+    assert writer.output_ok is False  # closed again on stop
+
+
+def test_enttec_unplugged_mid_set_comes_back_on_replug():
+    """Pulled at 5 s (sends raise like a vanished FTDI port), plugged back in
+    at 8 s: frames flow again within about a second."""
+    clock = FakeClock()
+    stop = threading.Event()
+    backend = UnpluggedBackend(stop, stop_after=10_000, clock=clock, missing_for=-1.0)
+    writer = _make_writer(backend, clock, stop)
+    first_frame_after_replug = None
+    healthy_send = backend.send
+
+    def send(universe):
+        nonlocal first_frame_after_replug
+        t = clock.monotonic()
+        if 5.0 <= t < 8.0 and backend.is_open:
+            backend.is_open = False
+            backend._missing_for = 8.0
+            raise OSError(6, "Device not configured")
+        healthy_send(universe)
+        if t >= 8.0 and first_frame_after_replug is None:
+            first_frame_after_replug = t
+        if t >= 10.0:
+            stop.set()
+
+    backend.send = send
+    writer._run_loop()
+
+    assert first_frame_after_replug is not None
+    assert first_frame_after_replug - 8.0 < 1.1
