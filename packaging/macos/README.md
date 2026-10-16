@@ -46,7 +46,7 @@ plain double-click the first time:
    **Open** again in the warning. On recent macOS versions, if there is no Open
    button: try to open it once, then go to System Settings > Privacy & Security
    and click **Open Anyway** next to the LiveReact message.
-3. Allow the prompts for the Documents folder, the microphone (the XDJ's USB
+3. Allow the prompts for the microphone (the XDJ's USB
    audio input) and the local network (Pro DJ Link, phone console). If one was
    denied by mistake, re-enable it under System Settings > Privacy & Security.
 
@@ -54,9 +54,10 @@ After the first time, a normal double-click works.
 
 ## Where data lives
 
-Everything the app reads and writes is in **`~/Documents/LiveReact`** (falls
-back to `~/Library/Application Support/LiveReact` if Documents is not
-writable):
+Everything the app reads and writes is in **`~/LiveReact`** (your home
+folder; falls back to `~/Library/Application Support/LiveReact` if that is not
+writable). Not Documents: macOS asks permission before an app touches
+Documents, and until that prompt is answered the app sits there looking hung.
 
 | Path | What |
 | --- | --- |
@@ -68,9 +69,9 @@ writable):
 
 ## Changing the launch arguments
 
-Edit `~/Documents/LiveReact/launch-args.txt` with any text editor. One line of
+Edit `~/LiveReact/launch-args.txt` with any text editor. One line of
 the usual `livereact` arguments; lines starting with `#` are ignored; quote
-paths with spaces; relative paths are relative to `~/Documents/LiveReact`.
+paths with spaces; relative paths are relative to `~/LiveReact`.
 The first launch from Finder creates it with:
 
 ```

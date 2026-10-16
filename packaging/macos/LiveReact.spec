@@ -100,7 +100,5 @@ app = BUNDLE(
             "LiveReact listens to the DJ mixer's USB audio input to follow the music.",
         "NSLocalNetworkUsageDescription":
             "LiveReact talks to Pro DJ Link players and the phone console on the local network.",
-        "NSDocumentsFolderUsageDescription":
-            "LiveReact keeps its rigs, settings, recordings and logs in Documents/LiveReact.",
     },
 )

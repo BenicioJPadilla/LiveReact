@@ -4,7 +4,7 @@ LiveReact resolves config.json, midi_map.json, recordings/, logs/, diagnostics/
 and --rig paths relative to the current directory. A Finder-launched .app starts
 with CWD "/", so this entry point:
 
-1. chdirs into a per-user data folder (~/Documents/LiveReact, or $LIVEREACT_HOME),
+1. chdirs into a per-user data folder (~/LiveReact, or $LIVEREACT_HOME),
    creating it on first launch;
 2. copies the bundled rigs/*.json into <data>/rigs/ without ever overwriting a
    file that is already there (it may hold Venue-tab calibration);
@@ -147,11 +147,14 @@ def _bundled_rigs_dir() -> Path:
 
 
 def _data_dir() -> Path:
-    """~/Documents/LiveReact (or $LIVEREACT_HOME); falls back to
-    ~/Library/Application Support/LiveReact if Documents is not writable."""
+    """~/LiveReact (or $LIVEREACT_HOME); falls back to
+    ~/Library/Application Support/LiveReact if the home folder is not writable.
+    Not ~/Documents (2026-10-16): Documents is privacy-protected, so an
+    unsigned app's first file access there blocks until someone answers the
+    macOS prompt, and a missed prompt in a dark booth looks like a dead app."""
     override = os.environ.get("LIVEREACT_HOME")
     candidates = [Path(override).expanduser()] if override else [
-        Path.home() / "Documents" / APP_NAME,
+        Path.home() / APP_NAME,
         Path.home() / "Library" / "Application Support" / APP_NAME,
     ]
     last_exc: OSError | None = None
