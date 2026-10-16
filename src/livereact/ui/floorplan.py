@@ -75,20 +75,20 @@ _CEILING_TARGET_W_M = 0.62      # a ceiling target: bigger and hollow, so it rea
 _STACK_RADIUS_M = 0.3           # bodies closer than this are drawn as one stack
 _STACK_STEP = 0.45              # each layer beneath the top one grows by this much
 
-# Colours come from ui/theme.py ("Blackbox"): the room is a dark inset on
-# the card, the chrome is grey, and the only saturated colour is the light
-# the fixtures are actually putting out (plus lime targets where editable).
+# Colours come from ui/theme.py (design v2): the room is a sunk well, the
+# chrome is graphite, and the only saturated colour is the light the
+# fixtures are actually putting out.
 _GROUND = QtGui.QColor(theme.SURFACE)
-_ROOM_FILL = QtGui.QColor(theme.BG)
-_GRID_LIGHT = QtGui.QColor(24, 27, 31)
-_GRID_BOLD = QtGui.QColor(38, 42, 48)
-_ROOM_EDGE = QtGui.QColor(theme.LINE_3)
+_ROOM_FILL = QtGui.QColor(theme.WELL)
+_GRID_LIGHT = QtGui.QColor(255, 255, 255, 9)
+_GRID_BOLD = QtGui.QColor(255, 255, 255, 20)
+_ROOM_EDGE = QtGui.QColor(theme.LINE_3_SOLID)
 _TEXT = QtGui.QColor(theme.TEXT_3)
 _TITLE = QtGui.QColor(theme.TEXT)
-_LEADER = QtGui.QColor(theme.LINE_3)
-_IDLE = QtGui.QColor(theme.LINE_3)
+_LEADER = QtGui.QColor(theme.LINE_3_SOLID)
+_IDLE = QtGui.QColor(theme.LINE_3_SOLID)
 _IDLE_FILL = QtGui.QColor(theme.SURFACE_2)
-_TARGET = QtGui.QColor(theme.ACCENT)          # editable plan: targets are things you drag
+_TARGET = QtGui.QColor(theme.TEXT)            # editable plan: targets are things you drag
 _TARGET_QUIET = QtGui.QColor(theme.TEXT_3)    # live view: reference points, not attention
 _GLOW_R = 2.6                                 # lit glow radius, in body radii
 
@@ -215,7 +215,7 @@ class PlanItem(QtWidgets.QGraphicsObject):
             painter.setPen(tick)
             painter.drawLine(QtCore.QPointF(0, 0), _scaled(fwd, r * 1.4))
         if self.isSelected():
-            painter.setPen(QtGui.QPen(QtGui.QColor(theme.ACCENT), 1.5))
+            painter.setPen(QtGui.QPen(QtGui.QColor(theme.TEXT), 1.5))
             painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(rect.adjusted(-5, -5, 5, 5), 5, 5)
 
@@ -285,10 +285,14 @@ class FloorPlanView(QtWidgets.QGraphicsView):
               (2, 1), (-2, 1), (2, -1), (-2, -1), (0, 3), (0, -3)]
 
     def __init__(self, rig: Rig, editable: bool = False,
-                 on_changed: Callable[[], None] | None = None) -> None:
+                 on_changed: Callable[[], None] | None = None, stage: bool = False) -> None:
         super().__init__()
         self.rig = rig
         self.editable = editable
+        # stage=True: the Live screen's view (ui/stage.py). No foot grid or
+        # axis numbers, and the room is see-through so the stage's own
+        # background (the room and its glow) shows.
+        self.stage = stage and not editable
         self.on_changed = on_changed
         # parented: the scene dies with the view, so its selectionChanged can
         # never reach _on_selection after the items are gone (interpreter teardown)
@@ -368,13 +372,14 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         self._scene.setSceneRect(-_MARGIN, -_MARGIN - _LEGEND_H,
                                  w_px + 2 * _MARGIN, l_px + 2 * _MARGIN + _LEGEND_H)
 
-        room = self._scene.addRect(0, 0, w_px, l_px, QtGui.QPen(QtCore.Qt.PenStyle.NoPen), QtGui.QBrush(_ROOM_FILL))
-        room.setZValue(-1)
+        if not self.stage:
+            room = self._scene.addRect(0, 0, w_px, l_px, QtGui.QPen(QtCore.Qt.PenStyle.NoPen), QtGui.QBrush(_ROOM_FILL))
+            room.setZValue(-1)
         axis_font = _font(7)
         # grid: every foot light, every 5 ft bold
         step = ft_to_m(1.0) * PX_PER_M
         n_x, n_y = int(v.width_m / ft_to_m(1.0)) + 1, int(v.length_m / ft_to_m(1.0)) + 1
-        for i in range(n_x + 1):
+        for i in range(n_x + 1 if not self.stage else 0):
             x = i * step
             if x > w_px + 0.5:
                 break
@@ -382,7 +387,7 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             self._grid.append(self._scene.addLine(x, 0, x, l_px, pen))
             if i % 5 == 0:
                 t = self._scene.addSimpleText(f"{i}′"); t.setFont(axis_font); t.setBrush(_TEXT); t.setPos(x - 5, l_px + 5)
-        for j in range(n_y + 1):
+        for j in range(n_y + 1 if not self.stage else 0):
             y = l_px - j * step
             if y < -0.5:
                 break
@@ -390,12 +395,12 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             self._grid.append(self._scene.addLine(0, y, w_px, y, pen))
             if j % 5 == 0:
                 t = self._scene.addSimpleText(f"{j}′"); t.setFont(axis_font); t.setBrush(_TEXT); t.setPos(-_MARGIN + 4, y - 6)
-        self._scene.addRect(0, 0, w_px, l_px, QtGui.QPen(_ROOM_EDGE, 1.5))
+        self._scene.addRect(0, 0, w_px, l_px, QtGui.QPen(QtGui.QColor(255, 255, 255, 22) if self.stage else _ROOM_EDGE, 1.5))
         # the booth wall itself, drawn heavier: everything is measured from it
-        wall = QtGui.QPen(QtGui.QColor(theme.TEXT_2), 3)
+        wall = QtGui.QPen(QtGui.QColor(theme.TEXT_3 if self.stage else theme.TEXT_2), 3)
         wall.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
         self._scene.addLine(0, l_px, w_px, l_px, wall)
-        booth = self._scene.addSimpleText("DJ BOOTH WALL")
+        booth = self._scene.addSimpleText("DJ booth" if self.stage else "DJ booth wall")
         booth.setFont(_font(7, QtGui.QFont.Weight.DemiBold)); booth.setBrush(QtGui.QColor(theme.TEXT_2))
         booth.setPos(w_px / 2 - booth.boundingRect().width() / 2, l_px + 15)
         if self.editable:   # the glyph key is setup help; the live view stays clean
