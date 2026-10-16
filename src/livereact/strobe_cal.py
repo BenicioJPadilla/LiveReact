@@ -24,7 +24,9 @@ bytes 8, 16, 24, ... and stop at the FIRST byte measured above 4.0 Hz; then
 bisect between the last byte <= 4 Hz and that one down to a 2-byte bracket.
 No byte above the first > 4 Hz byte is ever commanded again. Any reading at
 or above 8 Hz (SAFE-03's absolute ceiling) ends the search for that fixture
-on the spot, no bisection. The bytes come only from the search state
+on the spot, no bisection. Every one of those decisions assumes the count
+is one flash short ((flashes + 1) / seconds, see hz_upper_from_count): a
+miscount of a slow-mo clip reads low, never high. The bytes come only from the search state
 machine, never from typed input, so a typo can mis-record a reading but
 cannot command a byte.
 
@@ -51,6 +53,7 @@ from __future__ import annotations
 import copy
 import datetime as _dt
 import json
+import math
 import os
 import threading
 import time
@@ -62,11 +65,19 @@ from .core.frame_buffer import UNIVERSE_SIZE
 from .engines.reactive import SAFETY_STROBE_ABSOLUTE_MAX_HZ, SAFETY_STROBE_SUSTAINED_MAX_HZ
 from .fixtures.profiles import Buffer, ChannelKind, Fixture, MovingHead, WashBar
 from .fixtures.rig import Rig, load_rig
+from .output.enttec import EnttecSerialBackend
 
 OUTPUT_FILE = "strobe_calibration.json"
 RATE_HZ = 40.0              # same cadence as the show's DMX writer
 BLACKOUT_FRAMES = 12        # same as tools/laser_probe.py
 LEAD_IN_S = 1.0             # dark before each strobe window, so the clip has a clear start
+FLUSH_TIMEOUT_S = 1.0       # a frame not on the wire within this is a stalled sender: abort
+# Serial write timeout for this tool's Enttec (review, 2026-10-16). The show's
+# EnttecSerialBackend opens with no write_timeout, so a wedged USB write
+# blocks forever; here that would freeze the sender with a strobe frame as
+# the Enttec's last one (it keeps repeating it). One 518-byte frame takes
+# well under a millisecond on USB, so 0.5 s only ever trips on a real fault.
+WRITE_TIMEOUT_S = 0.5
 
 # Coarse ascent. 8 is the first step: the manuals we have only say "1-255
 # slow -> fast (up to 25 Hz)", so if the curve were linear one coarse step is
@@ -102,11 +113,23 @@ def hz_from_count(flashes: int, seconds: float) -> float:
     return flashes / seconds
 
 
+def hz_upper_from_count(flashes: int, seconds: float) -> float:
+    """The rate if the count is one flash short: (flashes + 1) / seconds.
+    Every safe/unsafe decision uses this, not the raw rate (review,
+    2026-10-16): a flash cut off at either edge of the window, or simply
+    missed while counting a slow-mo clip, is the expected error, and it
+    always reads LOW. With a 3 s window, 12 flashes (4.0 Hz raw) is
+    therefore treated as over 4 Hz."""
+    return hz_from_count(flashes, seconds) + 1.0 / seconds
+
+
 class StrobeSearch:
     """Ascend-then-bisect search for the highest strobe byte at or under
     ``sustained_max_hz``. Call ``next_byte()`` for the byte to command, then
-    ``record(byte, hz)`` with what was measured; ``None`` from next_byte
-    means the search is over (``stop_reason`` says why).
+    ``record(byte, hz, hz_upper)`` with what was measured; ``None`` from
+    next_byte means the search is over (``stop_reason`` says why). Bytes are
+    classified by ``hz_upper`` (the one-missed-flash bound, see
+    hz_upper_from_count) when it is given, else by ``hz``.
 
     Invariant (the safety point of the whole tool): once a byte has measured
     above ``sustained_max_hz``, ``next_byte()`` never returns that byte or
@@ -147,19 +170,22 @@ class StrobeSearch:
     def quit(self, reason: str = "operator finished early (q)") -> None:
         self._finish(reason)
 
-    def record(self, byte: int, hz: float) -> None:
+    def record(self, byte: int, hz: float, hz_upper: float | None = None) -> None:
         if self.done:
             raise RuntimeError("search is already finished")
         if byte != self._pending:
             raise ValueError(f"recorded byte {byte}, but the search asked for {self._pending}")
         if hz < 0:
             raise ValueError("hz cannot be negative")
-        self.history.append((byte, hz))
-        if hz > self.sustained_max_hz:
+        bound = hz if hz_upper is None else hz_upper
+        if bound < hz:
+            raise ValueError("hz_upper cannot be below hz")
+        self.history.append((byte, bound))
+        if bound > self.sustained_max_hz:
             self.hi = byte if self.hi is None else min(self.hi, byte)
-            if hz >= self.absolute_max_hz:
+            if bound >= self.absolute_max_hz:
                 self.over_absolute = True
-                self._finish(f"{hz:.1f} Hz at byte {byte} is at or above the "
+                self._finish(f"up to {bound:.1f} Hz at byte {byte} is at or above the "
                              f"{self.absolute_max_hz:.0f} Hz absolute ceiling (SAFE-03): "
                              f"stopped here, no bisection")
                 return
@@ -192,26 +218,41 @@ class Reading:
     dmx: int
     flashes: int
     seconds: float
-    hz: float
+    hz: float           # raw: flashes / seconds
+    hz_upper: float     # (flashes + 1) / seconds, what every decision uses
     measured_at: str
+
+
+def _upper(r: dict) -> float:
+    """A stored reading's one-missed-flash bound (computed if the row
+    predates the hz_upper field)."""
+    if "hz_upper" in r:
+        return r["hz_upper"]
+    if "flashes" in r and r.get("seconds"):
+        return hz_upper_from_count(r["flashes"], r["seconds"])
+    return r["hz"]
 
 
 def derive(readings: list[dict], sustained_max_hz: float = SAFETY_STROBE_SUSTAINED_MAX_HZ) -> dict:
     """The derived fields for one slot, over every reading it has (all runs).
 
-    ``max_dmx_at_or_below_4hz`` is conservative against noisy or contradictory
-    data: it is the highest byte measured <= 4 Hz that is ALSO below the
-    lowest byte ever measured > 4 Hz. None when no such byte was measured."""
-    over = [r["dmx"] for r in readings if r["hz"] > sustained_max_hz]
+    Classified by each reading's one-missed-flash upper bound, never the raw
+    rate. ``max_dmx_at_or_below_4hz`` is also conservative against noisy or
+    contradictory data: the highest byte whose upper bound is <= 4 Hz that
+    is ALSO below the lowest byte whose upper bound was ever > 4 Hz. None
+    when no such byte was measured."""
+    over = [r["dmx"] for r in readings if _upper(r) > sustained_max_hz]
     limit = min(over) if over else 256
-    safe = [r for r in readings if r["hz"] <= sustained_max_hz and r["dmx"] < limit]
+    safe = [r for r in readings if _upper(r) <= sustained_max_hz and r["dmx"] < limit]
     best = max(safe, key=lambda r: r["dmx"]) if safe else None
-    # The same byte can be measured twice (across runs); report its worst Hz.
-    best_hz = max(r["hz"] for r in safe if r["dmx"] == best["dmx"]) if best else None
+    # The same byte can be measured twice (across runs); report its worst.
+    at_best = [r for r in safe if best and r["dmx"] == best["dmx"]]
     return {
         "max_dmx_at_or_below_4hz": best["dmx"] if best else None,
-        "hz_at_max_dmx": round(best_hz, 3) if best_hz is not None else None,
+        "hz_at_max_dmx": round(max(r["hz"] for r in at_best), 3) if at_best else None,
+        "hz_upper_at_max_dmx": round(max(_upper(r) for r in at_best), 3) if at_best else None,
         "max_hz_observed": round(max(r["hz"] for r in readings), 3) if readings else None,
+        "max_hz_upper_observed": round(max(_upper(r) for r in readings), 3) if readings else None,
     }
 
 
@@ -278,12 +319,16 @@ def build_frame(rig: Rig, fx: Fixture, strobe_byte: int | None) -> bytes:
     """One 512-byte universe for calibrating ``fx``.
 
     ``strobe_byte=None`` is the DARK frame: dimmer and strobe 0 (a moving
-    head keeps its centred position so it never moves between steps).
+    head keeps the same aim so it never moves between steps).
     Otherwise the fixture is lit in a fixed, known way with its strobe
     channel at exactly ``strobe_byte`` (1-255):
       - wash bar: white full, RGB 0, dimmer at WashBar.STROBE_BRIGHTNESS_CAP_DMX
         (set full, then the profile's own cap_brightness_while_strobing);
-      - moving head: open/white wheel, pan/tilt centred, HEAD_DIMMER_LEVEL.
+      - moving head: open/white wheel, HEAD_DIMMER_LEVEL, aimed at its own
+        boot_defaults pose (pan centre, tilt angled down). Not a raw 0.5/0.5
+        set_position (review, 2026-10-16): raw centre tilt is wherever 128
+        lands on this unit, possibly level into the room; boot_defaults'
+        tilt is the pose the show itself powers up in.
     Every channel outside ``fx`` is 0, and every LASER channel in the rig is
     forced to 0 again by kind, whatever happened above."""
     if strobe_byte is not None and not 1 <= strobe_byte <= 255:
@@ -298,8 +343,7 @@ def build_frame(rig: Rig, fx: Fixture, strobe_byte: int | None) -> bytes:
             fx.set_strobe(buf, strobe_byte / 255)
             fx.cap_brightness_while_strobing(uni)
     elif isinstance(fx, MovingHead):
-        fx.boot_defaults(buf)   # dimmer 0, macro 0, speed mid
-        fx.set_position(buf, 0.5, 0.5)
+        fx.boot_defaults(buf)   # pan centre, tilt angled down, dimmer 0, macro 0, speed mid
         if strobe_byte is not None:
             fx.set_color(buf, 1.0, 1.0, 1.0)   # wheel slot 0: open / white
             fx.set_intensity(buf, HEAD_DIMMER_LEVEL)
@@ -340,20 +384,36 @@ def build_backend(hardware: bool):
     null backend in hardware mode (unlike --fixture-test): an operator
     filming a fixture that never lights would record nonsense."""
     if hardware:
-        from .output.enttec import EnttecSerialBackend
-        return EnttecSerialBackend()
+        return _BoundedEnttec()
     from .output.null_log import NullLogBackend
     # One log line a minute, not a second: the per-step frame printout is the
     # dry run's real output, and the log chatter would bury the prompts.
     return NullLogBackend(log_every=int(RATE_HZ * 60))
 
 
+class _BoundedEnttec(EnttecSerialBackend):
+    """The show's Enttec backend, opened with WRITE_TIMEOUT_S so a wedged
+    write raises (and the sender reports it) instead of blocking forever.
+    A subclass here, not a change to output/enttec.py: the show's DMX
+    output path is untouched by this tool."""
+
+    def open(self) -> None:
+        super().open()
+        try:
+            self._serial.write_timeout = WRITE_TIMEOUT_S
+        except Exception:
+            self.close()
+            raise
+
+
 class _Sender(threading.Thread):
-    """Resends the current universe at RATE_HZ, and immediately on a change
-    so the strobe window starts and ends on time. A send failure is kept in
-    ``error`` and stops the thread; the session checks it after every step
-    (an Enttec keeps repeating its last frame, so a dead sender must not go
-    unnoticed)."""
+    """Resends the current universe at RATE_HZ, and immediately on a change.
+    ``flush()`` blocks until the latest ``set()`` frame is really on the
+    wire, so the strobe window is timed from when the fixture got the byte
+    (and tests see every frame the session set). A send failure is kept in
+    ``error`` and stops the thread; flush()/check() raise it (an Enttec
+    keeps repeating its last frame, so a dead sender must not go
+    unnoticed). On exit, for any reason, it tries one all-zero frame."""
 
     def __init__(self, backend) -> None:
         super().__init__(name="strobe-cal-sender", daemon=True)
@@ -361,30 +421,71 @@ class _Sender(threading.Thread):
         self.stop = threading.Event()
         self.error: BaseException | None = None
         self._changed = threading.Event()
-        self._lock = threading.Lock()
+        self._cond = threading.Condition()
         self._frame = bytes(UNIVERSE_SIZE)
+        self._gen = 0           # bumped by every set()
+        self._sent_gen = 0      # the generation of the last frame actually sent
 
     def set(self, frame: bytes) -> None:
-        with self._lock:
+        with self._cond:
             self._frame = bytes(frame)
+            self._gen += 1
         self._changed.set()
 
     def check(self) -> None:
         if self.error is not None:
             raise RuntimeError(f"DMX output failed: {self.error!r}") from self.error
 
+    def flush(self, timeout: float = FLUSH_TIMEOUT_S) -> None:
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while self._sent_gen < self._gen and self.error is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not self.is_alive():
+                    raise RuntimeError("DMX sender stalled: frame not sent")
+                self._cond.wait(min(remaining, 0.05))
+        self.check()
+
+    def wake(self) -> None:
+        self._changed.set()
+
     def run(self) -> None:
         period = 1.0 / RATE_HZ
-        while not self.stop.is_set():
-            with self._lock:
-                frame = self._frame
+        try:
+            while not self.stop.is_set():
+                with self._cond:
+                    frame, gen = self._frame, self._gen
+                try:
+                    self.backend.send(frame)
+                except BaseException as exc:  # noqa: BLE001 - reported via flush()/check()
+                    with self._cond:
+                        self.error = exc
+                        self._cond.notify_all()
+                    return
+                with self._cond:
+                    self._sent_gen = gen
+                    self._cond.notify_all()
+                self._changed.wait(period)
+                self._changed.clear()
+        finally:
             try:
-                self.backend.send(frame)
-            except BaseException as exc:  # noqa: BLE001 - reported via check()
-                self.error = exc
-                return
-            self._changed.wait(period)
-            self._changed.clear()
+                self.backend.send(bytes(UNIVERSE_SIZE))
+            except BaseException:  # noqa: BLE001 - blackout() reports output failures
+                pass
+
+
+def _stop_sender(sender: _Sender) -> None:
+    """Zero the frame, stop and join the sender. Retried if a second Ctrl-C
+    lands mid-way, so the caller always reaches blackout()."""
+    for _ in range(5):
+        try:
+            sender.set(bytes(UNIVERSE_SIZE))
+            sender.stop.set()
+            sender.wake()
+            sender.join(timeout=1.0)
+            return
+        except KeyboardInterrupt:
+            continue
 
 
 def blackout(backend, print_fn: Callable[[str], None] = print) -> bool:
@@ -495,10 +596,10 @@ class _Session:
         return False
 
     def table(self, readings: list[Reading]) -> None:
-        self.print("   byte  flashes  seconds     Hz")
+        self.print("   byte  flashes  seconds     Hz  up to Hz")
         for r in sorted(readings, key=lambda r: r.dmx):
-            mark = "  > 4 Hz" if r.hz > SAFETY_STROBE_SUSTAINED_MAX_HZ else ""
-            self.print(f"   {r.dmx:4d}  {r.flashes:7d}  {r.seconds:7.2f}  {r.hz:5.2f}{mark}")
+            mark = "  > 4 Hz" if r.hz_upper > SAFETY_STROBE_SUSTAINED_MAX_HZ else ""
+            self.print(f"   {r.dmx:4d}  {r.flashes:7d}  {r.seconds:7.2f}  {r.hz:5.2f}  {r.hz_upper:8.2f}{mark}")
 
     def calibrate(self, fx: Fixture) -> _FixtureResult:
         slot = getattr(fx, "slot_id", fx.label)
@@ -535,14 +636,16 @@ class _Session:
                 return result
 
             self.sender.set(dark)
+            self.sender.flush()
             _sleep(LEAD_IN_S)
             self.sender.set(lit)
-            self.print(f"   STROBING byte {byte} for {self.seconds:g} s ...")
             try:
+                self.sender.flush()
+                self.print(f"   STROBING byte {byte} for {self.seconds:g} s ...")
                 _sleep(self.seconds)
             finally:
                 self.sender.set(dark)
-            self.sender.check()
+            self.sender.flush()
             self.print("   dark. Stop the video and count the flashes.")
 
             count = self.ask_count()
@@ -554,34 +657,59 @@ class _Session:
                 return result
             assert isinstance(count, int)
             hz = hz_from_count(count, self.seconds)
+            hz_up = hz_upper_from_count(count, self.seconds)
             if not self.confirm_odd_reading(byte, count, hz, result.readings):
                 continue
             reading = Reading(dmx=byte, flashes=count, seconds=self.seconds, hz=round(hz, 3),
+                              hz_upper=round(hz_up, 3),
                               measured_at=_dt.datetime.now().isoformat(timespec="seconds"))
             result.readings.append(reading)
-            search.record(byte, hz)
+            search.record(byte, hz, hz_up)
             data = load_results(self.out_path)
             save_results(self.out_path, merge_reading(
                 data, fixture_type=fx.type_name, slot=slot, label=fx.label, address=fx.address,
                 strobe_channel=ch, rig=self.rig_label, reading=reading))
-            self.print(f"   {count} flashes / {self.seconds:g} s = {hz:.2f} Hz  (saved)")
+            self.print(f"   {count} flashes / {self.seconds:g} s = {hz:.2f} Hz, "
+                       f"up to {hz_up:.2f} Hz if one flash was missed (saved)")
             self.table(result.readings)
             if search.over_absolute:
-                self.print(f"\n!!! {hz:.1f} Hz is at or above {SAFETY_STROBE_ABSOLUTE_MAX_HZ:.0f} Hz. "
+                self.print(f"\n!!! up to {hz_up:.1f} Hz is at or above {SAFETY_STROBE_ABSOLUTE_MAX_HZ:.0f} Hz. "
                            f"Stopping this fixture now; nothing higher will be tested.")
         self.print(f"   search finished: {search.stop_reason}")
         return result
 
 
-def _summary_line(res: _FixtureResult) -> str:
-    d = derive([asdict(r) for r in res.readings])
-    n = d["max_dmx_at_or_below_4hz"]
-    if res.skipped:
-        return f"{res.label}: skipped"
-    if n is None:
-        return f"highest safe byte for {res.label}: none measured this run"
-    return (f"highest safe byte for {res.label}: {n} ({d['hz_at_max_dmx']:.1f} Hz)"
-            f"  [as a strobe_cap: {n / 255:.3f}]")
+def _cap01(byte: int) -> float:
+    """``strobe_cap`` (0..1) for a byte, rounded DOWN to 3 decimals so it
+    can never map back above the byte."""
+    return math.floor(byte / 255 * 1000) / 1000
+
+
+def summarize(data: dict, fixtures: list[Fixture]) -> list[str]:
+    """Summary lines from the MERGED results file (every run so far), one
+    per strobe fixture, then the single strobe_cap they imply. ManualParams
+    has ONE strobe_cap for every fixture, so it must be the minimum of the
+    per-fixture safe bytes, and none can be given while any fixture lacks one."""
+    lines: list[str] = []
+    safe: dict[str, int | None] = {}
+    for fx in fixtures:
+        entry = data.get(fx.type_name, {}).get(getattr(fx, "slot_id", fx.label))
+        n = entry.get("max_dmx_at_or_below_4hz") if entry else None
+        safe[fx.label] = n
+        if n is None:
+            lines.append(f"highest safe byte for {fx.label}: none measured yet")
+        else:
+            lines.append(f"highest safe byte for {fx.label}: {n} ({entry['hz_at_max_dmx']:.1f} Hz, "
+                         f"at most {entry['hz_upper_at_max_dmx']:.1f} Hz allowing one missed flash)")
+    missing = [label for label, n in safe.items() if n is None]
+    if missing:
+        lines.append("strobe_cap: one cap covers every strobe fixture, so it must be the minimum "
+                     f"across them; not possible yet, no safe byte for: {', '.join(missing)}")
+    elif safe:
+        low = min(v for v in safe.values() if v is not None)
+        lines.append(f"strobe_cap: one cap covers every strobe fixture, so use the minimum: "
+                     f"byte {low} = strobe_cap {_cap01(low):.3f}")
+    return lines
 
 
 def run_strobe_calibration(*, rig_path: str | None, hardware: bool, slot: str | None = None,
@@ -641,12 +769,10 @@ def run_strobe_calibration(*, rig_path: str | None, hardware: bool, slot: str | 
         return 1
     sender = _Sender(backend)
     sender.start()
-    results: list[_FixtureResult] = []
     clean = True
     try:
         for fx in chosen:
             res = _Session(rig, rig_label, sender, seconds, out_path, input_fn, print_fn).calibrate(fx)
-            results.append(res)
             sender.set(bytes(UNIVERSE_SIZE))
             if res.quit:
                 break
@@ -656,18 +782,19 @@ def run_strobe_calibration(*, rig_path: str | None, hardware: bool, slot: str | 
         clean = False
         raise
     finally:
-        sender.set(bytes(UNIVERSE_SIZE))   # if the join below times out, it sends zeros anyway
-        sender.stop.set()
-        sender.join(timeout=1.0)
+        _stop_sender(sender)
         ok = blackout(backend, print_fn)
         try:
             backend.close()
-        except Exception:  # noqa: BLE001
+        except (Exception, KeyboardInterrupt):  # noqa: BLE001
             pass
         print_fn("blacked out, port closed." if ok else "port closed (blackout FAILED, see above).")
         if clean:
-            print_fn("\n=== Summary ===")
-            for res in results:
-                print_fn(_summary_line(res))
+            print_fn("\n=== Summary (every run in the results file) ===")
+            try:
+                for line in summarize(load_results(out_path), candidates):
+                    print_fn(line)
+            except (ValueError, OSError) as exc:
+                print_fn(f"could not read {out_path} back: {exc}")
             print_fn(f"Saved to {out_path}. Send that file back.")
     return 0

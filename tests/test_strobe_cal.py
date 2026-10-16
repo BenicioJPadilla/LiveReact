@@ -20,7 +20,9 @@ from livereact.strobe_cal import (
     build_frame,
     derive,
     hz_from_count,
+    hz_upper_from_count,
     merge_reading,
+    summarize,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +49,22 @@ def test_hz_is_flashes_over_seconds():
         hz_from_count(-1, 3.0)
     with pytest.raises(ValueError):
         hz_from_count(3, 0.0)
+
+
+def test_upper_bound_assumes_one_missed_flash():
+    assert hz_upper_from_count(11, 3.0) == pytest.approx(4.0)
+    assert hz_upper_from_count(12, 3.0) == pytest.approx(13 / 3)
+    assert hz_upper_from_count(0, 3.0) == pytest.approx(1 / 3)
+
+
+def test_search_classifies_by_the_upper_bound():
+    s = StrobeSearch()
+    s.record(8, hz_from_count(11, 3.0), hz_upper_from_count(11, 3.0))   # 3.67, up to 4.0: safe
+    assert (s.lo, s.hi, s.phase) == (8, None, "ascend")
+    s.record(16, hz_from_count(12, 3.0), hz_upper_from_count(12, 3.0))  # 4.0 raw, up to 4.33: over
+    assert (s.lo, s.hi, s.phase) == (8, 16, "bisect")
+    s.record(12, hz_from_count(23, 3.0), hz_upper_from_count(23, 3.0))  # 7.67 raw, up to 8.0: abort
+    assert s.over_absolute and s.done
 
 
 # --- search state machine ---
@@ -126,17 +144,33 @@ def test_quit_ends_the_search():
 
 # --- derived values + JSON merge ---
 
-def _reading(dmx: int, hz: float) -> Reading:
-    return Reading(dmx=dmx, flashes=round(hz * 3), seconds=3.0, hz=hz, measured_at="2026-10-16T12:00:00")
+def _reading(dmx: int, flashes: int, seconds: float = 3.0) -> Reading:
+    return Reading(dmx=dmx, flashes=flashes, seconds=seconds, hz=hz_from_count(flashes, seconds),
+                   hz_upper=hz_upper_from_count(flashes, seconds), measured_at="2026-10-16T12:00:00")
+
+
+def _row(dmx: int, flashes: int) -> dict:
+    from dataclasses import asdict
+    return asdict(_reading(dmx, flashes))
 
 
 def test_derive_is_conservative_about_contradictory_readings():
-    rows = [{"dmx": 40, "hz": 3.9}, {"dmx": 48, "hz": 4.5}, {"dmx": 56, "hz": 3.0}]
+    rows = [_row(40, 10), _row(48, 14), _row(56, 9)]
     d = derive(rows)
     assert d["max_dmx_at_or_below_4hz"] == 40       # 56's low reading sits above a > 4 Hz byte
-    assert d["hz_at_max_dmx"] == 3.9
-    assert d["max_hz_observed"] == 4.5
+    assert d["hz_at_max_dmx"] == pytest.approx(10 / 3, abs=1e-3)
+    assert d["hz_upper_at_max_dmx"] == pytest.approx(11 / 3, abs=1e-3)
+    assert d["max_hz_observed"] == pytest.approx(14 / 3, abs=1e-3)
     assert derive([])["max_dmx_at_or_below_4hz"] is None
+
+
+def test_derive_only_counts_bytes_whose_upper_bound_is_at_most_4hz():
+    # 12 flashes in 3 s is 4.0 Hz raw, but up to 4.33 Hz: NOT safe.
+    d = derive([_row(8, 6), _row(16, 12)])
+    assert d["max_dmx_at_or_below_4hz"] == 8
+    assert d["max_hz_upper_observed"] == pytest.approx(13 / 3, abs=1e-3)
+    # Rows without hz_upper (hand-edited, older) get it computed from flashes.
+    assert derive([{"dmx": 16, "flashes": 12, "seconds": 3.0, "hz": 4.0}])["max_dmx_at_or_below_4hz"] is None
 
 
 def test_merge_preserves_other_fixtures_and_appends():
@@ -147,8 +181,8 @@ def test_merge_preserves_other_fixtures_and_appends():
     }
     meta = dict(fixture_type="ok103_wash_bar", slot="bar", label="Wash Bar", address=69,
                 strobe_channel=2, rig="rigs/josh_rig.json")
-    out = merge_reading(existing, reading=_reading(8, 1.0), **meta)
-    out = merge_reading(out, reading=_reading(16, 2.0), **meta)
+    out = merge_reading(existing, reading=_reading(8, 3), **meta)
+    out = merge_reading(out, reading=_reading(16, 6), **meta)
     assert out["shehds_180w_mh"] == existing["shehds_180w_mh"]
     assert out["ok103_wash_bar"]["bar_l"] == existing["ok103_wash_bar"]["bar_l"]
     bar = out["ok103_wash_bar"]["bar"]
@@ -201,7 +235,9 @@ def test_moving_head_frame():
     assert frame[o + 6] == 24                        # ch7 strobe
     assert 150 <= frame[o + 5] <= WashBar.STROBE_BRIGHTNESS_CAP_DMX   # ch6 dimmer, lit but not full
     assert frame[o + 7] == 0                         # ch8 colour wheel: open / white
-    assert (frame[o], frame[o + 2]) == (128, 128)    # pan / tilt centred
+    boot = rig.boot_universe()
+    assert frame[o:o + 5] == boot[o:o + 5]           # aim = boot_defaults pose, not raw centre
+    assert frame[o + 2] == 80                        # tilt angled down
     assert frame[o + 12] == 0                        # ch13 macro off
     assert all(frame[i] == 0 for i in _laser_channels(rig))
     assert _outside(mh, frame) == []
@@ -279,12 +315,18 @@ def test_cli_dry_run_measures_saves_and_blacks_out(scripted, tmp_path):
     bar = rig.fixture("bar")
     lasers = _laser_channels(rig)
     strobe_i = bar.offset + 1
+    lit = [f for f in backend.frames if f[strobe_i]]
+    assert {f[strobe_i] for f in lit} == {8, 16}     # both steps really went out
+    for f in lit:
+        assert f[bar.offset:bar.offset + 6] == bytes(
+            [WashBar.STROBE_BRIGHTNESS_CAP_DMX, f[strobe_i], 0, 0, 0, 255])
+        assert _outside(bar, f) == []
     assert all(f[i] == 0 for f in backend.frames for i in lasers)
-    assert max(f[strobe_i] for f in backend.frames) <= 16
 
     data = json.loads((tmp_path / "strobe_calibration.json").read_text())
     entry = data["ok103_wash_bar"]["bar"]
     assert [(r["dmx"], r["flashes"], r["hz"]) for r in entry["readings"]] == [(8, 3, 1.0), (16, 15, 5.0)]
+    assert [r["hz_upper"] for r in entry["readings"]] == [pytest.approx(4 / 3, abs=1e-3), pytest.approx(16 / 3, abs=1e-3)]
     assert entry["max_dmx_at_or_below_4hz"] == 8
     assert entry["max_hz_observed"] == 5.0
 
@@ -300,6 +342,8 @@ def test_cli_ctrl_c_mid_strobe_still_blacks_out(scripted, monkeypatch):
     rc = main(["--strobe-calibrate", "--rig", JOSH_RIG, "--strobe-fixture", "bar",
                "--log-level", "WARNING"])
     assert rc == 0
+    bar = load_rig(JOSH_RIG).fixture("bar")
+    assert any(f[bar.offset + 1] == 8 for f in backend.frames)   # it WAS strobing when interrupted
     zero = bytes(UNIVERSE_SIZE)
     assert backend.frames[-strobe_cal.BLACKOUT_FRAMES:] == [zero] * strobe_cal.BLACKOUT_FRAMES
 
@@ -352,3 +396,91 @@ def test_cli_suspiciously_low_count_must_be_typed_twice(scripted, tmp_path):
                  "--log-level", "WARNING"]) == 0
     data = json.loads((tmp_path / "strobe_calibration.json").read_text())
     assert [r["flashes"] for r in data["ok103_wash_bar"]["bar"]["readings"]] == [9, 10]
+
+
+# --- summary from the merged file ---
+
+def test_summary_reads_the_file_and_gives_the_minimum_cap():
+    rig = load_rig(JOSH_RIG)
+    fixtures = strobe_cal.strobe_fixtures(rig)          # mh, bar
+    meta = dict(address=1, strobe_channel=2, rig="r")
+    data = merge_reading({}, fixture_type="ok103_wash_bar", slot="bar", label="Wash Bar",
+                         reading=_reading(40, 9), **meta)
+    lines = summarize(data, fixtures)
+    assert "highest safe byte for Moving Head: none measured yet" in lines
+    assert "highest safe byte for Wash Bar: 40 (3.0 Hz" in lines[1]
+    assert "not possible yet" in lines[-1] and "Moving Head" in lines[-1]
+
+    data = merge_reading(data, fixture_type="shehds_180w_mh", slot="mh", label="Moving Head",
+                         reading=_reading(24, 6), **meta)
+    lines = summarize(data, fixtures)
+    assert lines[-1].endswith("byte 24 = strobe_cap 0.094")
+
+
+def test_cap01_never_maps_above_the_byte():
+    from livereact.fixtures.profiles import _to8
+    for b in range(1, 256):
+        assert _to8(strobe_cal._cap01(b)) <= b
+
+
+# --- sender / shutdown robustness ---
+
+def test_sender_flush_and_final_zero_frame():
+    backend = RecordingBackend()
+    sender = strobe_cal._Sender(backend)
+    sender.start()
+    lit = bytes([7] * UNIVERSE_SIZE)
+    sender.set(lit)
+    sender.flush()
+    assert lit in backend.frames
+    sender.stop.set()
+    sender.wake()
+    sender.join(timeout=1.0)
+    assert backend.frames[-1] == bytes(UNIVERSE_SIZE)
+
+
+def test_sender_failure_surfaces_in_flush():
+    class Broken(RecordingBackend):
+        def send(self, universe: bytes) -> None:
+            raise OSError("unplugged")
+    sender = strobe_cal._Sender(Broken())
+    sender.start()
+    sender.set(bytes([1] * UNIVERSE_SIZE))
+    with pytest.raises(RuntimeError, match="DMX output failed"):
+        sender.flush()
+
+
+def test_stop_sender_survives_a_second_ctrl_c():
+    calls: list[str] = []
+
+    class Flaky(strobe_cal._Sender):
+        def join(self, timeout=None):
+            calls.append("join")
+            if len(calls) == 1:
+                raise KeyboardInterrupt
+            super().join(timeout)
+
+    backend = RecordingBackend()
+    sender = Flaky(backend)
+    sender.start()
+    strobe_cal._stop_sender(sender)
+    assert calls == ["join", "join"]
+    assert not sender.is_alive()
+
+
+def test_hardware_enttec_gets_a_write_timeout(monkeypatch):
+    serial = pytest.importorskip("serial")
+    from livereact.output import enttec
+
+    class FakeSerial:
+        def __init__(self, port, baudrate, timeout):
+            self.port, self.write_timeout = port, None
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(serial, "Serial", FakeSerial)
+    monkeypatch.setattr(enttec, "select_enttec_port", lambda ports: "/dev/cu.fake")
+    backend = strobe_cal.build_backend(True)
+    backend.open()
+    assert backend._serial.write_timeout == strobe_cal.WRITE_TIMEOUT_S
