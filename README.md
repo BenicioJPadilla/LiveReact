@@ -33,9 +33,10 @@ a free-running metronome.
 
 Known rough edges, tracked in the repo rather than hidden:
 
-- `tests/test_spec_conformance_gaps.py` holds **3 intentionally failing tests**
-  that encode spec behaviour the merge/failsafe code does not yet implement.
-  The other 619 tests pass.
+- `tests/test_spec_conformance_gaps.py` holds **3 known-gap tests** that encode
+  spec behaviour the merge/failsafe code does not yet implement. They are
+  marked `xfail(strict=True)`: the suite stays green, and a gap that starts
+  passing fails the run until its marker comes off.
 - Python 3.14's garbage collector has segfaulted inside the show-engine thread
   on live nights. A Python 3.13 venv (`.venv313`) is used for shows and has not
   reproduced it; `tools/run_show.sh` prefers it and relaunches after a crash.
