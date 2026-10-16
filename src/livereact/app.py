@@ -67,6 +67,10 @@ class AppConfig:
         # disarm lasers).
 
 
+    force_start_note: str = ""  # set when --force-start skipped the gear gate: the
+        # console's warning banner, shown for the whole set (devices.py).
+
+
 class App:
     """Owns the threads and the single stop event; guarantees clean shutdown."""
 

@@ -102,6 +102,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--choose", action="store_true",
                    help="Open the launch dialog first to pick the rig, mode and options "
                         "(remembered in last-launch.json). Quit there exits.")
+    p.add_argument("--force-start", action="store_true",
+                   help="EMERGENCIES ONLY: start a --hardware show even though the light "
+                        "adapter or the DJ board was not detected. The console shows a "
+                        "warning banner for the whole set.")
     return p
 
 
@@ -141,10 +145,37 @@ def _choose(argv: list[str]) -> list[str] | None:
     from .ui.launch_dialog import choose_launch_args
 
     phone = "--phone" in _build_parser()._option_string_actions
-    chosen = choose_launch_args(os.getcwd(), phone_supported=phone)
+    chosen = choose_launch_args(os.getcwd(), phone_supported=phone,
+                                force_start="--force-start" in argv)
     if chosen is None:
         return None
     return _passthrough(argv) + chosen
+
+
+FORCE_NOTE_ENV = "LIVEREACT_FORCE_START_NOTE"   # the banner, for a supervised engine child
+
+
+def _gear_gate(args: argparse.Namespace) -> tuple[bool, str]:
+    """The --hardware start gate: (start?, the note for the console banner).
+    Refuses (printing what is missing) when the light adapter or the DJ board
+    is not detected, unless --force-start; "" note when nothing is missing."""
+    from .devices import describe, detect_once
+
+    # --force-start (a run_show.sh relaunch mid-set): no 3 s DJ Link wait
+    det = detect_once(args.audio_device or "", djlink_wait_s=0.0 if args.force_start else 3.0)
+    if det.ok:
+        print(f"Gear check:\n{describe(det)}")
+        return True, ""
+    phrase = det.missing_phrase()               # "the DJ board is"
+    missing = phrase.rsplit(" ", 1)[0]          # "the DJ board"
+    if not args.force_start:
+        print(f"livereact: not starting the live show, {phrase} not connected.\n{describe(det)}\n"
+              "Plug it in and start again. If it IS plugged in under another name, pass "
+              "--audio-device NAME (that counts), or send --doctor. Emergencies only: --force-start.",
+              file=sys.stderr)
+        return False, ""
+    print(f"WARNING: --force-start: starting without {missing}.\n{describe(det)}", file=sys.stderr)
+    return True, f"Forced start: no {missing.removeprefix('the ')} at launch. Check the gear."
 
 
 def _bundle(which: str, log) -> int:
@@ -202,7 +233,9 @@ def main(argv: list[str] | None = None) -> int:
     # log file exists; its answer is parsed as if it had been typed. Never in
     # an engine child (the supervisor's relaunch): that one gets the chosen
     # args, which do not contain --choose.
-    if args.choose and not getattr(args, "engine_child", False):
+    engine_child = getattr(args, "engine_child", False)
+    chose = False
+    if args.choose and not engine_child:
         try:
             chosen = _choose(argv)
         except ImportError as exc:
@@ -212,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         if chosen is None:
             return 0
         argv = chosen
+        chose = True
         if from_cli:
             sys.argv[1:] = argv  # anything that re-reads the command line sees the choice
         args = _parse_args(argv)
@@ -220,6 +254,22 @@ def main(argv: list[str] | None = None) -> int:
     demo = not args.hardware  # demo is the default; --demo is explicit-but-redundant
     is_tool = (args.doctor or args.bundle is not None or args.net_check
                or args.midi_monitor or args.fixture_test or args.strobe_calibrate)
+
+    # The gear gate: a live show starts only with the light adapter and the DJ
+    # board detected. Before any session folder, so a refusal leaves nothing
+    # behind. Not for the tools, not for an engine child (a crash relaunch
+    # mid-set must never be held up), and not after the launch dialog, whose
+    # Start already was the gate (except --force-start: the banner needs it).
+    # A supervised engine child is never gated; it gets the parent's banner
+    # note through the environment instead.
+    force_note = os.environ.get(FORCE_NOTE_ENV, "") if engine_child else ""
+    if not demo and not is_tool and not engine_child and (not chose or args.force_start):
+        ok, force_note = _gear_gate(args)
+        if not ok:
+            return 2
+        if force_note:
+            os.environ[FORCE_NOTE_ENV] = force_note
+
     supervise = args.supervise if args.supervise is not None else not demo
     if supervise and not is_tool and not args.engine_child:
         # This process becomes the supervisor; the show runs in a child that
@@ -301,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
                        audio_device=args.audio_device,
                        norm_seed=not args.no_norm_seed,
                        bible_failsafe_enabled=args.bible_failsafe,
-                       full_catalog=args.full_catalog,
+                       full_catalog=args.full_catalog, force_start_note=force_note,
                        phone_port=args.phone,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)

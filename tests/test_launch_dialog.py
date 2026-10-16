@@ -31,13 +31,47 @@ def venue(tmp_path, monkeypatch):
     (rigs / "sophias_thai.json").write_text(json.dumps({"name": "Sophia's Thai", "fixtures": []}))
     (rigs / "broken.json").write_text("{ not json")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LIVEREACT_HOME", str(tmp_path / "home"))
     return tmp_path
 
 
-def _dialog(cwd, phone=False):
+def gear(serial="EN123456", dj=True):
+    """A Detection with the light adapter (and the DJ board) connected."""
+    from livereact.devices import Detection, DjDevice, DmxAdapter
+
+    det = Detection()
+    if serial is not None:
+        det.adapters = [DmxAdapter(f"/dev/cu.usbserial-{serial}", "ENTTEC DMX USB PRO", serial,
+                                   "USB 0403:6001, name 'ENTTEC DMX USB PRO'", True, True)]
+    if dj:
+        det.midi = [DjDevice("XDJ-XZ (2)", "name 'XDJ-XZ (2)'", True)]
+    return det
+
+
+@pytest.fixture
+def plugged_in(monkeypatch):
+    """The device watcher reports the gear once, at start, instead of polling."""
+    from livereact import devices
+
+    class FakeWatcher:
+        def __init__(self, on_scan, *a, **k):
+            self.on_scan = on_scan
+
+        def start(self):
+            self.on_scan(gear())
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(devices, "DeviceWatcher", FakeWatcher)
+
+
+def _dialog(cwd, phone=False, det=None, **kw):
     from livereact.ui.launch_dialog import LaunchDialog
 
-    return LaunchDialog(str(cwd), phone_supported=phone)
+    dlg = LaunchDialog(str(cwd), phone_supported=phone, watch=False, **kw)
+    dlg.set_detection(gear() if det is None else det)
+    return dlg
 
 
 def _pick(dlg, path):
@@ -120,7 +154,7 @@ def test_a_rig_path_with_spaces_stays_one_argument(qapp, venue):
     assert cli._parse_args(argv).rig == str(rig)
 
 
-def test_quit_returns_none_and_leaves_qt_usable(qapp, venue, monkeypatch):
+def test_quit_returns_none_and_leaves_qt_usable(qapp, venue, monkeypatch, plugged_in):
     from PySide6 import QtCore, QtWidgets
     from livereact.ui import launch_dialog
 
@@ -137,7 +171,7 @@ def test_quit_returns_none_and_leaves_qt_usable(qapp, venue, monkeypatch):
     assert qapp.exec() == 0
 
 
-def test_start_via_enter_returns_the_argv(qapp, venue, monkeypatch):
+def test_start_via_enter_returns_the_argv(qapp, venue, monkeypatch, plugged_in):
     from PySide6 import QtCore, QtTest, QtWidgets
     from livereact.ui import launch_dialog
 
@@ -157,7 +191,7 @@ def test_choose_runs_the_chosen_args(venue, monkeypatch):
 
     seen = {}
 
-    def fake(cwd, phone_supported=False):
+    def fake(cwd, phone_supported=False, force_start=False):
         seen["cwd"] = cwd
         return ["--demo", "--duration", "0.3", "--record", "--session-dir", "rec"]
 
@@ -200,3 +234,118 @@ def test_passthrough_keeps_only_the_options_the_dialog_does_not_choose():
     argv = ["--choose", "--rig", "rigs/a b.json", "--log-file", "x.log", "--phone", "8080",
             "--demo", "--audio-device=1", "--rate", "30", "--phone"]
     assert cli._passthrough(argv) == ["--log-file", "x.log", "--rate", "30"]
+
+
+# --- the gear gate ---------------------------------------------------------------
+
+def test_live_start_waits_for_both_and_follows_the_cables(qapp, venue):
+    from livereact.devices import Detection
+
+    dlg = _dialog(venue, det=Detection())
+    assert not dlg.b_start.isEnabled()
+    heads = [h.text() for h, _ in dlg.gear_rows]
+    assert "Light adapter: not found, plug in the USB cable" in heads[0]
+    assert "DJ board: not found" in heads[1]
+    assert "light adapter and the DJ board are connected" in dlg.gate_note.text()
+
+    dlg.set_detection(gear(dj=False))                  # the Enttec goes in first
+    assert not dlg.b_start.isEnabled() and "DJ board is connected" in dlg.gate_note.text()
+    dlg.set_detection(gear())                          # then the XDJ: on the moment both are in
+    assert dlg.b_start.isEnabled()
+    assert "Light adapter: connected" in dlg.gear_rows[0][0].text()
+    assert "EN123456" in dlg.gear_rows[0][1].text() and "XDJ-XZ (2)" in dlg.gear_rows[1][1].text()
+    dlg.set_detection(gear(serial=None))               # pulled before Start: off again
+    assert not dlg.b_start.isEnabled()
+
+
+def test_enter_cannot_start_a_live_show_without_the_gear(qapp, venue):
+    from livereact.devices import Detection
+
+    dlg = _dialog(venue, det=Detection())
+    dlg._start()
+    assert dlg.result_argv is None and not (venue / "last-launch.json").exists()
+
+
+def test_demo_is_never_gated(qapp, venue):
+    from livereact.devices import Detection
+
+    dlg = _dialog(venue, det=Detection())
+    dlg.rb_demo.setChecked(True)
+    assert dlg.b_start.isEnabled() and "no gear" in dlg.gate_note.text()
+    dlg.b_start.click()
+    assert dlg.result_argv[0] == "--demo"
+
+
+def test_force_start_lifts_the_gate_and_says_so(qapp, venue):
+    from livereact.devices import Detection
+
+    dlg = _dialog(venue, det=Detection(), force_start=True)
+    assert dlg.b_start.isEnabled() and "--force-start" in dlg.gate_note.text()
+
+
+def test_first_use_asks_once_then_the_adapter_picks_its_rig(qapp, venue):
+    crib = os.path.join("rigs", "junior_crib.json")
+    dlg = _dialog(venue)
+    assert "New light adapter (serial EN123456)" in dlg.adapter_note.text()
+    _pick(dlg, crib)
+    dlg.b_start.click()
+    memory = json.loads((venue / "home" / "rig-by-adapter.json").read_text())
+    assert memory == {"adapters": {"EN123456": str(venue / crib)}}
+
+    (venue / "last-launch.json").write_text(json.dumps({"mode": "live", "rig": os.path.join("rigs", "sophias_thai.json")}))
+    again = _dialog(venue)                             # the adapter wins over the last launch
+    assert again.rig() == crib
+    assert "Picked Junior Crib" in again.adapter_note.text() and "EN123456" in again.adapter_note.text()
+
+    other = _dialog(venue, det=gear(serial="EN000002"))   # another adapter: asked again
+    assert other.rig() == os.path.join("rigs", "sophias_thai.json")
+    assert "New light adapter" in other.adapter_note.text()
+
+
+def test_his_own_pick_is_not_overridden_by_a_late_adapter(qapp, venue):
+    from livereact import devices
+    from livereact.devices import Detection
+
+    devices.remember_rig("EN123456", str(venue / "rigs" / "junior_crib.json"), str(venue / "home"))
+    dlg = _dialog(venue, det=Detection())
+    idx = dlg.rig_combo.findData(os.path.join("rigs", "sophias_thai.json"))
+    dlg.rig_combo.setCurrentIndex(idx)
+    dlg.rig_combo.activated.emit(idx)                  # what a user pick sends
+    dlg.set_detection(gear())                          # then the Enttec is plugged in
+    assert dlg.rig() == os.path.join("rigs", "sophias_thai.json")
+    assert "last used with rigs/junior_crib.json" in dlg.adapter_note.text().replace(os.sep, "/")
+
+
+def test_the_rigs_fixtures_are_listed_for_the_blink_test(qapp, venue):
+    import shutil
+
+    shutil.copy(os.path.join(os.path.dirname(__file__), "..", "rigs", "josh_rig.json"), venue / "rigs")
+    dlg = _dialog(venue)
+    _pick(dlg, os.path.join("rigs", "josh_rig.json"))
+    text = dlg.l_fixtures.text()
+    assert "Par  ·  rgb_par  ·  DMX 21" in text and "Wash Bar" in text
+    assert dlg.b_flash.isEnabled()
+    _pick(dlg, os.path.join("rigs", "broken.json"))
+    assert "Could not read this rig" in dlg.l_fixtures.text() and not dlg.b_flash.isEnabled()
+
+
+def test_closing_the_dialog_stops_the_watcher(qapp, venue, monkeypatch):
+    from livereact import devices
+    from livereact.ui.launch_dialog import LaunchDialog
+
+    stopped = []
+
+    class FakeWatcher:
+        def __init__(self, on_scan, *a, **k):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            stopped.append(True)
+
+    monkeypatch.setattr(devices, "DeviceWatcher", FakeWatcher)
+    dlg = LaunchDialog(str(venue))
+    dlg.reject()
+    assert stopped == [True]

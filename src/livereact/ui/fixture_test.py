@@ -7,6 +7,7 @@ each of the 8 fixtures one at a time when wiring the rig. A per-channel slider g
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 
@@ -165,21 +166,47 @@ class FixtureTestPanel(QtWidgets.QMainWindow):
         self.frame_buffer.publish(bytes(self._uni))
 
 
-def run_fixture_test(rig: Rig, backend, clock, dmx_rate_hz: float = 40.0, rig_path: str | None = None) -> int:
-    """Open the fixture-test panel, driving ``backend`` via a DMX writer (blocks)."""
+@contextlib.contextmanager
+def _driven(backend, clock, dmx_rate_hz: float, blackout: bool = False):
+    """A frame buffer written to ``backend`` by a DMX writer until exit.
+    ``blackout``: everything goes dark before the writer stops (the Enttec
+    repeats its last frame, so a flashed light would otherwise stay on)."""
     import threading
 
     from ..output.writer import DmxWriter
 
-    qt = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     frame_buffer = DmxFrameBuffer()
     stop = threading.Event()
     writer = DmxWriter(frame_buffer, backend, clock, stop, hz=dmx_rate_hz)
     writer.start()
-    win = FixtureTestPanel(rig, frame_buffer, rig_path=rig_path)
-    win.show()
     try:
-        return qt.exec()
+        yield frame_buffer
     finally:
+        if blackout:
+            frame_buffer.publish(bytes(UNIVERSE_SIZE))
+            clock.sleep(3.0 / dmx_rate_hz)        # a few writer ticks of all-zero
         stop.set()
         writer.join(timeout=3.0)
+
+
+def run_fixture_test(rig: Rig, backend, clock, dmx_rate_hz: float = 40.0, rig_path: str | None = None) -> int:
+    """Open the fixture-test panel, driving ``backend`` via a DMX writer (blocks)."""
+    qt = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    with _driven(backend, clock, dmx_rate_hz) as frame_buffer:
+        win = FixtureTestPanel(rig, frame_buffer, rig_path=rig_path)
+        win.show()
+        return qt.exec()
+
+
+def show_fixture_test(rig: Rig, backend, clock, dmx_rate_hz: float = 40.0,
+                      rig_path: str | None = None) -> None:
+    """The panel as a modal window (the launch dialog's "Flash each light"),
+    blocking until it is closed, and dark again before the port is released."""
+    with _driven(backend, clock, dmx_rate_hz, blackout=True) as frame_buffer:
+        win = FixtureTestPanel(rig, frame_buffer, rig_path=rig_path)
+        win.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        win.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
+        loop = QtCore.QEventLoop()
+        win.destroyed.connect(loop.quit)
+        win.show()
+        loop.exec()
