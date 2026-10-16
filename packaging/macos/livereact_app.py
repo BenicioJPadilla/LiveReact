@@ -47,16 +47,32 @@ DEFAULT_LAUNCH_ARGS_TEXT = """\
 # logs/launcher.log.
 #
 # Examples:
+#   --choose          (the launch dialog: pick the rig and options each time)
 #   --demo --visualize
 #   --hardware --visualize --record --rig rigs/josh_rig.json
 --hardware --visualize --record --rig rigs/junior_crib.json
 """
+# With the launch dialog available (livereact's --choose), a Finder launch
+# asks instead of assuming a rig.
+CHOOSE_LAUNCH_ARGS_TEXT = DEFAULT_LAUNCH_ARGS_TEXT.replace(
+    "\n--hardware --visualize --record --rig rigs/junior_crib.json\n", "\n--choose\n")
 
 # Flags that already route log output to a file.
 _LOGGING_FLAGS = ("--log-file", "--record", "--session-dir")
 
 
 # --------------------------------------------------------------------------- pure helpers
+def _default_text(parse) -> str:
+    """The first-launch launch-args.txt: --choose when this build has the
+    launch dialog, a fixed rig line otherwise."""
+    try:
+        if getattr(parse(["--choose"]), "choose", False):
+            return CHOOSE_LAUNCH_ARGS_TEXT
+    except ValueError:
+        pass
+    return DEFAULT_LAUNCH_ARGS_TEXT
+
+
 def parse_launch_args(text: str) -> list[str]:
     """Split launch-args.txt into argv. ``#`` comments and blank lines are
     ignored; non-comment lines are joined. Raises ValueError on bad quoting."""
@@ -144,7 +160,7 @@ def resolve_default_args(data_dir: Path, parse=None) -> tuple[list[str], str | N
     path = data_dir / LAUNCH_ARGS_FILE
     try:
         if not path.exists():
-            path.write_text(DEFAULT_LAUNCH_ARGS_TEXT, encoding="utf-8")
+            path.write_text(_default_text(parse), encoding="utf-8")
         args = parse_launch_args(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         return list(DEMO_ARGS), f"could not read {path}: {exc}"
