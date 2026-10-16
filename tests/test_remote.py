@@ -400,3 +400,18 @@ def test_slow_trickled_request_is_cut_at_the_deadline(served, monkeypatch):
             time.sleep(0.1)
     assert closed and time.monotonic() - t0 < 3
     assert _request(server, "/api/state")[0] == 200
+
+
+def test_binding_never_does_a_reverse_dns_lookup(monkeypatch):
+    """HTTPServer.server_bind calls socket.getfqdn, which stalled App.start()
+    (and the console) for 35 s on a network with slow reverse DNS."""
+    import socket
+
+    from livereact.remote import server as srv
+
+    def slow(*_a, **_k):
+        raise AssertionError("getfqdn must not be called")
+
+    monkeypatch.setattr(socket, "getfqdn", slow)
+    s = srv.PhoneServer(srv.PhoneConsole.__new__(srv.PhoneConsole), port=0, host="127.0.0.1")
+    s._httpd.server_close()

@@ -33,6 +33,7 @@ import logging
 import math
 import secrets
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -207,6 +208,15 @@ class _Server(ThreadingHTTPServer):
     console: PhoneConsole
     token: str
 
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind looks up socket.getfqdn(host), a reverse DNS
+        # query that took 35 s on a venue-style network (2026-10-16 smoke
+        # test) and runs on the caller's thread, inside App.start(): the
+        # console stayed blank that long. Nothing here uses server_name.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name, self.server_port = str(host), port
+
     # Each connection gets a thread, and its headers are read before the token
     # can be checked; cap them so a flood from someone on the Wi-Fi cannot
     # pile up threads on the show laptop. A phone needs one or two at a time.
@@ -376,11 +386,14 @@ def lan_ipv4_addresses() -> list[str]:
             add(s.getsockname()[0])
     except OSError:
         pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            add(str(info[4][0]))
-    except OSError:
-        pass
+    if not found:
+        # Only when the route trick found nothing (no default route, e.g. a
+        # venue Wi-Fi with no internet): a hostname lookup can stall ~30 s.
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                add(str(info[4][0]))
+        except OSError:
+            pass
     return found
 
 
