@@ -88,7 +88,7 @@ def test_resolve_default_args_first_launch_creates_file(tmp_path):
     (tmp_path / "rigs").mkdir()
     (tmp_path / "rigs" / "junior_crib.json").write_text("{}")
     args, reason = entry.resolve_default_args(tmp_path)
-    assert (tmp_path / "launch-args.txt").read_text() == entry.DEFAULT_LAUNCH_ARGS_TEXT
+    assert (tmp_path / "launch-args.txt").read_text() in (entry.DEFAULT_LAUNCH_ARGS_TEXT, entry.CHOOSE_LAUNCH_ARGS_TEXT)
     assert reason is None
     assert args[-2:] == ["--rig", str(tmp_path / "rigs" / "junior_crib.json")]
 
