@@ -42,10 +42,13 @@ LOG_FILE = os.path.join("logs", "supervisor.log")
 
 RELAUNCH_DELAY_S = 0.5   # death -> new engine process; Python + imports take ~1-2 s more
 QUICK_DEATH_S = 10.0     # an engine that dies this soon after launch is crash-looping ...
-MAX_BACKOFF_S = 10.0     # ... so back off, doubling up to this, but never give up mid-show
+MAX_BACKOFF_S = 3.0      # ... so back off, doubling up to this (run_show.sh's old fixed 3 s;
+                         # the Enttec repeats the last frame through the gap, so keep it short),
+                         # but never give up mid-show
 STOP_GRACE_S = 5.0       # after passing on a stop signal, wait this long before SIGKILL
 WATCHDOG_INTERVAL_S = 0.5
-STATE_SAVE_INTERVAL_S = 0.5
+STATE_SAVE_INTERVAL_S = 0.1  # a dict compare when nothing changed; a blackout pressed just
+                             # before a crash must still be there after the relaunch
 SAFETY_FIELDS = ("blackout", "master_brightness", "strobe_cap", "laser_enable")
 
 
@@ -53,7 +56,7 @@ def child_command(argv: list[str]) -> list[str]:
     """The engine child's command line: this same program and arguments.
     Frozen (the PyInstaller app), ``sys.executable`` IS the program."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, *argv, CHILD_FLAG]
+        return [sys.executable, *argv, CHILD_FLAG]  # env: see _child_env
     return [sys.executable, "-m", "livereact", *argv, CHILD_FLAG]
 
 
@@ -94,6 +97,8 @@ def supervise(argv: list[str], *, popen=subprocess.Popen, sleep=time.sleep,
         state["stopping"] = True
         state["stop_at"] = monotonic()
         child = state["child"]
+        if sys.platform == "win32" and signum == signal.SIGINT:
+            return  # Ctrl-C reached the engine too; TerminateProcess would cut its clean shutdown
         if child is not None and child.poll() is None:
             child.terminate()  # the engine's own handler sets stop_event and closes cleanly
 
@@ -105,6 +110,10 @@ def supervise(argv: list[str], *, popen=subprocess.Popen, sleep=time.sleep,
     quick_deaths = 0
     while True:
         env = dict(os.environ)
+        if getattr(sys, "frozen", False):
+            # PyInstaller: the child is an independent instance of the app,
+            # not a helper sharing this one's bootloader state.
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
         if launches:
             env[RELAUNCH_ENV] = str(launches)
         cmd = child_command(argv)
@@ -126,6 +135,14 @@ def supervise(argv: list[str], *, popen=subprocess.Popen, sleep=time.sleep,
         if code == 0:
             log.info("engine closed cleanly after %.0f s; supervisor done", uptime)
             return 0
+        if launches == 1 and code > 0 and uptime < QUICK_DEATH_S:
+            # The very first launch failed with an error, not a crash: a typo'd
+            # --rig, a bad rig file, a missing package. Relaunching can't fix
+            # that, and each attempt would open (and with --record, create)
+            # another session; say so once and stop, like an unsupervised run.
+            log.error("engine failed to start (%s); not relaunching. See the log above.",
+                      describe_exit(code))
+            return code
 
         quick_deaths = quick_deaths + 1 if uptime < QUICK_DEATH_S else 0
         delay = min(MAX_BACKOFF_S, RELAUNCH_DELAY_S * 2 ** quick_deaths) if quick_deaths > 1 else RELAUNCH_DELAY_S

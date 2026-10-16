@@ -67,7 +67,7 @@ def _run(codes, tmp_path, monkeypatch, clock=None, on_wait=None):
 
 
 def test_crashes_relaunch_quickly_and_a_clean_exit_ends_the_loop(tmp_path, monkeypatch):
-    rc, launched, clock = _run([-11, 1, 0], tmp_path, monkeypatch)
+    rc, launched, clock = _run([-11, 1, 0], tmp_path, monkeypatch)  # 1 after a running show: relaunch
     assert rc == 0
     assert len(launched) == 3
     assert clock.sleeps == [supervisor.RELAUNCH_DELAY_S] * 2
@@ -169,3 +169,63 @@ def test_a_killed_engine_is_back_within_three_seconds(tmp_path):
     assert parent.returncode == 0
     assert back_after < 3.0, back_after
     assert any("ENGINE DIED (signal SIGKILL)" in l for l in lines)
+
+
+def test_a_first_launch_that_errors_out_is_not_relaunched(tmp_path, monkeypatch):
+    """A typo'd --rig exits 1 at startup; relaunching forever can't fix it."""
+    class Quick(Clock):
+        def monotonic(self):
+            self.t += 1.0
+            return self.t
+
+    rc, launched, _ = _run([1, 0], tmp_path, monkeypatch, clock=Quick())
+    assert rc == 1 and len(launched) == 1
+
+
+def test_a_first_launch_segfault_is_still_relaunched(tmp_path, monkeypatch):
+    class Quick(Clock):
+        def monotonic(self):
+            self.t += 1.0
+            return self.t
+
+    rc, launched, _ = _run([-11, 0], tmp_path, monkeypatch, clock=Quick())
+    assert rc == 0 and len(launched) == 2
+
+
+class _FakeApp:
+    def __init__(self):
+        from livereact.merge.merge import ManualParams
+
+        self.stop_event = threading.Event()
+        self.manual = ManualParams()
+        self.metronome = threading.Thread(target=lambda: None, name="metronome")
+        self.show_engine = threading.Thread(target=self.stop_event.wait, name="show-engine")
+        self.writer = threading.Thread(target=self.stop_event.wait, name="dmx-writer")
+
+
+def test_child_saves_the_operator_state_and_a_dead_thread_exits(tmp_path, monkeypatch):
+    import time
+
+    exits = []
+    monkeypatch.setattr(supervisor.os, "_exit", lambda code: exits.append(code))
+    monkeypatch.setattr(supervisor, "WATCHDOG_INTERVAL_S", 0.02)
+    monkeypatch.setattr(supervisor, "STATE_SAVE_INTERVAL_S", 0.02)
+    app = _FakeApp()
+    for t in (app.show_engine, app.writer):
+        t.start()
+    path = tmp_path / "logs" / "live-state.json"
+    supervisor.start_child_threads(app, str(path))
+
+    app.manual.blackout = True
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and not (path.exists() and json.loads(path.read_text())["blackout"]):
+        time.sleep(0.01)
+    assert json.loads(path.read_text())["blackout"] is True
+    assert exits == []  # the metronome never started: not "dead"
+
+    app.metronome.start()
+    app.metronome.join()
+    while time.monotonic() < deadline and not exits:
+        time.sleep(0.01)
+    assert exits and exits[0] == 70
+    app.stop_event.set()
