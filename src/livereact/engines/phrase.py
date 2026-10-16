@@ -161,6 +161,16 @@ class PhraseEngine:
         if bars_since_change < hold_bars and not self._bucket_rotation_requested:
             return  # enforce the minimum hold
 
+        if snap.pdl_lost and not (self._skip_requested or self._bucket_rotation_requested):
+            # FAIL-01 (LIGHTING_BIBLE.md §12, 2026-10-16): DJ Link was there
+            # and dropped, so `snap.bar` is the metronome's free-run guess,
+            # drifting off the track's phrases. Hold the current look rather
+            # than rotate on it. A bucket change (the audio says the music
+            # moved) and the operator's skip still rotate; the cadence
+            # resumes once beats come back, or after core/metronome.py's
+            # PDL_LOST_HOLD_BARS. Never on an audio-only night (pdl_lost
+            # needs DJ Link to have been seen first).
+            return
         if not (self._skip_requested or self._bucket_rotation_requested):
             # Scheduled cadence only: while a higher-ranked look of the same
             # family is showing (Peak Full Rig after PEAK fell back to plain
