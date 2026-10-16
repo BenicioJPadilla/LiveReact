@@ -1,0 +1,173 @@
+{
+  "bar_rig": {
+    "frames": 5200,
+    "sha256": "9e4c41ceaccb0e4181064fcc2494b3dd4455b0c5903e365e905c1960c93e5693",
+    "windows": [
+      "2589a22aca99211a",
+      "db2641eb24698221",
+      "a02772bde0a4509c",
+      "d549dfd09140b1a9",
+      "93aa65ef2a5ac92c",
+      "d3265d4ba8fd2caf",
+      "aced485a60a335ac",
+      "224ee4e17048096e",
+      "ab8ff706195d848f",
+      "7be22b7e92c72a43",
+      "2cf0ca1810efd03e",
+      "13653ebf56df2201",
+      "41041d4113ba1d0b"
+    ]
+  },
+  "default": {
+    "frames": 5200,
+    "sha256": "c1c4d7239cb24c802e1aa66c43b3cbf210b687928339282617cd8e9a30bb19b1",
+    "windows": [
+      "43a44b00075dd628",
+      "3269964dc404ab98",
+      "ee82ab182b91853d",
+      "982c75b98173f29a",
+      "d1056eec1780ccf0",
+      "c3fc0043a49bcdf8",
+      "c84f1e9ee63244a2",
+      "f175a1abeb81f149",
+      "5fe1c2169c9bed93",
+      "1872ea6c8d00d8d5",
+      "00e10441f687aa7c",
+      "ca4b7849e335b4b0",
+      "39866788779c9d8b"
+    ]
+  },
+  "josh_rig": {
+    "frames": 5200,
+    "sha256": "660cf6bee77a21f6ea3b3cd85cb230d0bfe12ffeef92b5dc2496ba0b810f56cd",
+    "windows": [
+      "8567401b22084b81",
+      "dd92ce9a99ba18cd",
+      "369730e37c84fbe9",
+      "34a497d161d789f1",
+      "d621bbf78ebb2fbb",
+      "589208d0f92eefb9",
+      "16a6c934318dd625",
+      "36deea7367a83cfa",
+      "5f534c42dd0d5b67",
+      "136dc6a130668d0e",
+      "ecb8c55d148b7c7a",
+      "9e795159eaac7ab9",
+      "a2d153326cdbc92a"
+    ]
+  },
+  "josh_rig_bar_only": {
+    "frames": 5200,
+    "sha256": "7d046b8fd961c4dc0bbba0c557680e30a5ee46aebf859087f6ed612a43115ce1",
+    "windows": [
+      "17c83940063ba290",
+      "3c944ca9660c8b8b",
+      "dcc6d5e2b4eed831",
+      "31760d835385d4f9",
+      "de443e50b6c6c03f",
+      "3301d4ff65f92222",
+      "d2706c685489d698",
+      "beea37aeff2d56ce",
+      "4398e5762524c825",
+      "c39a337703170fff",
+      "0b9b336b9e50963a",
+      "3c944ca9660c8b8b",
+      "c4ecc4abcfbc7510"
+    ]
+  },
+  "josh_rig_no_bar": {
+    "frames": 5200,
+    "sha256": "e8a4ea3acea9ea3152bb1814eb2ce3a55f5c951de4f40fa8c4d491d83adb5f8c",
+    "windows": [
+      "28b41e5192d44d97",
+      "182783e37cc06b5f",
+      "00d37cab99e2f3ec",
+      "0da52017c25477a5",
+      "c96436a9d512e0ab",
+      "ffb43813fb5624b2",
+      "955dfe6eb0cd7e2f",
+      "fb0c97657608d746",
+      "d28a59f733318903",
+      "ca5e215f45b7f8b4",
+      "299a01ad2225fea4",
+      "4e44c874b80bba1c",
+      "c5cd2962f84a8d4b"
+    ]
+  },
+  "junior_crib": {
+    "frames": 5200,
+    "sha256": "186e168c34e3828ffc214c2c721f10ccb89fde5bdba398d7b46fa95df3931cb3",
+    "windows": [
+      "7a0aa0282d9d7534",
+      "52b6851a36b9abb9",
+      "d1afbb8c1232b2b5",
+      "f28b7073b221d920",
+      "53527f5a531c22c9",
+      "46698720212097e5",
+      "8e052d0b45267c18",
+      "5511a87689d4cf77",
+      "ad962b6f380d80c0",
+      "1c98e4179d93ed5d",
+      "56a77f21ccd12e28",
+      "3e08f02998045c1f",
+      "e9012c741b9a6373"
+    ]
+  },
+  "sophias_thai": {
+    "frames": 5200,
+    "sha256": "74391d5d17d6cd8d5a9895c51123eb0a957ee6be3614444bea593a94f0106872",
+    "windows": [
+      "2392387141ac9d89",
+      "386b4d5a36373942",
+      "08ac0003743caa83",
+      "d54dd41f0abdab93",
+      "b50edde8e76b69ed",
+      "b532d226f25caa32",
+      "faec68e932b925a7",
+      "13b8e64f885c60fc",
+      "8002b9e7ccf52468",
+      "04f2772102c918eb",
+      "226e760894518555",
+      "386b4d5a36373942",
+      "e54cc3e10f92d7ac"
+    ]
+  },
+  "sophias_thai_venue": {
+    "frames": 5200,
+    "sha256": "4ef59a689b3314a7eb1a3f9af2fd789920697c5d0405e957a5ad8cc3714fc163",
+    "windows": [
+      "937ec675c6913011",
+      "4397a2c529b561d2",
+      "a9f55682edc613b2",
+      "a2ce7e28e88a2170",
+      "9db992868520e487",
+      "2d46f5d54a24925f",
+      "6f131b0a991d085c",
+      "cca7db0e2011e405",
+      "16a38449480599b2",
+      "deef308305813a7b",
+      "3e5fb02f16ce7118",
+      "4397a2c529b561d2",
+      "3c17c557ce18883a"
+    ]
+  },
+  "testing_setup": {
+    "frames": 5200,
+    "sha256": "99051e29c8fc33c009b8a133f275e9d25644e44e5d796dc091b4842cb555af13",
+    "windows": [
+      "e96bed04f7b3378c",
+      "01754567ea06c8fb",
+      "e6f16ccbc6721aeb",
+      "0f0b91bd9814f614",
+      "930a0cd6ce5f1d12",
+      "daf9e9bebf0ccc75",
+      "40bdf1e0e685e4bb",
+      "6215d652ce6d8eeb",
+      "0fca4b0e35d3716e",
+      "09172d8b3b11a74b",
+      "1dbe2ad54c284427",
+      "5b3d66b56c51b025",
+      "eef8b8a96e5178ff"
+    ]
+  }
+}
