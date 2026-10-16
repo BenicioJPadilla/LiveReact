@@ -572,3 +572,41 @@ Hand the session folder back as usual; `laser_mood`, `laser_target`,
 4. Arm lasers (L) once the first track is playing. Everything else is
    automatic; C / D / K are the cues.
 5. Afterwards: notes + the session folder.
+
+## Test 8: phone console (2026-10-16)
+
+A phone on the venue Wi-Fi can make the show **safer** and nothing else:
+blackout on, dim, lower the strobe cap, disarm lasers. Everything it does is
+undone on the laptop.
+
+1. Put the laptop and the phone on the **same Wi-Fi**.
+2. Launch with `--phone` added, e.g.
+   `python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json --phone`
+3. The first time on a Mac, a **firewall prompt** asks whether Python (or
+   LiveReact) may accept incoming network connections: click **Allow**. If you
+   clicked Deny earlier, fix it in System Settings > Network > Firewall >
+   Options (set Python to "Allow incoming connections").
+4. Find the line `Phone console: open http://192.168.x.y:8765/?k=XXXXXX` in
+   the log (terminal or `session.log`) and open that exact URL on the phone.
+   The 6-character code after `k=` is new at every launch; without it the
+   page says "missing or wrong access code".
+5. The top line should show the bucket and BPM, updating about once a second,
+   and "DMX not connected" should be absent (it shows if the Enttec is not
+   driving the rig).
+6. **Blackout**: press it. The lights should go dark within a frame or two,
+   and the page says to release it on the laptop. Release on the laptop with
+   **B**. The console's BLACKOUT button does not yet show a phone press, so
+   if the lights stay dark after one B, press B again.
+7. **Dim**: press -10 %, then 50 %, then 25 %, and watch the rig dim each
+   time. Raise it back with the laptop's brightness slider.
+8. **Strobe off**: press it during a strobe (or press Space on the laptop
+   for a strobe burst): no strobe. Restore with the laptop's strobe cap
+   slider.
+9. **Disarm lasers** (arm with **L** first, on a track where they fire):
+   lasers go dark. Re-arm on the laptop (the checkbox may still look ticked:
+   press L until the lasers come back).
+10. Afterwards: note in `NOTES.md` how quickly each press landed, and check
+    the log has a `Phone console (<phone IP>): ...` line for each press.
+
+Note: dim and strobe-cap changes are saved to `config.json` at shutdown, the
+same as the laptop sliders, so check them before the next show.
