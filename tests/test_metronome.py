@@ -1474,3 +1474,24 @@ def test_unmapped_operator_controls_reach_the_control_callback_not_the_mixer_int
     m.tick()
     assert seen == [("laser_cue", 1.0), ("laser_cue", 1.0)]
     assert m._midi["fader_a"] == 1.0
+
+
+def test_pdl_lost_needs_a_player_beat_first():
+    """FAIL-01's trigger: DJ Link beats seen, then stopped. Tap tempo
+    (player 0) going quiet is not a lost DJ Link."""
+    clock = FakeClock()
+    m = _metronome(clock)
+    m.queue.put(BeatMessage(0.0, 1, 120.0, True, 0))  # a tap
+    assert not m.tick().pdl_lost
+    clock.advance(2.0)
+    assert not m.tick().pdl_lost  # taps stopped: still not "lost"
+
+    m.queue.put(BeatMessage(clock.monotonic(), 1, 120.0, True, 1))  # a CDJ
+    snap = m.tick()
+    assert snap.pdl_fresh and not snap.pdl_lost
+    clock.advance(2.0)
+    snap = m.tick()
+    assert snap.pdl_lost and not snap.pdl_fresh
+
+    m.queue.put(BeatMessage(clock.monotonic(), 1, 120.0, True, 1))  # back
+    assert not m.tick().pdl_lost

@@ -348,3 +348,55 @@ def test_drop_scene_emits_laser_channels_through_the_engine():
     laser = rig.fixture("laser_l")
     c = eng.tick(_snap(2, energy=1.0), rig)
     assert any(c.touched[laser.offset + i] for i in range(12))
+
+
+# --- FAIL-01 (LIGHTING_BIBLE.md §12): hold the look while DJ Link is lost.
+# Moved here from tests/test_spec_conformance_gaps.py when the rule closed
+# (2026-10-16), with its scope settled: "lost" means DJ Link was heard and
+# then stopped. An audio-only night never had it, and keeps rotating on the
+# free-running clock exactly as before.
+
+
+def test_look_holds_while_dj_link_is_lost():
+    rig = load_rig()
+    eng = PhraseEngine()
+    for bar in range(ROTATION_BARS * 2 + 1):
+        eng.tick(_snap(bar, energy=0.2, pdl_lost=True), rig)
+    assert eng.rotations == 0
+
+
+def test_audio_only_night_keeps_rotating_on_the_free_running_clock():
+    rig = load_rig()
+    eng = PhraseEngine()
+    for bar in range(ROTATION_BARS + 1):
+        eng.tick(_snap(bar, energy=0.2, pdl_fresh=False, pdl_lost=False), rig)
+    assert eng.rotations == 1
+
+
+def test_cadence_resumes_when_dj_link_comes_back():
+    rig = load_rig()
+    eng = PhraseEngine()
+    for bar in range(ROTATION_BARS + 1):
+        eng.tick(_snap(bar, energy=0.2, pdl_lost=True), rig)
+    assert eng.rotations == 0
+    eng.tick(_snap(ROTATION_BARS + 1, energy=0.2, pdl_fresh=True), rig)
+    assert eng.rotations == 1
+
+
+def test_bucket_change_still_rotates_while_dj_link_is_lost():
+    """The audio still hears the music move: only the bar-count cadence
+    (the part riding the drifting clock) holds."""
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2, pdl_lost=True), rig)
+    eng.tick(_snap(HOLD_BARS, energy=1.0, pdl_lost=True), rig)
+    assert eng.rotations == 1
+
+
+def test_operator_skip_still_rotates_while_dj_link_is_lost():
+    rig = load_rig()
+    eng = PhraseEngine()
+    eng.tick(_snap(0, energy=0.2, pdl_lost=True), rig)
+    eng.skip()
+    eng.tick(_snap(HOLD_BARS, energy=0.2, pdl_lost=True), rig)
+    assert eng.rotations == 1

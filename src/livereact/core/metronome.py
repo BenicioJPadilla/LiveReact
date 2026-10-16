@@ -654,6 +654,10 @@ class Metronome(threading.Thread):
 
         # freshness tracking
         self._last_beat_time: float | None = None  # PDL freshness keys off master BEATS, not status packets
+        # FAIL-01 (2026-10-16): a master beat from a real CDJ/XDJ player has
+        # been heard this run. Tap tempo (player 0, ui/console.py) doesn't
+        # count: an audio-only night with taps never "had" DJ Link to lose.
+        self._pdl_seen = False
         self._last_midi_time: float | None = None
         self._last_audio_time: float | None = None
         self._last_log = clock.monotonic()
@@ -727,6 +731,8 @@ class Metronome(threading.Thread):
         self._beat_anchor = msg.timestamp  # hard resync: phase = 0 at this beat
         self._beat_phase = 0.0
         self._last_beat_time = msg.timestamp
+        if msg.player > 0:
+            self._pdl_seen = True
 
     def _on_status(self, msg: StatusMessage) -> None:
         self._on_air = msg.on_air
@@ -1617,6 +1623,7 @@ class Metronome(threading.Thread):
             in_transition=now < self._transition_until,
             free_running=not self._is_pdl_fresh(now),
             pdl_fresh=self._is_pdl_fresh(now),
+            pdl_lost=self._pdl_seen and not self._is_pdl_fresh(now),
             midi_fresh=self._is_midi_fresh(now),
             audio_fresh=self._is_audio_fresh(now),
         )
