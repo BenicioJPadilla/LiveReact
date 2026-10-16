@@ -55,6 +55,7 @@ from ..fixtures.geometry import (
 )
 from ..fixtures.profiles import Laser, MovingHead, WashBar
 from ..fixtures.rig import Rig
+from . import theme
 
 PX_PER_M = 40.0                 # scene pixels per meter
 SNAP_M = ft_to_m(0.5)           # drag snap: half a foot
@@ -74,14 +75,30 @@ _CEILING_TARGET_W_M = 0.62      # a ceiling target: bigger and hollow, so it rea
 _STACK_RADIUS_M = 0.3           # bodies closer than this are drawn as one stack
 _STACK_STEP = 0.45              # each layer beneath the top one grows by this much
 
-_GRID_LIGHT = QtGui.QColor(34, 38, 46)
-_GRID_BOLD = QtGui.QColor(52, 58, 70)
-_ROOM_EDGE = QtGui.QColor(120, 128, 140)
-_TEXT = QtGui.QColor(150, 155, 165)
-_TITLE = QtGui.QColor(222, 226, 234)
-_LEADER = QtGui.QColor(120, 126, 138)
-_IDLE = QtGui.QColor(60, 60, 70)
-_TARGET = QtGui.QColor(245, 166, 35)
+# Colours come from ui/theme.py ("Blackbox"): the room is a dark inset on
+# the card, the chrome is grey, and the only saturated colour is the light
+# the fixtures are actually putting out (plus lime targets where editable).
+_GROUND = QtGui.QColor(theme.SURFACE)
+_ROOM_FILL = QtGui.QColor(theme.BG)
+_GRID_LIGHT = QtGui.QColor(24, 27, 31)
+_GRID_BOLD = QtGui.QColor(38, 42, 48)
+_ROOM_EDGE = QtGui.QColor(theme.LINE_3)
+_TEXT = QtGui.QColor(theme.TEXT_3)
+_TITLE = QtGui.QColor(theme.TEXT)
+_LEADER = QtGui.QColor(theme.LINE_3)
+_IDLE = QtGui.QColor(theme.LINE_3)
+_IDLE_FILL = QtGui.QColor(theme.SURFACE_2)
+_TARGET = QtGui.QColor(theme.ACCENT)          # editable plan: targets are things you drag
+_TARGET_QUIET = QtGui.QColor(theme.TEXT_3)    # live view: reference points, not attention
+_GLOW_R = 2.6                                 # lit glow radius, in body radii
+
+
+def _font(pt: float, weight: QtGui.QFont.Weight = QtGui.QFont.Weight.Normal) -> QtGui.QFont:
+    f = QtGui.QFont()
+    f.setFamilies([theme.FONT_UI, "Helvetica Neue", "Arial"])
+    f.setPointSizeF(pt)
+    f.setWeight(weight)
+    return f
 
 _LEGEND = "○ head    □ par    ▭ wash bar    ▲ laser    ◆ target    ◇ ceiling target    dashed ring = fixture underneath"
 
@@ -115,6 +132,7 @@ class PlanItem(QtWidgets.QGraphicsObject):
         self.fill = QtGui.QColor(0, 0, 0)
         self.edge = _IDLE
         self.edge_w = 1.0
+        self.glow: QtGui.QColor | None = None   # set while the fixture is lit
         self.setZValue(10)
 
     def glyph_rect(self) -> QtCore.QRectF:
@@ -127,13 +145,38 @@ class PlanItem(QtWidgets.QGraphicsObject):
             self.glyph_scale = k
             self.update()
 
+    def body_rect(self) -> QtCore.QRectF:
+        """The glyph plus its selection margin (local coords): what captions
+        must keep clear of. The paint area can be larger (the lit glow)."""
+        return self.glyph_rect().adjusted(-6, -6, 6, 6)
+
+    def shape(self) -> QtGui.QPainterPath:  # noqa: D102 (Qt override)
+        # hit-test the body only: the lit glow must not widen what a click
+        # or a drag on the Venue plan grabs
+        path = QtGui.QPainterPath()
+        path.addRect(self.body_rect())
+        return path
+
     def boundingRect(self) -> QtCore.QRectF:  # noqa: N802 (Qt override)
-        pad = 6
-        return self.glyph_rect().adjusted(-pad, -pad, pad, pad)
+        r = self.body_rect()
+        if self.kind == "fixture":
+            g = max(self.w_px, self.h_px) / 2 * _GLOW_R
+            r = r.united(QtCore.QRectF(-g, -g, 2 * g, 2 * g))
+        return r
 
     def paint(self, painter: QtGui.QPainter, option, widget=None) -> None:  # noqa: ARG002
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         rect = self.glyph_rect()
+        if self.glow is not None and self.glyph_scale == 1.0:
+            # a soft pool of the fixture's own light behind the glyph
+            g = max(self.w_px, self.h_px) / 2 * _GLOW_R
+            grad = QtGui.QRadialGradient(QtCore.QPointF(0, 0), g)
+            c0 = QtGui.QColor(self.glow); c0.setAlpha(110)
+            c1 = QtGui.QColor(self.glow); c1.setAlpha(0)
+            grad.setColorAt(0.0, c0); grad.setColorAt(1.0, c1)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QBrush(grad))
+            painter.drawEllipse(QtCore.QPointF(0, 0), g, g)
         pen = QtGui.QPen(self.edge, self.edge_w)
         if self.glyph_scale > 1.0:
             pen.setStyle(QtCore.Qt.PenStyle.DashLine)
@@ -154,9 +197,9 @@ class PlanItem(QtWidgets.QGraphicsObject):
                 painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             painter.drawPath(path)
         elif self.glyph == "bar":
-            painter.drawRect(rect)
-        elif self.glyph == "par":
             painter.drawRoundedRect(rect, 3, 3)
+        elif self.glyph == "par":
+            painter.drawRoundedRect(rect, 4, 4)
         elif self.glyph == "laser":
             apex = _scaled(fwd, r * 1.15)
             base = _scaled(fwd, -r * 0.75)
@@ -167,12 +210,14 @@ class PlanItem(QtWidgets.QGraphicsObject):
         else:
             painter.drawEllipse(rect)
             # facing tick: which way the body's pan=0.5 points
-            painter.setPen(QtGui.QPen(_TEXT, 2))
+            tick = QtGui.QPen(QtGui.QColor(theme.TEXT_2), 2)
+            tick.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+            painter.setPen(tick)
             painter.drawLine(QtCore.QPointF(0, 0), _scaled(fwd, r * 1.4))
         if self.isSelected():
-            painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 1, QtCore.Qt.PenStyle.DashLine))
+            painter.setPen(QtGui.QPen(QtGui.QColor(theme.ACCENT), 1.5))
             painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-            painter.drawRect(rect.adjusted(-3, -3, 3, 3))
+            painter.drawRoundedRect(rect.adjusted(-5, -5, 5, 5), 5, 5)
 
 
 class _Caption:
@@ -183,10 +228,10 @@ class _Caption:
     def __init__(self, scene: QtWidgets.QGraphicsScene, item: PlanItem) -> None:
         self.item = item
         self.title = scene.addSimpleText("")
-        self.title.setFont(QtGui.QFont("Arial", 8, QtGui.QFont.Weight.DemiBold))
+        self.title.setFont(_font(8, QtGui.QFont.Weight.DemiBold))
         self.title.setBrush(_TITLE)
         self.sub = scene.addSimpleText("")
-        self.sub.setFont(QtGui.QFont("Arial", 7))
+        self.sub.setFont(_font(7))
         self.sub.setBrush(_TEXT)
         for t in (self.title, self.sub):
             t.setZValue(12)
@@ -245,9 +290,12 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         self.rig = rig
         self.editable = editable
         self.on_changed = on_changed
-        self._scene = QtWidgets.QGraphicsScene()
+        # parented: the scene dies with the view, so its selectionChanged can
+        # never reach _on_selection after the items are gone (interpreter teardown)
+        self._scene = QtWidgets.QGraphicsScene(self)
         self.setScene(self._scene)
-        self.setBackgroundBrush(QtGui.QColor(12, 12, 16))
+        self.setBackgroundBrush(_GROUND)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -320,6 +368,9 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         self._scene.setSceneRect(-_MARGIN, -_MARGIN - _LEGEND_H,
                                  w_px + 2 * _MARGIN, l_px + 2 * _MARGIN + _LEGEND_H)
 
+        room = self._scene.addRect(0, 0, w_px, l_px, QtGui.QPen(QtCore.Qt.PenStyle.NoPen), QtGui.QBrush(_ROOM_FILL))
+        room.setZValue(-1)
+        axis_font = _font(7)
         # grid: every foot light, every 5 ft bold
         step = ft_to_m(1.0) * PX_PER_M
         n_x, n_y = int(v.width_m / ft_to_m(1.0)) + 1, int(v.length_m / ft_to_m(1.0)) + 1
@@ -330,7 +381,7 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             pen = QtGui.QPen(_GRID_BOLD if i % 5 == 0 else _GRID_LIGHT, 1)
             self._grid.append(self._scene.addLine(x, 0, x, l_px, pen))
             if i % 5 == 0:
-                t = self._scene.addSimpleText(f"{i}′"); t.setBrush(_TEXT); t.setPos(x - 6, l_px + 4)
+                t = self._scene.addSimpleText(f"{i}′"); t.setFont(axis_font); t.setBrush(_TEXT); t.setPos(x - 5, l_px + 5)
         for j in range(n_y + 1):
             y = l_px - j * step
             if y < -0.5:
@@ -338,13 +389,19 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             pen = QtGui.QPen(_GRID_BOLD if j % 5 == 0 else _GRID_LIGHT, 1)
             self._grid.append(self._scene.addLine(0, y, w_px, y, pen))
             if j % 5 == 0:
-                t = self._scene.addSimpleText(f"{j}′"); t.setBrush(_TEXT); t.setPos(-_MARGIN + 2, y - 7)
-        self._scene.addRect(0, 0, w_px, l_px, QtGui.QPen(_ROOM_EDGE, 2))
+                t = self._scene.addSimpleText(f"{j}′"); t.setFont(axis_font); t.setBrush(_TEXT); t.setPos(-_MARGIN + 4, y - 6)
+        self._scene.addRect(0, 0, w_px, l_px, QtGui.QPen(_ROOM_EDGE, 1.5))
+        # the booth wall itself, drawn heavier: everything is measured from it
+        wall = QtGui.QPen(QtGui.QColor(theme.TEXT_2), 3)
+        wall.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        self._scene.addLine(0, l_px, w_px, l_px, wall)
         booth = self._scene.addSimpleText("DJ BOOTH WALL")
-        booth.setBrush(_ROOM_EDGE); booth.setPos(w_px / 2 - 44, l_px + 14)
-        legend = self._scene.addSimpleText(_LEGEND)
-        legend.setFont(QtGui.QFont("Arial", 7)); legend.setBrush(_TEXT)
-        legend.setPos(0, -_MARGIN - _LEGEND_H + 2)
+        booth.setFont(_font(7, QtGui.QFont.Weight.DemiBold)); booth.setBrush(QtGui.QColor(theme.TEXT_2))
+        booth.setPos(w_px / 2 - booth.boundingRect().width() / 2, l_px + 15)
+        if self.editable:   # the glyph key is setup help; the live view stays clean
+            legend = self._scene.addSimpleText(_LEGEND)
+            legend.setFont(_font(6.5)); legend.setBrush(_TEXT)
+            legend.setPos(0, -_MARGIN - _LEGEND_H + 2)
 
         movable = (QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable
                    | QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
@@ -356,7 +413,9 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             size = _CEILING_TARGET_W_M if is_ceiling else _TARGET_W_M
             item = PlanItem(name, "target", name, size, size,
                             shape="ceiling_target" if is_ceiling else "target")
-            item.fill = QtGui.QColor(0, 0, 0); item.edge = _TARGET; item.edge_w = 2
+            item.fill = _ROOM_FILL
+            item.edge = _TARGET if self.editable else _TARGET_QUIET
+            item.edge_w = 1.5
             item.setPos(self.to_scene(p.x, p.y))
             item.setZValue(4.5 if is_ceiling else 5)      # the hollow ceiling diamond sits under a floor one
             item.setToolTip(f"{name}\n{m_to_ft(p.x):.1f} ft along the booth wall, "
@@ -367,7 +426,7 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             self._scene.addItem(item)
             self._targets[name] = item
             cap = _Caption(self._scene, item)
-            cap.set_text(name, f"{m_to_ft(p.z):.0f}′ up")
+            cap.set_text(name, f"{m_to_ft(p.z):.0f}′ up" if self.editable else "")
             self._captions["target:" + name] = cap
 
         # fixtures
@@ -388,16 +447,19 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             self._scene.addItem(item)
             self._bodies[key] = item
             if isinstance(fx, MovingHead):
-                beam = self._scene.addLine(0, 0, 0, 0, QtGui.QPen(QtGui.QColor(80, 80, 90), 2))
+                beam = self._scene.addLine(0, 0, 0, 0, QtGui.QPen(_IDLE, 2))
                 beam.setZValue(3)
                 self._beams[key] = beam
             elif isinstance(fx, Laser):
                 wedge = self._scene.addPolygon(QtGui.QPolygonF(), QtGui.QPen(_IDLE, 1),
-                                               QtGui.QBrush(QtGui.QColor(60, 60, 70, 40)))
+                                               QtGui.QBrush(QtGui.QColor(58, 64, 72, 30)))
                 wedge.setZValue(2)
                 self._wedges[key] = wedge
             cap = _Caption(self._scene, item)
-            cap.set_text(fx.label, f"@{fx.address} · {m_to_ft(o.z):.0f}′ up" if placed
+            # the live view keeps captions to names: addresses / heights are
+            # setup detail, unreadable at mini-map scale mid-set
+            cap.set_text(fx.label, "" if not self.editable else
+                         f"@{fx.address} · {m_to_ft(o.z):.0f}′ up" if placed
                          else f"@{fx.address} · not placed yet")
             self._captions[key] = cap
         self._mark_stacks()
@@ -455,13 +517,13 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             QtCore.QRectF(-_MARGIN - 2, -_MARGIN - _LEGEND_H, _MARGIN + 1, l_px + 2 * _MARGIN + _LEGEND_H),  # y axis
             QtCore.QRectF(-_MARGIN, -_MARGIN - _LEGEND_H, w_px + 2 * _MARGIN, _LEGEND_H - 1),            # legend
         ]
-        obstacles = [c.item.sceneBoundingRect() for c in self._captions.values()]
+        obstacles = [c.item.mapRectToScene(c.item.body_rect()) for c in self._captions.values()]
         placed: list[QtCore.QRectF] = []
         order = sorted(self._captions.values(), key=lambda c: (c.item.pos().x(), c.item.pos().y()))
         gap = 4.0
         for cap in order:
             a = cap.item.pos()
-            br = cap.item.boundingRect()
+            br = cap.item.body_rect()
             bw, bh = br.width() / 2, br.height() / 2
             lw, lh = cap.size()
 
@@ -613,9 +675,10 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             vs = fx.visual_state(uni)
             b = vs.brightness
             color = QtGui.QColor(int(vs.r * b), int(vs.g * b), int(vs.b * b))
-            item.fill = color
+            item.fill = color if vs.active else _IDLE_FILL
             item.edge = QtGui.QColor(vs.r, vs.g, vs.b) if vs.active else _IDLE
             item.edge_w = 2 if vs.active else 1
+            item.glow = color if vs.active and b > 0.05 else None
             item.facing_deg = fx.facing_deg
             item.update()
             origin = self.fixture_origin(fx)
@@ -629,12 +692,13 @@ class FloorPlanView(QtWidgets.QGraphicsView):
                 edge = ray_to_rect_edge((origin.x, origin.y), az, v.width_m, v.length_m)
                 if hit is not None and math.hypot(hit.x - origin.x, hit.y - origin.y) <= edge:
                     end = self.to_scene(hit.x, hit.y)
-                    pen = QtGui.QPen(color if vs.active else QtGui.QColor(50, 50, 60), 2)
+                    pen = QtGui.QPen(color if vs.active else _IDLE, 2.5 if vs.active else 1.5)
+                    pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
                 else:  # aimed up or past the wall: draw to the wall, faded
                     dx, dy = math.sin(math.radians(az)), math.cos(math.radians(az))
                     end = self.to_scene(origin.x + dx * edge, origin.y + dy * edge)
                     faded = QtGui.QColor(color); faded.setAlpha(90)
-                    pen = QtGui.QPen(faded if vs.active else QtGui.QColor(40, 40, 50), 1, QtCore.Qt.PenStyle.DashLine)
+                    pen = QtGui.QPen(faded if vs.active else QtGui.QColor(theme.LINE_2), 1, QtCore.Qt.PenStyle.DashLine)
                 beam.setLine(center.x(), center.y(), end.x(), end.y())
                 beam.setPen(pen)
 
@@ -650,8 +714,8 @@ class FloorPlanView(QtWidgets.QGraphicsView):
                     dx, dy = math.sin(math.radians(az)), math.cos(math.radians(az))
                     pts.append(self.to_scene(origin.x + dx * throw, origin.y + dy * throw))
                 wedge.setPolygon(QtGui.QPolygonF(pts))
-                fill = QtGui.QColor(color) if vs.active else QtGui.QColor(60, 60, 70)
-                fill.setAlpha(70 if vs.active else 40)
+                fill = QtGui.QColor(color) if vs.active else QtGui.QColor(58, 64, 72)
+                fill.setAlpha(60 if vs.active else 22)
                 wedge.setPen(QtGui.QPen(QtGui.QColor(vs.r, vs.g, vs.b) if vs.active else _IDLE, 1))
                 wedge.setBrush(QtGui.QBrush(fill))
         if self._layout_dirty:

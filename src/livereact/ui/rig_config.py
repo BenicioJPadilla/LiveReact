@@ -5,7 +5,7 @@ DMX address spinbox, role/side dropdowns), validates on Save using the same
 overlap/overflow rules the loader itself enforces, and writes a rig JSON file
 compatible with ``--rig <path>``.
 
-Deliberately does NOT apply changes to the live show — swapping ``App.rig`` out
+Deliberately does NOT apply changes to the live show: swapping ``App.rig`` out
 from under the engine threads mid-tick is a real race the show pipeline isn't
 built to survive. Save, then restart with the new file (same pattern as
 plugging in hardware tonight: the app picks up devices at startup, not live).
@@ -17,10 +17,12 @@ import json
 import logging
 import os
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from ..fixtures.profiles import FIXTURE_TYPES
 from ..fixtures.rig import RigError, Rig, _rig_from_dict, rig_to_dict
+from . import icons, theme
+from .widgets import Card, label
 
 log = logging.getLogger(__name__)
 
@@ -34,44 +36,69 @@ class RigConfigTab(QtWidgets.QWidget):
         self.rig_path = rig_path
 
         v = QtWidgets.QVBoxLayout(self)
+        v.setContentsMargins(theme.SP4, theme.SP4, theme.SP4, theme.SP4)
+        v.setSpacing(theme.SP3)
 
-        note = QtWidgets.QLabel(
-            "Edit fixture type / DMX address / role / side below, then Save. "
-            "Changes do NOT apply to the running show — restart LiveReact with "
-            "--rig <saved file> to pick them up (same as plugging in new hardware)."
-        )
-        note.setWordWrap(True)
-        v.addWidget(note)
+        head = QtWidgets.QFrame()
+        head.setObjectName("card")
+        hl = QtWidgets.QHBoxLayout(head)
+        hl.setContentsMargins(theme.SP4 + 4, theme.SP3, theme.SP3, theme.SP3)
+        hl.setSpacing(theme.SP4)
+        titles = QtWidgets.QVBoxLayout()
+        titles.setSpacing(2)
+        titles.addWidget(label("Rig", "pageTitle"))
+        note = label(
+            "Edit fixture type, DMX address, role and side, then save. Changes do NOT apply to the "
+            "running show: restart LiveReact with --rig <saved file> to pick them up (same as "
+            "plugging in new hardware).", "hint", wrap=True)
+        titles.addWidget(note)
+        hl.addLayout(titles, 1)
+        add_btn = QtWidgets.QPushButton("Add fixture")
+        add_btn.setIcon(icons.icon("plus", theme.TEXT_2, size=16))
+        add_btn.clicked.connect(self._add_blank_row)
+        remove_btn = QtWidgets.QPushButton("Remove selected")
+        remove_btn.setObjectName("ghostDanger")
+        remove_btn.setIcon(icons.icon("trash", theme.DANGER_TEXT, size=16))
+        remove_btn.clicked.connect(self._remove_selected)
+        save_btn = QtWidgets.QPushButton("Save to file…")
+        save_btn.setObjectName("primary")
+        save_btn.setIcon(icons.icon("save", theme.ON_ACCENT, size=16))
+        save_btn.clicked.connect(self._save)
+        for b in (add_btn, remove_btn, save_btn):
+            hl.addWidget(b, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
+        v.addWidget(head)
 
+        fixtures = Card("Fixtures", "rig")
         self.table = QtWidgets.QTableWidget(0, len(_COLUMNS))
-        self.table.setHorizontalHeaderLabels(_COLUMNS)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setHorizontalHeaderLabels([c.upper() for c in _COLUMNS])
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(40)
+        self.table.setShowGrid(False)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.itemSelectionChanged.connect(self._update_reference)
-        v.addWidget(self.table)
+        fixtures.body.addWidget(self.table)
+        v.addWidget(fixtures, 1)
 
         for fx in rig.fixtures:
             self._add_row(fx.slot_id, fx.label, fx.type_name, fx.address, fx.role, fx.side)
 
-        btns = QtWidgets.QHBoxLayout()
-        add_btn = QtWidgets.QPushButton("Add fixture")
-        add_btn.clicked.connect(self._add_blank_row)
-        remove_btn = QtWidgets.QPushButton("Remove selected")
-        remove_btn.clicked.connect(self._remove_selected)
-        save_btn = QtWidgets.QPushButton("Save to file…")
-        save_btn.clicked.connect(self._save)
-        btns.addWidget(add_btn)
-        btns.addWidget(remove_btn)
-        btns.addStretch(1)
-        btns.addWidget(save_btn)
-        v.addLayout(btns)
+        for col, width in ((0, 150), (2, 240), (3, 140), (4, 140), (5, 140)):
+            self.table.setColumnWidth(col, width)
 
-        v.addWidget(QtWidgets.QLabel("Channel reference for the selected fixture type:"))
+        ref = Card("Channel reference", "fixture_test")
+        ref.add_accessory(label("Select a row to see its fixture type's channel map", "hint"))
         self.channel_ref = QtWidgets.QTextEdit()
+        self.channel_ref.setObjectName("mono")
         self.channel_ref.setReadOnly(True)
-        self.channel_ref.setMaximumHeight(140)
-        v.addWidget(self.channel_ref)
+        self.channel_ref.setMaximumHeight(112)
+        self.channel_ref.setPlaceholderText("No fixture selected.")
+        ref.body.addWidget(self.channel_ref)
+        v.addWidget(ref)
 
-        self.status = QtWidgets.QLabel("")
+        self.status = label("", "hint")
         v.addWidget(self.status)
 
     # ------------------------------------------------------------------ rows
@@ -91,6 +118,7 @@ class RigConfigTab(QtWidgets.QWidget):
         addr_spin = QtWidgets.QSpinBox()
         addr_spin.setRange(1, 512)
         addr_spin.setValue(address)
+        theme.pad_spinbox(addr_spin)
         self.table.setCellWidget(row, 3, addr_spin)
 
         role_combo = QtWidgets.QComboBox()
@@ -163,12 +191,10 @@ class RigConfigTab(QtWidgets.QWidget):
         try:
             _rig_from_dict(data)  # same overlap/overflow/unknown-type validation the loader uses
         except RigError as exc:
-            self.status.setText(f"Not saved — {exc}")
-            self.status.setStyleSheet("color:#c33;")
+            self._say(f"Not saved: {exc}", theme.DANGER_TEXT)
             return
         except Exception as exc:  # noqa: BLE001 - surface any bad row data clearly
-            self.status.setText(f"Not saved — {exc}")
-            self.status.setStyleSheet("color:#c33;")
+            self._say(f"Not saved: {exc}", theme.DANGER_TEXT)
             return
 
         default_path = self.rig_path or os.path.join("rigs", "custom_rig.json")
@@ -181,5 +207,8 @@ class RigConfigTab(QtWidgets.QWidget):
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
         log.info("Saved rig config to %s", path)
-        self.status.setText(f"Saved to {path} — restart with --rig \"{path}\" to apply.")
-        self.status.setStyleSheet("color:#3c6;")
+        self._say(f"Saved to {path}. Restart with --rig \"{path}\" to apply.", theme.ACCENT)
+
+    def _say(self, text: str, color: str) -> None:
+        self.status.setText(text)
+        theme.set_css(self.status, f"color:{color};")
