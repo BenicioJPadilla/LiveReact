@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 
+from . import supervisor
 from .app import App, AppConfig
 
 
@@ -72,6 +73,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--doctor", action="store_true", help="Write an environment/device diagnostics report and exit.")
     p.add_argument("--bundle", nargs="?", const="__latest__", default=None,
                    help="Zip a session folder for sharing (default: the latest), then exit.")
+    p.add_argument("--supervise", action=argparse.BooleanOptionalAction, default=None,
+                   help="Relaunch the engine within seconds if it crashes (default: on with "
+                        "--hardware, off in demo). Stop with logs/STOP, Ctrl-C, or by closing the window.")
+    p.add_argument(supervisor.CHILD_FLAG, action="store_true", help=argparse.SUPPRESS)
     return p.parse_args(argv)
 
 
@@ -122,8 +127,17 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:  # noqa: BLE001
             pass
 
-    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    raw_argv = list(argv if argv is not None else sys.argv[1:])
+    args = _parse_args(raw_argv)
     demo = not args.hardware  # demo is the default; --demo is explicit-but-redundant
+    is_tool = (args.doctor or args.bundle is not None or args.net_check
+               or args.midi_monitor or args.fixture_test)
+    supervise = args.supervise if args.supervise is not None else not demo
+    if supervise and not is_tool and not args.engine_child:
+        # This process becomes the supervisor; the show runs in a child that
+        # it relaunches on a crash (supervisor.py). Before any session folder
+        # or log file exists, so the child creates its own.
+        return supervisor.supervise(raw_argv)
 
     # Resolve a session directory if recording, and route logs into it.
     session_dir = None
@@ -179,6 +193,13 @@ def main(argv: list[str] | None = None) -> int:
                        full_catalog=args.full_catalog,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)
+    if args.engine_child:
+        relaunches = supervisor.relaunch_count()
+        if relaunches:
+            restored = supervisor.restore_live_state(app.manual)
+            log.warning("Relaunched after an engine crash (#%d); operator state restored: %s",
+                        relaunches, restored or "nothing saved yet")
+        supervisor.start_child_threads(app)
 
     if args.visualize:
         # Qt must own the main thread: run the pipeline in the background and the
