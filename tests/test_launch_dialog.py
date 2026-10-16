@@ -292,7 +292,7 @@ def test_first_use_asks_once_then_the_adapter_picks_its_rig(qapp, venue):
     memory = json.loads((venue / "home" / "rig-by-adapter.json").read_text())
     assert memory == {"adapters": {"EN123456": str(venue / crib)}}
 
-    (venue / "last-launch.json").write_text(json.dumps({"mode": "live", "rig": "rigs/sophias_thai.json"}))
+    (venue / "last-launch.json").write_text(json.dumps({"mode": "live", "rig": os.path.join("rigs", "sophias_thai.json")}))
     again = _dialog(venue)                             # the adapter wins over the last launch
     assert again.rig() == crib
     assert "Picked Junior Crib" in again.adapter_note.text() and "EN123456" in again.adapter_note.text()

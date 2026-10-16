@@ -357,7 +357,7 @@ def test_force_start_is_documented_as_for_emergencies():
 
 def test_rig_memory_file_is_plain_json(tmp_path):
     remember_rig("EN1", "/abs/rig.json", str(tmp_path))
-    assert json.loads((tmp_path / devices.RIG_MEMORY_FILE).read_text()) == {"adapters": {"EN1": "/abs/rig.json"}}
+    assert json.loads((tmp_path / devices.RIG_MEMORY_FILE).read_text()) == {"adapters": {"EN1": os.path.abspath("/abs/rig.json")}}
 
 
 def test_a_hung_scan_still_frees_the_djlink_port_and_never_restarts_portaudio(monkeypatch):
