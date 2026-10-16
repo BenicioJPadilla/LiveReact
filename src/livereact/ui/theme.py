@@ -215,6 +215,7 @@ QPushButton:disabled {{ background: {SURFACE}; color: {TEXT_3}; border-color: {L
 QPushButton#primary {{ background: {ACCENT}; color: {ON_ACCENT}; border-color: {ACCENT}; }}
 QPushButton#primary:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
 QPushButton#primary:pressed {{ background: {ACCENT_PRESSED}; border-color: {ACCENT_PRESSED}; }}
+QPushButton#primary:disabled {{ background: {SURFACE}; color: {TEXT_3}; border-color: {LINE}; }}
 
 QPushButton#ghostDanger {{ background: transparent; color: {DANGER_TEXT}; border-color: {danger_line}; }}
 QPushButton#ghostDanger:hover {{ background: {danger_soft}; }}

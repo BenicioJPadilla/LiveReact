@@ -604,3 +604,15 @@ def test_phone_url_label_appears_when_the_app_has_one(qapp, monkeypatch):
     url["value"] = None
     win.refresh()
     assert win.phone_row.isHidden()
+
+
+def test_a_forced_start_shows_a_warning_banner_for_the_set(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    win = ConsoleWindow(_app())
+    assert win.l_forced.isHidden()                       # the normal case: no banner
+    forced = App(AppConfig(demo=True, config_path=None,
+                           force_start_note="Forced start: no DJ board at launch. Check the gear."))
+    win = ConsoleWindow(forced)
+    win.refresh()
+    assert not win.l_forced.isHidden() and "no DJ board" in win.l_forced.text()
