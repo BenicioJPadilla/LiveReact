@@ -37,8 +37,11 @@ Known rough edges, tracked in the repo rather than hidden:
   that encode spec behaviour the merge/failsafe code does not yet implement.
   The other 619 tests pass.
 - Python 3.14's garbage collector has segfaulted inside the show-engine thread
-  on live nights. A Python 3.13 venv (`.venv313`) is used for shows and has not
-  reproduced it; `tools/run_show.sh` prefers it and relaunches after a crash.
+  on live nights. Shows run on Python 3.13 (`.venv313`), which has not
+  reproduced it; `pyproject.toml` caps installs below 3.14. Every show run
+  arms a crash log (`logs/crash-*.log`, Python stacks of every thread even on
+  a segfault; empty ones are removed on a clean exit), and `--hardware` runs
+  always write `logs/launch-*.log` when no other log file is given.
 - The output backend is chosen once at launch. If the Enttec is absent then (or
   has dropped off USB before a relaunch), the run is log-only and never retries
   the port; replug, then relaunch. Mid-run send failures do get a reopen loop.
