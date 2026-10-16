@@ -1,0 +1,39 @@
+# Test suite + golden DMX frames on the three desktop OSes LiveReact runs on.
+# The show machine is macOS; Windows is the other launcher (run.bat).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+        python: ["3.12", "3.13"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libglib2.0-0
+      - name: Install
+        run: python -m pip install -e ".[ui,hardware,dev]"
+      - name: Test suite (includes golden frames and the strict xfail gap tests)
+        run: python -m pytest -ra
+      - name: Golden frames, readable report
+        if: always()
+        run: python tests/golden_frames.py
+      - name: Headless demo smoke run
+        run: python -m livereact --demo --duration 3
