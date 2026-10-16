@@ -33,9 +33,10 @@ a free-running metronome.
 
 Known rough edges, tracked in the repo rather than hidden:
 
-- `tests/test_spec_conformance_gaps.py` holds **3 intentionally failing tests**
-  that encode spec behaviour the merge/failsafe code does not yet implement.
-  The other 619 tests pass.
+- `tests/test_spec_conformance_gaps.py` holds **3 known-gap tests** that encode
+  spec behaviour the merge/failsafe code does not yet implement. They are
+  marked `xfail(strict=True)`: the suite stays green, and a gap that starts
+  passing fails the run until its marker comes off.
 - Python 3.14's garbage collector has segfaulted inside the show-engine thread
   on live nights. Shows run on Python 3.13 (`.venv313`), which has not
   reproduced it; `pyproject.toml` caps installs below 3.14. Every show run
@@ -124,6 +125,12 @@ sounddevice, numpy), `net` (Art-Net output), `dev` (pytest). Pro DJ Link needs
 the git-only `python-prodj-link` library; see [`HARDWARE.md`](HARDWARE.md).
 The dev launchers `run.bat` / `./run.command` start demo mode from `.venv`.
 
+CI (`.github/workflows/ci.yml`) runs the suite on macOS, Windows and Linux.
+`tests/test_golden_frames.py` replays every rig's demo show (a scripted
+break, build, drop and peak) and compares each DMX frame's hash with
+`tests/golden/frames.json`. If a change is meant to alter the show,
+re-record with `python tests/golden_frames.py --update` and say so in the PR.
+
 ## Lighting spec & look library
 
 The *content* of the show — which look plays for a given energy state, its
@@ -156,7 +163,8 @@ src/livereact/
 rigs/                    rig JSON files (fixtures, addresses, venue geometry, laser profile)
 spec/                    LIGHTING_BIBLE.md + conformance.md
 tools/                   run_show.sh relaunch loop, laser_probe.py, offline simulators / replays
-tests/                   pytest suite (deterministic via FakeClock)
+tests/                   pytest suite (deterministic via FakeClock); golden_frames.py hashes
+                         every rig's demo show so a PR proves the looks are unchanged
 ```
 
 ## Design notes baked into the foundation
