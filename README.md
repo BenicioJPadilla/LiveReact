@@ -27,7 +27,7 @@ Phrase + Transition engines → priority merge / safety → DMX writer) runs on 
 hardware with an operator console. The Enttec serial output, real audio
 capture + FFT analysis, Pro DJ Link beat grid, and MIDI input have all been
 verified on the physical rig. `--hardware` still degrades gracefully: with no
-Enttec it logs frames instead of sending them; with no XDJ, point
+Enttec it keeps looking for one and starts sending when it's plugged in; with no XDJ, point
 `--audio-device` at the laptop mic and beat timing falls back to tap tempo and
 a free-running metronome.
 
@@ -39,9 +39,9 @@ Known rough edges, tracked in the repo rather than hidden:
 - Python 3.14's garbage collector has segfaulted inside the show-engine thread
   on live nights. A Python 3.13 venv (`.venv313`) is used for shows and has not
   reproduced it; `tools/run_show.sh` prefers it and relaunches after a crash.
-- The output backend is chosen once at launch. If the Enttec is absent then (or
-  has dropped off USB before a relaunch), the run is log-only and never retries
-  the port; replug, then relaunch. Mid-run send failures do get a reopen loop.
+- The Enttec is hot-pluggable (2026-10-16): absent at launch or pulled mid-set,
+  the DMX writer keeps retrying about once a second and output resumes by
+  itself within about a second of plugging it back in. No relaunch needed.
 - The fixture-side strobe flash rate is set by a static DMX byte, so photosensitive-safety
   frequency limits cannot be enforced in software. See `spec/LIGHTING_BIBLE.md`.
 
