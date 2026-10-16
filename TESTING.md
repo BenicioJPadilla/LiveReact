@@ -572,3 +572,110 @@ Hand the session folder back as usual; `laser_mood`, `laser_target`,
 4. Arm lasers (L) once the first track is playing. Everything else is
    automatic; C / D / K are the cues.
 5. Afterwards: notes + the session folder.
+
+## Test 7: strobe calibration with phone slow-mo (2026-10-16)
+
+Every automatic strobe in LiveReact is a software dimmer flash at a known
+rate, capped at 4 Hz. The one strobe nobody has measured is the fixture's
+own strobe channel (wash bar ch2, moving head ch7), which the manual STROBE
+BURST button drives at `strobe_cap`. Nobody knows how many flashes per
+second a given byte makes, so the 4 Hz rule can't be enforced on that
+button yet. This test measures it with a phone.
+
+**Safety first.** Bench only: no audience, nobody in the room who could be
+affected by flashing light (photosensitive epilepsy, migraine). Each step
+strobes for 3 seconds. The tool only climbs until a step measures over 4
+flashes per second, then narrows down *below* that byte; it never goes
+higher. It assumes every count might be one flash short (a flash cut off at
+the edge of the clip, or missed), so 12 flashes in 3 seconds already counts
+as over 4 per second. Lasers and every other fixture stay at 0 the whole time. Type `q`
+at any prompt or press Ctrl-C to stop; every exit blacks everything out.
+
+Try it first with no hardware (nothing lights, same prompts):
+
+```
+python -m livereact --strobe-calibrate --rig rigs/josh_rig.json
+```
+
+Then on the rig (Enttec plugged in, fixtures powered):
+
+```
+python -m livereact --strobe-calibrate --hardware --rig rigs/josh_rig.json
+```
+
+It does the moving head, then the wash bar, one at a time. Only one of
+them: add `--strobe-fixture bar` (or `mh`). `--strobe-seconds 3` is the
+default strobe window per step.
+
+**How to film:**
+
+1. Phone on a stand (not in your hand), camera set to **Slo-mo, 240 fps**.
+   Frame the fixture so its light fills a good part of the picture. Dim the
+   room lights if you can; don't point the camera into the beam from close up.
+2. The tool says e.g. `Step 3 (ascend): Wash Bar, strobe byte 24`. Start
+   recording, then press Enter.
+3. It stays dark for 1 second, strobes for 3 seconds, then goes dark.
+   Stop recording.
+4. Play the clip back in slow motion and **count the flashes** between the
+   dark lead-in and the dark at the end. Type the number. `0` if it didn't
+   flash at all (steady light). `s` redoes the step if you missed it or lost
+   count; `q` finishes (everything so far is already saved).
+5. Repeat until it prints `search finished`. Expect roughly 6-10 steps per
+   fixture. If a count looks lower than a slower byte's, it asks you to
+   type it again (typo check).
+
+At the end it prints, from everything in the results file so far, e.g.
+`highest safe byte for Wash Bar: 40 (3.3 Hz, at most 3.7 Hz allowing one
+missed flash)` for each fixture, then the one `strobe_cap` that covers them
+all. The show has a single strobe cap for every fixture, so it has to be
+the *lowest* of the fixtures' safe bytes. If any step reaches 8 flashes per
+second or more, it stops that fixture immediately and says so; that's
+expected on a steep fixture, not an error. The moving head is lit at its
+power-on aim (tilted down), so point the stand where that lands.
+
+**What to send back:** `strobe_calibration.json` (written in the folder you
+ran the command from, next to `config.json`). Running it again adds to the
+file; it never wipes earlier fixtures. Keep the clips too if you can, in case
+a count needs re-checking. The show itself doesn't use the result yet:
+applying the measured byte as a hard limit on the strobe burst is the next
+change.
+
+## Test 8: phone console (2026-10-16)
+
+A phone on the venue Wi-Fi can make the show **safer** and nothing else:
+blackout on, dim, lower the strobe cap, disarm lasers. Everything it does is
+undone on the laptop.
+
+1. Put the laptop and the phone on the **same Wi-Fi**.
+2. Launch with `--phone` added, e.g.
+   `python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json --phone`
+3. The first time on a Mac, a **firewall prompt** asks whether Python (or
+   LiveReact) may accept incoming network connections: click **Allow**. If you
+   clicked Deny earlier, fix it in System Settings > Network > Firewall >
+   Options (set Python to "Allow incoming connections").
+4. Find the line `Phone console: open http://192.168.x.y:8765/?k=XXXXXX` in
+   the log (terminal or `session.log`) and open that exact URL on the phone.
+   The 6-character code after `k=` is new at every launch; without it the
+   page says "missing or wrong access code".
+5. The top line should show the bucket and BPM, updating about once a second,
+   and "DMX not connected" should be absent (it shows if the Enttec is not
+   driving the rig).
+6. **Blackout**: press it. The lights should go dark within a frame or two,
+   and the page says to release it on the laptop. Release on the laptop with
+   **B**. The console's BLACKOUT button does not yet show a phone press, so
+   if the lights stay dark after one B, press B again.
+7. **Dim**: press -10 %, then 50 %, then 25 %, and watch the rig dim each
+   time. Raise it back with the laptop's brightness slider.
+8. **Strobe off**: press it during a strobe (or press Space on the laptop
+   for a strobe burst): no strobe. Restore with the laptop's strobe cap
+   slider.
+9. **Disarm lasers** (arm with **L** first, on a track where they fire):
+   lasers go dark. Re-arm on the laptop (the checkbox may still look ticked:
+   press L until the lasers come back).
+10. **Freeze + Blackout**: press F on the laptop to freeze, then Blackout on
+    the phone: the rig still goes dark (and the freeze is released).
+11. Afterwards: note in `NOTES.md` how quickly each press landed, and check
+    the log has a `Phone console (<phone IP>): ...` line for each press.
+
+Note: dim and strobe-cap changes are saved to `config.json` at shutdown, the
+same as the laptop sliders, so check them before the next show.

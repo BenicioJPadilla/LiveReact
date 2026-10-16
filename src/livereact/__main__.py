@@ -6,7 +6,9 @@ import argparse
 import logging
 import os
 import sys
+import time
 
+from . import crash, supervisor
 from .app import App, AppConfig
 
 
@@ -35,6 +37,16 @@ def _configure_logging(level: str, log_file: str | None = None, error_file: str 
         root.addHandler(eh)
 
 
+def _port(text: str) -> int:
+    try:
+        port = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a port number: {text!r}") from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"port must be 1..65535, got {port}")
+    return port
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="livereact",
@@ -60,6 +72,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Cold-start the energy normalizer instead of seeding it from the last "
                         "session's saved range (new venue / re-gained mixer).")
     p.add_argument("--audio-device", default=None, help="Explicit audio input device name/index for real audio analysis (default: auto-detect the XDJ).")
+    p.add_argument("--phone", nargs="?", const=8765, default=None, type=_port, metavar="PORT",
+                   help="Serve the phone console on the venue Wi-Fi (default port 8765): a page that can "
+                        "only blackout, dim, cap strobe and disarm lasers. The URL, with its access "
+                        "code, is logged at startup.")
     p.add_argument("--log-level", default="INFO", help="DEBUG, INFO, WARNING, ERROR (default: INFO).")
     # Recording / feedback (capture a session to hand back for analysis).
     p.add_argument("--record", action="store_true", help="Record this session (logs + state + notes) to recordings/.")
@@ -67,11 +83,22 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--log-file", default=None, help="Also write all log output to this file.")
     # Hardware bring-up tools (each runs and exits).
     p.add_argument("--fixture-test", action="store_true", help="Open the manual fixture-test panel (drive raw DMX).")
+    p.add_argument("--strobe-calibrate", action="store_true",
+                   help="Measure each native strobe channel's byte-to-Hz curve with phone slow-mo video, "
+                        "write strobe_calibration.json, then exit. Bench only. Without --hardware: dry run.")
+    p.add_argument("--strobe-fixture", default=None, metavar="SLOT",
+                   help="With --strobe-calibrate: only this rig slot (default: every fixture with a strobe channel).")
+    p.add_argument("--strobe-seconds", type=float, default=3.0,
+                   help="With --strobe-calibrate: strobe window per step, in seconds (default: 3.0).")
     p.add_argument("--midi-monitor", action="store_true", help="Print/record incoming MIDI to remap the XDJ, then exit.")
     p.add_argument("--net-check", action="store_true", help="Print Pro DJ Link network diagnostics and exit.")
     p.add_argument("--doctor", action="store_true", help="Write an environment/device diagnostics report and exit.")
     p.add_argument("--bundle", nargs="?", const="__latest__", default=None,
                    help="Zip a session folder for sharing (default: the latest), then exit.")
+    p.add_argument("--supervise", action=argparse.BooleanOptionalAction, default=None,
+                   help="Relaunch the engine within seconds if it crashes (default: on with "
+                        "--hardware, off in demo). Stop with logs/STOP, Ctrl-C, or by closing the window.")
+    p.add_argument(supervisor.CHILD_FLAG, action="store_true", help=argparse.SUPPRESS)
     return p.parse_args(argv)
 
 
@@ -122,8 +149,17 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:  # noqa: BLE001
             pass
 
-    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    raw_argv = list(argv if argv is not None else sys.argv[1:])
+    args = _parse_args(raw_argv)
     demo = not args.hardware  # demo is the default; --demo is explicit-but-redundant
+    is_tool = (args.doctor or args.bundle is not None or args.net_check
+               or args.midi_monitor or args.fixture_test or args.strobe_calibrate)
+    supervise = args.supervise if args.supervise is not None else not demo
+    if supervise and not is_tool and not args.engine_child:
+        # This process becomes the supervisor; the show runs in a child that
+        # it relaunches on a crash (supervisor.py). Before any session folder
+        # or log file exists, so the child creates its own.
+        return supervisor.supervise(raw_argv)
 
     # Resolve a session directory if recording, and route logs into it.
     session_dir = None
@@ -133,6 +169,15 @@ def main(argv: list[str] | None = None) -> int:
         session_dir = args.session_dir or create_session_dir()
         os.makedirs(session_dir, exist_ok=True)  # an explicit --session-dir may not exist yet
     log_file = (os.path.join(session_dir, "session.log") if session_dir else args.log_file)
+    if not is_tool and not demo and log_file is None:
+        # A hardware night always leaves a log behind (2026-10-16), the same
+        # logs/launch-*.log name tools/run_show.sh gives its runs. Best
+        # effort: an unwritable folder must not stop the show.
+        try:
+            os.makedirs("logs", exist_ok=True)
+            log_file = os.path.join("logs", f"launch-{time.strftime('%Y%m%d-%H%M%S')}.log")
+        except OSError:
+            log_file = None
     error_file = os.path.join(session_dir, "errors.log") if session_dir else None
     _configure_logging(args.log_level, log_file=log_file, error_file=error_file)
     log = logging.getLogger("livereact")
@@ -171,14 +216,42 @@ def main(argv: list[str] | None = None) -> int:
         run_fixture_test(rig, backend, RealClock(), dmx_rate_hz=args.rate, rig_path=args.rig)
         return 0
 
+    if args.strobe_calibrate:
+        from .strobe_cal import run_strobe_calibration
+        return run_strobe_calibration(rig_path=args.rig, hardware=args.hardware,
+                                      slot=args.strobe_fixture, seconds=args.strobe_seconds)
+
+    try:
+        crash.install("logs")
+    except OSError:
+        log.warning("Crash logging unavailable (logs/ not writable); the show runs without it",
+                    exc_info=True)
+    warning = crash.python_warning()
+    if warning:
+        log.warning(warning)
+
     config = AppConfig(demo=demo, dmx_rate_hz=args.rate, duration=args.duration,
                        pdl_interface=args.pdl_interface, rig_path=args.rig,
                        audio_device=args.audio_device,
                        norm_seed=not args.no_norm_seed,
                        bible_failsafe_enabled=args.bible_failsafe,
                        full_catalog=args.full_catalog,
+                       phone_port=args.phone,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)
+    if args.engine_child:
+        relaunches = supervisor.relaunch_count()
+        if relaunches:
+            restored = supervisor.restore_live_state(app.manual)
+            log.warning("Relaunched after an engine crash (#%d); operator state restored: %s",
+                        relaunches, restored or "nothing saved yet")
+        supervisor.start_child_threads(app)
+    if args.phone is not None and not args.visualize:
+        # The phone can blackout but never release (by design); headless,
+        # nothing on the laptop can release it either.
+        log.warning("--phone without --visualize: a blackout pressed on the phone can NOT be "
+                    "released from the laptop in headless mode; only a restart clears it. "
+                    "Add --visualize for the console's B key.")
 
     if args.visualize:
         # Qt must own the main thread: run the pipeline in the background and the

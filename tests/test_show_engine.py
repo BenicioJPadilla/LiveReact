@@ -60,6 +60,20 @@ def test_freeze_holds_the_last_frame():
     assert fb.latest() == held      # writer keeps the old frame
 
 
+def test_blackout_wins_over_freeze():
+    state = ShowState()
+    state.publish(ShowSnapshot(energy=0.8, fader_a=1.0, eq_low_a=1.0))
+    manual = ManualParams()
+    eng, fb, _ = _engine([ReactiveLayerEngine(FakeClock())], manual=manual, state=state)
+    lit = eng.tick()
+    assert any(lit)
+    manual.freeze = True
+    assert eng.tick() is None and fb.latest() == lit   # holding the lit frame
+    manual.blackout = True                              # B pressed mid-hold
+    assert eng.tick() == bytes(UNIVERSE_SIZE)
+    assert fb.latest() == bytes(UNIVERSE_SIZE)          # the writer sends dark
+
+
 def test_blackout_zeros_the_frame():
     state = ShowState()
     state.publish(ShowSnapshot(energy=1.0, fader_a=1.0, eq_low_a=1.0))
