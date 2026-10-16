@@ -40,8 +40,7 @@ RIGS_DIR = ROOT / "rigs"
 # the least common multiple of the demo source and metronome (100 Hz), the
 # show engine (60 Hz) and the DMX writer (40 Hz).
 GRID_HZ = 1200
-DEMO_EVERY = GRID_HZ // 100
-METRONOME_EVERY = GRID_HZ // 100
+INPUT_EVERY = GRID_HZ // 100  # the demo source and the metronome, ticked together
 SHOW_EVERY = GRID_HZ // 60
 WRITER_EVERY = GRID_HZ // 40
 DURATION_S = 130
@@ -104,10 +103,9 @@ def run_rig(rig_path: str | None, duration_s: int = DURATION_S, lasers_armed: bo
             app.metronome.cue_build()
         if step == ARM_DROP_AT * GRID_HZ:
             app.metronome.arm_drop()
-        if step % DEMO_EVERY == 0:
+        if step % INPUT_EVERY == 0:
             demo.tick()
             app.input_queue.put(song_audio(t))
-        if step % METRONOME_EVERY == 0:
             app.metronome.tick()
         if step % SHOW_EVERY == 0:
             app.show_engine.tick()
