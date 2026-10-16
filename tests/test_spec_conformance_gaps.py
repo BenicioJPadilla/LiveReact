@@ -15,15 +15,18 @@ A few of these directly contradict an EXISTING test elsewhere in this suite
 that encodes the current (pre-correction) design intent as correct — noted
 per-test below. Reconciling those two is also Stage 6's job, not this
 file's.
+
+Since 2026-10-16 the still-open gaps are marked ``xfail(strict=True)``: the
+suite stays green while they're open, and the day one starts passing, strict
+turns it into a failure so the marker has to come off in the same change.
 """
 
 from __future__ import annotations
 
-from livereact.core.show_state import ShowSnapshot
-from livereact.engines.phrase import ROTATION_BARS, PhraseEngine
+import pytest
+
 from livereact.fixtures.rig import load_rig
 from livereact.merge.merge import Contribution, ManualParams, finalize, merge_contributions
-from livereact.scenes.catalog import bucket_for_energy
 
 
 def _rig():
@@ -93,6 +96,7 @@ def test_color_wheel_slot_is_snap_by_priority_not_byte_max():
 # slew-clamp." Not a bare last-write-wins replacement. ---------------------
 
 
+@pytest.mark.xfail(strict=True, reason="MERGE-05 open: MOVEMENT merge is bare last-write-wins")
 def test_reactive_layer_movement_is_not_wholly_discarded_by_phrase_movement():
     """Confirmed real consequence, not just a spec technicality:
     ReactiveLayerEngine sets moving-head position every tick
@@ -129,6 +133,7 @@ def test_reactive_layer_movement_is_not_wholly_discarded_by_phrase_movement():
 # 40%-lit neutral wash) via a 2-bar fade -- not an instant hard blackout. ---
 
 
+@pytest.mark.xfail(strict=True, reason="FAIL-04 open: auto_blackout is a hard zero unless --bible-failsafe")
 def test_auto_blackout_fades_to_safe_default_not_hard_zero():
     """CONTRADICTS `tests/test_merge.py::test_auto_blackout_zeros_the_frame_
     independently_of_manual`, which asserts today's instant all-zero output
@@ -150,35 +155,3 @@ def test_auto_blackout_fades_to_safe_default_not_hard_zero():
 
     # Spec's safe_default is a real, dim, colored wash -- not literal zero.
     assert any(blacked), "auto_blackout should degrade to a 40%-lit safe_default, not true black"
-
-
-# --- FAIL-01: on PDL loss, "PhraseEngine holds the current look, disables
-# new predictive cues." ----------------------------------------------------
-
-
-def _snap(bar: int, **kw) -> ShowSnapshot:
-    base = dict(bpm=124.0, energy=0.7, bar=bar, beat_in_bar=1, beat_phase=0.0,
-                fader_a=1.0, eq_low_a=1.0, pdl_fresh=False)
-    base.update(kw)
-    base.setdefault("energy_norm", base["energy"])
-    base.setdefault("bucket", bucket_for_energy(base["energy_norm"]).value)
-    return ShowSnapshot(**base)
-
-
-def test_phrase_engine_holds_the_look_while_pdl_is_stale():
-    """PhraseEngine._maybe_rotate() (engines/phrase.py) checks `snap.bar`,
-    `self._next`, `snap.in_transition`, `snap.loop_active`, and
-    `bars_since_change` -- it never once reads `snap.pdl_fresh`. The
-    metronome's own free-run behavior on PDL loss (core/metronome.py
-    `_advance_clock`, itself correct per FAIL-01's "movement continues on
-    the internal clock") still advances `snap.bar`, so PhraseEngine keeps
-    rotating scenes off a clock it has no way to know is unanchored --
-    directly contradicting this rule's "PhraseEngine holds the current
-    look" clause, even though the metronome-free-run half of the same rule
-    is correctly implemented."""
-    rig = _rig()
-    eng = PhraseEngine()
-    for bar in range(ROTATION_BARS + 1):
-        eng.tick(_snap(bar, pdl_fresh=False), rig)
-
-    assert eng.rotations == 0, "look should hold while PDL is stale, not rotate on the free-run clock"

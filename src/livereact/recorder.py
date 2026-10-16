@@ -139,6 +139,7 @@ class SessionRecorder(threading.Thread):
             "in_transition": snap.in_transition,
             "free_running": snap.free_running,
             "pdl_fresh": snap.pdl_fresh,
+            "pdl_lost": snap.pdl_lost,
             "midi_fresh": snap.midi_fresh,
             "on_air": list(snap.on_air),
             "master_deck": snap.master_deck,
