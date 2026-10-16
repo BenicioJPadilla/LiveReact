@@ -248,6 +248,14 @@ def no_app(monkeypatch):
     return built
 
 
+def _main(argv):
+    """cli.main, unsupervised where the in-app supervisor exists (it would
+    run the show in a child process instead of the fake App)."""
+    if "--no-supervise" in cli._build_parser()._option_string_actions:
+        argv = [*argv, "--no-supervise"]
+    return cli.main(argv)
+
+
 def _detected(monkeypatch, det):
     calls = []
 
@@ -262,7 +270,7 @@ def _detected(monkeypatch, det):
 def test_hardware_refuses_to_start_without_the_gear(monkeypatch, tmp_path, capsys, no_app):
     monkeypatch.chdir(tmp_path)
     _detected(monkeypatch, Detection(adapters=[adapter()]))
-    assert cli.main(["--hardware", "--record"]) == 2
+    assert _main(["--hardware", "--record"]) == 2
     err = capsys.readouterr().err
     assert "the DJ board is not connected" in err and "--force-start" in err
     assert "config" not in no_app
@@ -272,7 +280,7 @@ def test_hardware_refuses_to_start_without_the_gear(monkeypatch, tmp_path, capsy
 def test_hardware_starts_when_both_are_there(monkeypatch, tmp_path, capsys, no_app):
     monkeypatch.chdir(tmp_path)
     calls = _detected(monkeypatch, Detection(adapters=[adapter()], midi=find_dj_midi(["XDJ-XZ (2)"])))
-    assert cli.main(["--hardware", "--audio-device", "XDJ"]) == 0
+    assert _main(["--hardware", "--audio-device", "XDJ"]) == 0
     assert calls == ["XDJ"]
     assert no_app["config"].force_start_note == ""
     assert "Light adapter: connected" in capsys.readouterr().out
@@ -281,7 +289,7 @@ def test_hardware_starts_when_both_are_there(monkeypatch, tmp_path, capsys, no_a
 def test_force_start_starts_anyway_with_a_banner(monkeypatch, tmp_path, capsys, no_app):
     monkeypatch.chdir(tmp_path)
     _detected(monkeypatch, Detection())
-    assert cli.main(["--hardware", "--force-start"]) == 0
+    assert _main(["--hardware", "--force-start"]) == 0
     note = no_app["config"].force_start_note
     assert "light adapter and the DJ board" in note
     assert os.environ[cli.FORCE_NOTE_ENV] == note            # for a supervised engine child
@@ -291,9 +299,9 @@ def test_force_start_starts_anyway_with_a_banner(monkeypatch, tmp_path, capsys, 
 def test_demo_and_the_tools_are_never_gated(monkeypatch, tmp_path, no_app):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(devices, "detect_once", lambda *a, **k: pytest.fail("gated"))
-    assert cli.main(["--demo"]) == 0
-    assert cli.main([]) == 0                                 # demo is the default
-    assert cli.main(["--hardware", "--net-check"]) == 0
+    assert _main(["--demo"]) == 0
+    assert _main([]) == 0                                 # demo is the default
+    assert _main(["--hardware", "--net-check"]) == 0
 
 
 def test_an_engine_child_is_never_gated(monkeypatch, tmp_path, no_app):
@@ -304,6 +312,11 @@ def test_an_engine_child_is_never_gated(monkeypatch, tmp_path, no_app):
     ns = cli._build_parser().parse_args(["--hardware"])
     ns.engine_child = True
     monkeypatch.setattr(cli, "_parse_args", lambda argv: ns)
+    sup = getattr(cli, "supervisor", None)         # the in-app supervisor, where it exists
+    if sup is not None:
+        for name in ("start_child_threads", "restore_live_state"):
+            monkeypatch.setattr(sup, name, lambda *a, **k: None, raising=False)
+        monkeypatch.setattr(sup, "relaunch_count", lambda *a, **k: 0, raising=False)
     assert cli.main(["--hardware"]) == 0
     assert no_app["config"].force_start_note == ""
     monkeypatch.setenv(cli.FORCE_NOTE_ENV, "Forced start: no DJ board at launch. Check the gear.")
@@ -318,7 +331,7 @@ def test_the_dialogs_start_is_the_gate(monkeypatch, tmp_path, no_app):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(devices, "detect_once", lambda *a, **k: pytest.fail("gated twice"))
     monkeypatch.setattr(launch_dialog, "choose_launch_args", lambda *a, **k: ["--hardware"])
-    assert cli.main(["--choose"]) == 0
+    assert _main(["--choose"]) == 0
 
 
 def test_force_start_reaches_the_dialog(monkeypatch, tmp_path, no_app):
@@ -333,7 +346,7 @@ def test_force_start_reaches_the_dialog(monkeypatch, tmp_path, no_app):
 
     monkeypatch.setattr(launch_dialog, "choose_launch_args", fake)
     _detected(monkeypatch, Detection())
-    assert cli.main(["--choose", "--force-start"]) == 0
+    assert _main(["--choose", "--force-start"]) == 0
     assert seen["force"] and no_app["config"].force_start_note        # banner after the dialog too
 
 
@@ -416,3 +429,15 @@ def test_portaudio_is_never_left_shut_down(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda s: None)
     devices._refresh_portaudio(SD())
     assert calls == ["t", "i", "i"]
+
+
+def test_the_gate_runs_before_the_supervisor_takes_over(monkeypatch, tmp_path, no_app):
+    """Where the in-app supervisor exists, a supervised --hardware launch is
+    gated in the parent (its engine child never is)."""
+    sup = getattr(cli, "supervisor", None)
+    if sup is None:
+        pytest.skip("no in-app supervisor on this branch")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sup, "supervise", lambda argv: pytest.fail("supervised without the gear"))
+    _detected(monkeypatch, Detection())
+    assert cli.main(["--hardware"]) == 2
