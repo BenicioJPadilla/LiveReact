@@ -36,10 +36,13 @@ def test_parse_launch_args_bad_quoting_raises():
         entry.parse_launch_args('--rig "unterminated')
 
 
-def test_find_option_both_spellings():
-    assert entry.find_option(["--rig", "a.json"], "--rig") == "a.json"
-    assert entry.find_option(["--rig=b.json"], "--rig") == "b.json"
-    assert entry.find_option(["--demo"], "--rig") is None
+def test_with_rig_replaces_every_spelling():
+    assert entry.with_rig(["--hardware", "--rig", "a.json"], "/x/a.json") == [
+        "--hardware", "--rig", "/x/a.json"]
+    assert entry.with_rig(["--rig=a.json", "--visualize"], "/x/a.json") == [
+        "--rig=/x/a.json", "--visualize"]
+    assert entry.with_rig(["--ri", "a.json"], "/x/a.json") == ["--rig", "/x/a.json"]
+    assert entry.with_rig(["--demo"], "/x/a.json") == ["--demo", "--rig", "/x/a.json"]
 
 
 NOW = datetime.datetime(2026, 10, 16, 21, 5, 0)
@@ -69,15 +72,16 @@ def test_seed_rigs_copies_missing_and_never_overwrites(tmp_path):
     dest.mkdir(parents=True)
     (dest / "a.json").write_text('{"calibrated": true}')
 
-    assert entry.seed_rigs(src, dest) == ["b.json"]
+    assert entry.seed_rigs(src, dest) == (["b.json"], ["a.json"])
     assert (dest / "a.json").read_text() == '{"calibrated": true}'
     assert (dest / "b.json").read_text() == '{"bundled": "b"}'
     assert not (dest / "notes.txt").exists()
-    assert entry.seed_rigs(src, dest) == []  # second launch: nothing to do
+    # second launch: nothing to copy; the calibrated a.json is still reported
+    assert entry.seed_rigs(src, dest) == ([], ["a.json"])
 
 
 def test_seed_rigs_missing_source_is_a_no_op(tmp_path):
-    assert entry.seed_rigs(tmp_path / "nope", tmp_path / "rigs") == []
+    assert entry.seed_rigs(tmp_path / "nope", tmp_path / "rigs") == ([], [])
 
 
 def test_resolve_default_args_first_launch_creates_file(tmp_path):
@@ -86,7 +90,24 @@ def test_resolve_default_args_first_launch_creates_file(tmp_path):
     args, reason = entry.resolve_default_args(tmp_path)
     assert (tmp_path / "launch-args.txt").read_text() == entry.DEFAULT_LAUNCH_ARGS_TEXT
     assert reason is None
-    assert args[-2:] == ["--rig", "rigs/junior_crib.json"]
+    assert args[-2:] == ["--rig", str(tmp_path / "rigs" / "junior_crib.json")]
+
+
+def test_resolve_default_args_expands_tilde_in_rig(tmp_path, monkeypatch):
+    home = tmp_path / "home dir"
+    (home / "my rigs").mkdir(parents=True)
+    (home / "my rigs" / "club.json").write_text("{}")
+    monkeypatch.setenv("HOME", str(home))
+    (tmp_path / "launch-args.txt").write_text('--hardware --rig "~/my rigs/club.json"\n')
+    args, reason = entry.resolve_default_args(tmp_path)
+    assert reason is None
+    assert args == ["--hardware", "--rig", str(home / "my rigs" / "club.json")]
+
+
+def test_resolve_default_args_reads_rig_through_argparse_prefix(tmp_path):
+    (tmp_path / "launch-args.txt").write_text("--hardware --ri rigs/gone.json\n")
+    args, reason = entry.resolve_default_args(tmp_path)
+    assert args == ["--demo", "--visualize"] and "gone.json" in reason
 
 
 def test_resolve_default_args_missing_rig_falls_back_to_demo(tmp_path):
@@ -101,15 +122,17 @@ def test_resolve_default_args_empty_or_invalid_falls_back(tmp_path):
     assert entry.resolve_default_args(tmp_path)[0] == ["--demo", "--visualize"]
 
     (tmp_path / "launch-args.txt").write_text("--demo --bogus\n")
-
-    def validate(args):
-        raise ValueError("unrecognized arguments: --bogus")
-
-    args, reason = entry.resolve_default_args(tmp_path, validate=validate)
+    args, reason = entry.resolve_default_args(tmp_path)
     assert args == ["--demo", "--visualize"] and "--bogus" in reason
 
+    (tmp_path / "launch-args.txt").write_text("--help\n")
+    args, reason = entry.resolve_default_args(tmp_path)
+    assert args == ["--demo", "--visualize"] and "do not parse" in reason
 
-def test_livereact_parser_validation_rejects_unknown_flags():
-    entry._validate_with_livereact_parser(["--demo", "--visualize"])
+
+def test_livereact_parser_rejects_unknown_flags_and_help():
+    assert entry.parse_livereact_args(["--demo", "--visualize"]).visualize
     with pytest.raises(ValueError, match="--bogus"):
-        entry._validate_with_livereact_parser(["--bogus"])
+        entry.parse_livereact_args(["--bogus"])
+    with pytest.raises(ValueError, match="--help"):
+        entry.parse_livereact_args(["--help"])  # exits 0: no show to start

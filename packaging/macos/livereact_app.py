@@ -13,8 +13,9 @@ with CWD "/", so this entry point:
    livereact.__main__.main() unchanged;
 4. with no arguments (a Finder double-click): reads the launch arguments from
    <data>/launch-args.txt (created with a commented default on first launch),
-   falls back to the demo when the file's rig is missing or its arguments do not
-   parse, and adds --log-file logs/app-<timestamp>.log unless the arguments
+   falls back to the demo (with an on-screen alert) when the file's rig is
+   missing or its arguments do not parse, passes the rig as an absolute path,
+   and adds --log-file logs/app-<timestamp>.log unless the arguments
    already log to a file (--log-file, --record or --session-dir).
 
 The helpers below are pure so tests/test_packaging_entry.py can run them
@@ -24,6 +25,7 @@ without PyInstaller.
 from __future__ import annotations
 
 import datetime
+import filecmp
 import os
 import shlex
 import shutil
@@ -66,15 +68,32 @@ def parse_launch_args(text: str) -> list[str]:
     return args
 
 
-def find_option(args: list[str], name: str) -> str | None:
-    """Value of ``--name VALUE`` or ``--name=VALUE`` (last one wins), else None."""
-    value = None
-    for i, arg in enumerate(args):
-        if arg == name and i + 1 < len(args):
-            value = args[i + 1]
-        elif arg.startswith(name + "="):
-            value = arg[len(name) + 1:]
-    return value
+# Spellings argparse maps to --rig: the full name and its unambiguous prefix
+# ("--r" also matches --rate and --record).
+_RIG_SPELLINGS = ("--rig", "--ri")
+
+
+def with_rig(args: list[str], rig: str) -> list[str]:
+    """``args`` with every --rig value replaced by ``rig``; appended as
+    ``--rig rig`` when no spelling of the option is found (argparse keeps the
+    last value, so this is equivalent)."""
+    out: list[str] = []
+    replaced = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        name, eq, _ = arg.partition("=")
+        if name in _RIG_SPELLINGS and eq:
+            out.append(f"--rig={rig}")
+            replaced = True
+        elif arg in _RIG_SPELLINGS and i + 1 < len(args):
+            out += ["--rig", rig]
+            replaced = True
+            i += 1
+        else:
+            out.append(arg)
+        i += 1
+    return out if replaced else [*out, "--rig", rig]
 
 
 def has_flag(args: list[str], name: str) -> bool:
@@ -91,29 +110,37 @@ def with_log_file(args: list[str], now: datetime.datetime | None = None) -> list
     return [*args, "--log-file", os.path.join("logs", f"app-{stamp}.log")]
 
 
-def seed_rigs(src: Path, dest: Path) -> list[str]:
+def seed_rigs(src: Path, dest: Path) -> tuple[list[str], list[str]]:
     """Copy src/*.json into dest/, never overwriting an existing file.
-    Returns the names copied."""
+    Returns (names copied, names kept although they differ from the bundled
+    copy), so a newer bundled rig never silently replaces a calibrated one."""
     copied: list[str] = []
+    differ: list[str] = []
     if not src.is_dir():
-        return copied
+        return copied, differ
     dest.mkdir(parents=True, exist_ok=True)
     for f in sorted(src.glob("*.json")):
         target = dest / f.name
         if target.exists():
+            if not filecmp.cmp(f, target, shallow=False):
+                differ.append(f.name)
             continue
         shutil.copy2(f, target)
         copied.append(f.name)
-    return copied
+    return copied, differ
 
 
-def resolve_default_args(data_dir: Path, validate=None) -> tuple[list[str], str | None]:
+def resolve_default_args(data_dir: Path, parse=None) -> tuple[list[str], str | None]:
     """Arguments for a Finder launch, read from <data_dir>/launch-args.txt
     (created with the default on first use). Returns (args, reason) where reason
     is a human-readable explanation when the demo fallback was used.
 
-    ``validate(args)`` may raise ValueError with a message when the arguments
-    do not parse (the real entry point wires in livereact's own parser)."""
+    ``parse(args)`` returns the parsed namespace (with a ``rig`` attribute) or
+    raises ValueError; it defaults to livereact's own command-line parser. The
+    rig is read from the namespace, so any spelling argparse accepts counts,
+    and is passed on as an absolute path (``~`` expanded, relative paths taken
+    from ``data_dir``)."""
+    parse = parse or parse_livereact_args
     path = data_dir / LAUNCH_ARGS_FILE
     try:
         if not path.exists():
@@ -123,18 +150,17 @@ def resolve_default_args(data_dir: Path, validate=None) -> tuple[list[str], str 
         return list(DEMO_ARGS), f"could not read {path}: {exc}"
     if not args:
         return list(DEMO_ARGS), f"{path} has no arguments"
-    rig = find_option(args, "--rig")
-    if rig is not None:
-        rig_path = Path(rig).expanduser()
+    try:
+        ns = parse(args)
+    except ValueError as exc:
+        return list(DEMO_ARGS), f"arguments in {path} do not parse: {exc}"
+    if ns.rig is not None:
+        rig_path = Path(ns.rig).expanduser()
         if not rig_path.is_absolute():
             rig_path = data_dir / rig_path
         if not rig_path.is_file():
             return list(DEMO_ARGS), f"rig file {rig_path} (from {path}) does not exist"
-    if validate is not None:
-        try:
-            validate(args)
-        except ValueError as exc:
-            return list(DEMO_ARGS), f"arguments in {path} do not parse: {exc}"
+        args = with_rig(args, str(rig_path))
     return args, None
 
 
@@ -175,7 +201,10 @@ def _launcher_log(msg: str) -> None:
         pass
 
 
-def _validate_with_livereact_parser(args: list[str]) -> None:
+def parse_livereact_args(args: list[str]):
+    """Parse with livereact's own parser; ValueError instead of exiting. Any
+    exit counts as invalid, including --help / exit 0, since there would be
+    no show to start."""
     import contextlib
     import io
 
@@ -184,11 +213,32 @@ def _validate_with_livereact_parser(args: list[str]) -> None:
     err = io.StringIO()
     try:
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-            _parse_args(args)
+            return _parse_args(args)
     except SystemExit as exc:
-        if exc.code not in (0, None):
-            raise ValueError(err.getvalue().strip().splitlines()[-1] if err.getvalue().strip()
-                             else f"exit {exc.code}") from None
+        if exc.code in (0, None):
+            raise ValueError("an option such as --help prints and exits "
+                             "instead of starting a show") from None
+        lines = err.getvalue().strip().splitlines()
+        raise ValueError(lines[-1] if lines else f"the parser exited (code {exc.code})") from None
+
+
+def _alert_demo_fallback(reason: str) -> None:
+    """Show a macOS alert without blocking the launch; a Finder user has no
+    other way to notice the fallback. The reason goes in as an osascript
+    argument, so quotes in paths cannot break the script."""
+    import subprocess
+
+    try:
+        subprocess.Popen(
+            ["osascript",
+             "-e", "on run argv",
+             "-e", 'display alert "LiveReact started the DEMO" message (item 1 of argv)',
+             "-e", "end run",
+             f"{reason}\n\nEdit launch-args.txt in your LiveReact folder, then reopen the app."],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except OSError:
+        pass
 
 
 # Optional modules the app imports lazily; LIVEREACT_IMPORT_CHECK=1 imports
@@ -230,9 +280,12 @@ def main() -> int:
     data_dir = _data_dir()
     os.chdir(data_dir)
     try:
-        copied = seed_rigs(_bundled_rigs_dir(), data_dir / "rigs")
+        copied, differ = seed_rigs(_bundled_rigs_dir(), data_dir / "rigs")
         if copied:
             _launcher_log(f"copied bundled rigs into {data_dir / 'rigs'}: {', '.join(copied)}")
+        for name in differ:
+            _launcher_log(f"kept your rigs/{name}; it differs from the bundled copy "
+                          "(rename yours to get the bundled one)")
     except OSError as exc:
         _launcher_log(f"could not copy bundled rigs: {exc}")
 
@@ -240,9 +293,10 @@ def main() -> int:
     argv = [a for a in sys.argv[1:] if not a.startswith("-psn_")]
     finder_launch = not argv
     if finder_launch:
-        argv, reason = resolve_default_args(data_dir, validate=_validate_with_livereact_parser)
+        argv, reason = resolve_default_args(data_dir)
         if reason:
             _launcher_log(f"falling back to the demo: {reason}")
+            _alert_demo_fallback(reason)
         argv = with_log_file(argv)
         _launcher_log(f"launching from {data_dir} with: {shlex.join(argv)}")
 

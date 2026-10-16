@@ -62,7 +62,7 @@ Documents, and until that prompt is answered the app sits there looking hung.
 | Path | What |
 | --- | --- |
 | `launch-args.txt` | Arguments used when the app is opened from Finder (below) |
-| `rigs/` | Rig files. The bundled rigs are copied in on launch, but a file that already exists is never overwritten (it may hold Venue-tab calibration). To get a fresh copy of a bundled rig, delete or rename yours. |
+| `rigs/` | Rig files. The bundled rigs are copied in on launch, but a file that already exists is never overwritten (it may hold Venue-tab calibration). When yours differs from the bundled copy, `logs/launcher.log` names it on each launch. To get a fresh copy of a bundled rig, delete or rename yours. |
 | `recordings/` | Sessions recorded with `--record` (logs, state, notes) |
 | `logs/` | `app-<timestamp>.log` for runs without `--record`; `launcher.log` says which arguments each launch used and why it fell back to the demo |
 | `config.json`, `midi_map.json`, `diagnostics/` | Settings, MIDI mapping, `--doctor` reports |
@@ -71,7 +71,8 @@ Documents, and until that prompt is answered the app sits there looking hung.
 
 Edit `~/LiveReact/launch-args.txt` with any text editor. One line of
 the usual `livereact` arguments; lines starting with `#` are ignored; quote
-paths with spaces; relative paths are relative to `~/LiveReact`.
+paths with spaces; relative paths are relative to `~/LiveReact`, and `~` in
+the `--rig` path is expanded.
 The first launch from Finder creates it with:
 
 ```
@@ -79,8 +80,9 @@ The first launch from Finder creates it with:
 ```
 
 If the `--rig` file does not exist, or the arguments do not parse, the app
-starts the demo (`--demo --visualize`) instead and writes the reason to
-`logs/launcher.log`. Keep `--visualize` in the line: without it the app runs
+starts the demo (`--demo --visualize`) instead, shows an alert ("LiveReact
+started the DEMO") with the reason, and writes the reason to
+`logs/launcher.log`. `--help` in the file counts as not parsing. Keep `--visualize` in the line: without it the app runs
 with no window and has to be stopped from Activity Monitor. If neither
 `--record` nor `--log-file` is given, `--log-file logs/app-<timestamp>.log` is
 added so a Finder launch always leaves a log.
