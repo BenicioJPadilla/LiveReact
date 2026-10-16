@@ -192,7 +192,7 @@ def _validate_with_livereact_parser(args: list[str]) -> None:
 # them all and exits, to verify a build without hardware.
 CHECK_MODULES = ("numpy", "sounddevice", "serial", "serial.tools.list_ports",
                  "mido", "mido.backends.rtmidi", "rtmidi",
-                 "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "prodj")
+                 "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "prodj.network.packets")
 
 
 def _import_check() -> int:

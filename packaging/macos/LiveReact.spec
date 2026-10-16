@@ -26,9 +26,13 @@ hiddenimports = (
         "rtmidi",
     ]
 )
-# python-prodj-link is git-only; bundle it when it is installed in the build venv.
+# python-prodj-link is git-only and not pip-installable (no setup.py), so
+# build_app.sh clones it at a pinned SHA into build/prodj-link and puts that
+# on PYTHONPATH. inputs/prodj.py only uses its packet definitions (plus
+# construct); the rest of the library pulls in PyQt5/OpenGL and stays out.
+PRODJ_SRC = os.environ.get("LIVEREACT_PRODJ_SRC", "")
 if importlib.util.find_spec("prodj") is not None:
-    hiddenimports += collect_submodules("prodj")
+    hiddenimports += ["prodj", "prodj.network", "prodj.network.packets", "construct"]
 
 datas = [(os.path.join(REPO, "rigs"), "rigs")]
 datas += collect_data_files("livereact")              # fixtures/default_rig.json etc.
@@ -50,7 +54,7 @@ excludes = [
 
 a = Analysis(
     [os.path.join(SPECPATH, "livereact_app.py")],
-    pathex=[os.path.join(REPO, "src")],
+    pathex=[os.path.join(REPO, "src")] + ([PRODJ_SRC] if PRODJ_SRC else []),
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

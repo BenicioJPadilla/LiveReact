@@ -22,7 +22,20 @@ echo "==> Clean build venv: $VENV ($("$PYTHON" --version))"
 rm -rf "$VENV"
 "$PYTHON" -m venv "$VENV"
 "$VENV/bin/python" -m pip install --quiet --upgrade pip
-"$VENV/bin/python" -m pip install --quiet "${REPO}[ui,hardware]" "pyinstaller>=6.10"
+"$VENV/bin/python" -m pip install --quiet "${REPO}[ui,hardware]" "pyinstaller>=6.10" "construct==2.10.70"
+
+# Pro DJ Link packet definitions (inputs/prodj.py). Not pip-installable, so
+# clone it at a pinned commit; the spec bundles only prodj.network.packets.
+PRODJ_SHA="b08921e91a72f0f170916f425ad79e8ed4bd153b"   # flesniak/python-prodj-link, 2025-05-11
+PRODJ_SRC="$REPO/build/prodj-link"
+if [ ! -d "$PRODJ_SRC/.git" ] || [ "$(git -C "$PRODJ_SRC" rev-parse HEAD)" != "$PRODJ_SHA" ]; then
+  rm -rf "$PRODJ_SRC"
+  git clone --quiet https://github.com/flesniak/python-prodj-link "$PRODJ_SRC"
+  git -C "$PRODJ_SRC" checkout --quiet "$PRODJ_SHA"
+fi
+export PYTHONPATH="$PRODJ_SRC" LIVEREACT_PRODJ_SRC="$PRODJ_SRC"
+"$VENV/bin/python" -c 'from prodj.network import packets' \
+  || { echo "prodj packets failed to import" >&2; exit 1; }
 
 echo "==> PyInstaller"
 rm -rf "$REPO/build/pyinstaller" "$REPO/dist/LiveReact" "$REPO/dist/LiveReact.app"

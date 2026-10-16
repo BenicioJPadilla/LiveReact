@@ -19,8 +19,9 @@ The script makes a fresh build venv in `.build-venv/` (gitignored) with
 another 3.13, which must ship a shared `libpython3.13.dylib`), installs
 `.[ui,hardware]` plus PyInstaller, runs `LiveReact.spec`, and zips the result
 with `ditto`. Outputs: `dist/LiveReact.app` (about 110 MB) and the zip (about
-45 MB). If `python-prodj-link` is installed in the build venv it is bundled;
-otherwise the app runs without it, as it does from source.
+45 MB). Pro DJ Link needs `python-prodj-link`, which has no setup.py, so the
+script clones it at a pinned commit into `build/prodj-link` and bundles only
+its packet definitions (`prodj.network.packets`, plus `construct`).
 
 Smoke test a build without hardware (the binary inside the bundle accepts the
 normal `livereact` arguments; `LIVEREACT_HOME` points it at a scratch data folder):
