@@ -112,6 +112,7 @@ function render(s) {
   var dark = s.blackout || s.auto_blackout;
   if (s.blackout) st.textContent = "BLACKOUT";
   else if (s.auto_blackout) st.textContent = "DARK (no music)";
+  else if (s.freeze) st.textContent = "FROZEN (holding a frame)";
   else st.textContent = String(s.bucket).toUpperCase() + (s.bpm ? " \\u00b7 " + s.bpm.toFixed(0) + " BPM" : "");
   $("dmx").textContent = s.dmx_open ? "" : "DMX not connected (lights are not being driven)";
   st.className = dark ? "dark" : "";

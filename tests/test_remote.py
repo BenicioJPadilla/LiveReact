@@ -5,15 +5,18 @@ disarmed -- never the reverse."""
 from __future__ import annotations
 
 import json
+import select
 import socket
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
 from livereact.__main__ import _parse_args
 from livereact.app import App, AppConfig
+from livereact.core.frame_buffer import UNIVERSE_SIZE
 from livereact.remote import PhoneConsole, PhoneServer, make_token
 from livereact.remote.server import TOKEN_ALPHABET, TOKEN_HEADER
 
@@ -326,3 +329,74 @@ def test_connection_flood_is_capped_and_recovers(served):
         except OSError:
             time.sleep(0.05)
     assert status == 200
+
+
+# ---------------------------------------------------------------- end to end: the published frame
+
+RIGS = Path(__file__).resolve().parents[1] / "rigs"
+
+
+def _laser_bytes(app, frame):
+    return [b for fx in app.rig.by_role("laser") for b in frame[fx.offset:fx.offset + fx.channel_count]]
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_phone_actions_reach_the_published_frame(frozen):
+    # Sophia's rig (the "show" laser profile): lasers armed and lit from the
+    # first tick, no music needed.
+    app = App(AppConfig(demo=True, config_path=None, rig_path=str(RIGS / "sophias_thai.json")))
+    console = PhoneConsole(app)
+    lit = app.show_engine.tick()
+    assert any(_laser_bytes(app, lit))
+    if frozen:
+        app.manual.freeze = True
+        assert app.show_engine.tick() is None  # holding the lit frame
+
+    assert console.apply({"action": "lasers"})[0] == 200
+    assert app.manual.freeze is False
+    frame = app.show_engine.tick()
+    assert frame is not None and not any(_laser_bytes(app, frame))
+    assert app.frame_buffer.latest() == frame
+
+    assert console.apply({"action": "strobe_cap", "value": 0})[0] == 200
+    app.manual.freeze = frozen
+    assert console.apply({"action": "blackout"})[0] == 200
+    assert app.manual.freeze is False
+    assert app.show_engine.tick() == bytes(UNIVERSE_SIZE)
+    assert app.frame_buffer.latest() == bytes(UNIVERSE_SIZE)
+
+
+def test_blackout_reaches_the_frame_even_if_freeze_is_set_again(app):
+    # The laptop re-freezing after a phone blackout must not undo the dark.
+    PhoneConsole(app).apply({"action": "blackout"})
+    app.manual.freeze = True
+    assert app.show_engine.tick() == bytes(UNIVERSE_SIZE)
+
+
+def test_state_reports_freeze(served):
+    app, server = served
+    app.manual.freeze = True
+    assert _json(server, "/api/state")[1]["freeze"] is True
+
+
+def test_slow_trickled_request_is_cut_at_the_deadline(served, monkeypatch):
+    from livereact.remote.server import _Handler
+
+    _, server = served
+    monkeypatch.setattr(_Handler, "deadline_s", 0.5)
+    t0 = time.monotonic()
+    with socket.create_connection(("127.0.0.1", server.port), timeout=5) as s:
+        s.sendall(b"GET /api/state HTTP/1.0\r\n")
+        closed = False
+        for _ in range(40):  # one byte every 0.1 s, well inside the per-read timeout
+            try:
+                s.sendall(b"X")
+                if select.select([s], [], [], 0)[0] and s.recv(1) == b"":
+                    closed = True
+                    break
+            except OSError:
+                closed = True
+                break
+            time.sleep(0.1)
+    assert closed and time.monotonic() - t0 < 3
+    assert _request(server, "/api/state")[0] == 200

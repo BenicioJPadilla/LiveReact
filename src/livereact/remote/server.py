@@ -103,6 +103,7 @@ class PhoneConsole:
             "bpm": round(bpm, 1) if bpm is not None else None,
             "scene": app.phrase_engine.current_scene_name,
             "blackout": bool(m.blackout),
+            "freeze": bool(m.freeze),
             "auto_blackout": bool(getattr(silence, "active", False)),
             "master_brightness": float(m.master_brightness),
             "strobe_cap": float(m.strobe_cap),
@@ -142,7 +143,10 @@ class PhoneConsole:
                 return self._refuse(action, client, "The phone can only turn blackout ON. "
                                     "Release it on the laptop (B key or the console button).")
             m.blackout = True
-            return self._done(action, client, "blackout ON")
+            # Darkness beats a hold: a frozen frame may contain a lit laser.
+            # (The show engine also lets blackout win over freeze.)
+            m.freeze = False
+            return self._done(action, client, "blackout ON (freeze released)")
 
         if action == "lasers":
             value = body.get("value", False)
@@ -152,7 +156,10 @@ class PhoneConsole:
                 return self._refuse(action, client, "The phone can only DISARM lasers. "
                                     "Arming is the laptop's job (L key or the console checkbox).")
             m.laser_enable = False
-            return self._done(action, client, "lasers disarmed")
+            # A frozen frame would keep showing a lit laser until the hold
+            # ends; release it so the disarm reaches the rig now.
+            m.freeze = False
+            return self._done(action, client, "lasers disarmed (freeze released)")
 
         if action in self._LEVELS:
             field = self._LEVELS[action]
@@ -231,8 +238,28 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "LiveReact"
     sys_version = ""
     # A client that connects and then stalls is dropped instead of pinning a
-    # thread for ever.
+    # thread for ever: `timeout` bounds each socket read, and the whole
+    # request gets `deadline_s`, so trickling a byte every few seconds
+    # (slowloris) cannot hold one of the few connection slots either.
     timeout = 5.0
+    deadline_s = 10.0
+
+    def setup(self) -> None:
+        super().setup()
+        self._deadline = threading.Timer(self.deadline_s, self._cut)
+        self._deadline.daemon = True
+        self._deadline.start()
+
+    def finish(self) -> None:
+        self._deadline.cancel()
+        super().finish()
+
+    def _cut(self) -> None:
+        # Unblocks the handler thread's pending read with EOF / an error.
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------ routes
     def do_GET(self) -> None:

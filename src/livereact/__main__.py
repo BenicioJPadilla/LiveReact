@@ -194,6 +194,12 @@ def main(argv: list[str] | None = None) -> int:
                        phone_port=args.phone,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)
+    if args.phone is not None and not args.visualize:
+        # The phone can blackout but never release (by design); headless,
+        # nothing on the laptop can release it either.
+        log.warning("--phone without --visualize: a blackout pressed on the phone can NOT be "
+                    "released from the laptop in headless mode; only a restart clears it. "
+                    "Add --visualize for the console's B key.")
 
     if args.visualize:
         # Qt must own the main thread: run the pipeline in the background and the
