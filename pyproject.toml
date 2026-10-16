@@ -8,9 +8,10 @@ version = "0.1.0"
 description = "Beat-reactive DMX stage-lighting controller for live DJ sets"
 readme = "README.md"
 license = { file = "LICENSE" }
-# Target 3.12 (the analysis pins it for prebuilt python-rtmidi wheels at the
-# hardware-MIDI phase). 3.13 is fine for the hardware-free phases (0-6).
-requires-python = ">=3.12"
+# Shows run on 3.13 (.venv313); 3.12 works too. NOT 3.14: its garbage
+# collector segfaulted inside the show-engine thread twice on 2026-10-08
+# (tools/run_show.sh). Lift the cap once a 3.14 build survives a full set.
+requires-python = ">=3.12,<3.14"
 dependencies = []
 
 [project.optional-dependencies]

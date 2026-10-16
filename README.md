@@ -38,8 +38,11 @@ Known rough edges, tracked in the repo rather than hidden:
   marked `xfail(strict=True)`: the suite stays green, and a gap that starts
   passing fails the run until its marker comes off.
 - Python 3.14's garbage collector has segfaulted inside the show-engine thread
-  on live nights. A Python 3.13 venv (`.venv313`) is used for shows and has not
-  reproduced it; `tools/run_show.sh` prefers it and relaunches after a crash.
+  on live nights. Shows run on Python 3.13 (`.venv313`), which has not
+  reproduced it; `pyproject.toml` caps installs below 3.14. Every show run
+  arms a crash log (`logs/crash-*.log`, Python stacks of every thread even on
+  a segfault; empty ones are removed on a clean exit), and `--hardware` runs
+  always write `logs/launch-*.log` when no other log file is given.
 - The output backend is chosen once at launch. If the Enttec is absent then (or
   has dropped off USB before a relaunch), the run is log-only and never retries
   the port; replug, then relaunch. Mid-run send failures do get a reopen loop.
@@ -99,11 +102,13 @@ capture motion-box bounds, save rig), and **Rig Config**.
 
 ## Quick start
 
-Python **3.12 or 3.13** (3.14 currently crashes under load — see Status).
+Python **3.13** for shows (3.12 also works). `pyproject.toml` refuses 3.14,
+whose garbage collector crashed mid-set (see Status), and the app warns at
+launch if it finds itself on one anyway.
 
 ```bash
 # macOS / Linux
-python3 -m venv .venv
+python3.13 -m venv .venv
 .venv/bin/python -m pip install -e ".[ui,hardware,dev]"
 .venv/bin/python -m livereact --demo --duration 3     # short headless demo
 .venv/bin/python -m pytest                            # test suite

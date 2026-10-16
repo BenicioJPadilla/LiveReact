@@ -6,7 +6,9 @@ import argparse
 import logging
 import os
 import sys
+import time
 
+from . import crash
 from .app import App, AppConfig
 
 
@@ -133,6 +135,17 @@ def main(argv: list[str] | None = None) -> int:
         session_dir = args.session_dir or create_session_dir()
         os.makedirs(session_dir, exist_ok=True)  # an explicit --session-dir may not exist yet
     log_file = (os.path.join(session_dir, "session.log") if session_dir else args.log_file)
+    is_show = not (args.doctor or args.bundle is not None or args.net_check
+                   or args.midi_monitor or args.fixture_test)
+    if is_show and not demo and log_file is None:
+        # A hardware night always leaves a log behind (2026-10-16), the same
+        # logs/launch-*.log name tools/run_show.sh gives its runs. Best
+        # effort: an unwritable folder must not stop the show.
+        try:
+            os.makedirs("logs", exist_ok=True)
+            log_file = os.path.join("logs", f"launch-{time.strftime('%Y%m%d-%H%M%S')}.log")
+        except OSError:
+            log_file = None
     error_file = os.path.join(session_dir, "errors.log") if session_dir else None
     _configure_logging(args.log_level, log_file=log_file, error_file=error_file)
     log = logging.getLogger("livereact")
@@ -170,6 +183,15 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Fixture test using backend: %s", backend.name)
         run_fixture_test(rig, backend, RealClock(), dmx_rate_hz=args.rate, rig_path=args.rig)
         return 0
+
+    try:
+        crash.install("logs")
+    except OSError:
+        log.warning("Crash logging unavailable (logs/ not writable); the show runs without it",
+                    exc_info=True)
+    warning = crash.python_warning()
+    if warning:
+        log.warning(warning)
 
     config = AppConfig(demo=demo, dmx_rate_hz=args.rate, duration=args.duration,
                        pdl_interface=args.pdl_interface, rig_path=args.rig,
