@@ -69,6 +69,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--log-file", default=None, help="Also write all log output to this file.")
     # Hardware bring-up tools (each runs and exits).
     p.add_argument("--fixture-test", action="store_true", help="Open the manual fixture-test panel (drive raw DMX).")
+    p.add_argument("--strobe-calibrate", action="store_true",
+                   help="Measure each native strobe channel's byte-to-Hz curve with phone slow-mo video, "
+                        "write strobe_calibration.json, then exit. Bench only. Without --hardware: dry run.")
+    p.add_argument("--strobe-fixture", default=None, metavar="SLOT",
+                   help="With --strobe-calibrate: only this rig slot (default: every fixture with a strobe channel).")
+    p.add_argument("--strobe-seconds", type=float, default=3.0,
+                   help="With --strobe-calibrate: strobe window per step, in seconds (default: 3.0).")
     p.add_argument("--midi-monitor", action="store_true", help="Print/record incoming MIDI to remap the XDJ, then exit.")
     p.add_argument("--net-check", action="store_true", help="Print Pro DJ Link network diagnostics and exit.")
     p.add_argument("--doctor", action="store_true", help="Write an environment/device diagnostics report and exit.")
@@ -132,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(raw_argv)
     demo = not args.hardware  # demo is the default; --demo is explicit-but-redundant
     is_tool = (args.doctor or args.bundle is not None or args.net_check
-               or args.midi_monitor or args.fixture_test)
+               or args.midi_monitor or args.fixture_test or args.strobe_calibrate)
     supervise = args.supervise if args.supervise is not None else not demo
     if supervise and not is_tool and not args.engine_child:
         # This process becomes the supervisor; the show runs in a child that
@@ -148,9 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         session_dir = args.session_dir or create_session_dir()
         os.makedirs(session_dir, exist_ok=True)  # an explicit --session-dir may not exist yet
     log_file = (os.path.join(session_dir, "session.log") if session_dir else args.log_file)
-    is_show = not (args.doctor or args.bundle is not None or args.net_check
-                   or args.midi_monitor or args.fixture_test)
-    if is_show and not demo and log_file is None:
+    if not is_tool and not demo and log_file is None:
         # A hardware night always leaves a log behind (2026-10-16), the same
         # logs/launch-*.log name tools/run_show.sh gives its runs. Best
         # effort: an unwritable folder must not stop the show.
@@ -196,6 +201,11 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Fixture test using backend: %s", backend.name)
         run_fixture_test(rig, backend, RealClock(), dmx_rate_hz=args.rate, rig_path=args.rig)
         return 0
+
+    if args.strobe_calibrate:
+        from .strobe_cal import run_strobe_calibration
+        return run_strobe_calibration(rig_path=args.rig, hardware=args.hardware,
+                                      slot=args.strobe_fixture, seconds=args.strobe_seconds)
 
     try:
         crash.install("logs")
