@@ -67,6 +67,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--log-file", default=None, help="Also write all log output to this file.")
     # Hardware bring-up tools (each runs and exits).
     p.add_argument("--fixture-test", action="store_true", help="Open the manual fixture-test panel (drive raw DMX).")
+    p.add_argument("--strobe-calibrate", action="store_true",
+                   help="Measure each native strobe channel's byte-to-Hz curve with phone slow-mo video, "
+                        "write strobe_calibration.json, then exit. Bench only. Without --hardware: dry run.")
+    p.add_argument("--strobe-fixture", default=None, metavar="SLOT",
+                   help="With --strobe-calibrate: only this rig slot (default: every fixture with a strobe channel).")
+    p.add_argument("--strobe-seconds", type=float, default=3.0,
+                   help="With --strobe-calibrate: strobe window per step, in seconds (default: 3.0).")
     p.add_argument("--midi-monitor", action="store_true", help="Print/record incoming MIDI to remap the XDJ, then exit.")
     p.add_argument("--net-check", action="store_true", help="Print Pro DJ Link network diagnostics and exit.")
     p.add_argument("--doctor", action="store_true", help="Write an environment/device diagnostics report and exit.")
@@ -170,6 +177,11 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Fixture test using backend: %s", backend.name)
         run_fixture_test(rig, backend, RealClock(), dmx_rate_hz=args.rate, rig_path=args.rig)
         return 0
+
+    if args.strobe_calibrate:
+        from .strobe_cal import run_strobe_calibration
+        return run_strobe_calibration(rig_path=args.rig, hardware=args.hardware,
+                                      slot=args.strobe_fixture, seconds=args.strobe_seconds)
 
     config = AppConfig(demo=demo, dmx_rate_hz=args.rate, duration=args.duration,
                        pdl_interface=args.pdl_interface, rig_path=args.rig,
