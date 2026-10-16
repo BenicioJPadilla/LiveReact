@@ -35,6 +35,13 @@ order, and put a **120 Ω terminator** on the last fixture.
 1. Plug in the Enttec DMX USB Pro. Confirm it's detected:
    - it shows up as an FTDI device; the app auto-selects it by VID `0x0403`.
    - on macOS the `cu.*` node is used automatically (never `tty.*`).
+   - the launch dialog (`--choose`) shows it in the Gear card with its model and
+     serial number, and lists what it matched on.
+   - **Fixtures can't be detected.** DMX is one-way. The Enttec Pro's widget
+     API does have RDM requests, but LiveReact only sends "Output Only Send
+     DMX" (label 6) and never reads the port, so there is no RDM discovery, and
+     the rig's fixtures may not answer RDM anyway. Confirm each fixture with
+     its **Flash** button (step 2, or **Flash each light** in the dialog).
 2. **Test one fixture at a time** with the manual panel:
    ```
    python -m livereact --hardware --fixture-test

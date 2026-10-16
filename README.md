@@ -79,6 +79,21 @@ stand for, with the console; Quit exits. The last choice is remembered in
 the `--choose` command line (`--log-file`, `--rate`, ...) are kept. Not for
 `tools/run_show.sh`: its crash relaunch would ask again.
 
+**The gear gate.** A live show needs the gear plugged in. The dialog's Gear card
+checks about once a second for the light adapter (the Enttec, with its model and
+serial number) and the DJ board (the XDJ's USB audio or MIDI, or its Pro DJ
+Link keepalives). **Start** stays off for a live show until both are found and
+turns on the moment they are; demo is never gated. The rig is picked by itself
+when that adapter was used with a rig before (`rig-by-adapter.json` in
+`~/LiveReact`, or `$LIVEREACT_HOME`); the first time, it asks. `--hardware`
+on the command line does the same check and refuses to start, printing what is
+missing. **`--force-start` is for emergencies only**: it starts anyway, and the
+console shows a red warning banner for the whole set. Once a show is running
+nothing is gated: a pulled cable is handled by hot-plug and the failsafes.
+Plain DMX is one-way, so the lights themselves cannot be detected (LiveReact
+has no RDM); the Gear card lists the rig's fixtures and **Flash each light**
+opens the fixture test to confirm each one by eye.
+
 ### Rigs and laser profiles
 
 `--rig rigs/<file>.json` picks the fixtures, their DMX addresses, the venue

@@ -360,7 +360,9 @@ appear at all — note which.)
 python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json
 ```
 
-(Or `python -m livereact --choose`: the launch dialog, pick **Live show**, the rig and **Record this session**, then **Start**.)
+(Or `python -m livereact --choose`: the launch dialog, pick **Live show**, the rig and **Record this session**, then **Start**. **Start** stays off until the Gear card shows both the light adapter and the DJ board as connected. Plug in the Enttec and the XDJ's USB cable and it turns on by itself. **Flash each light** checks each fixture before the show.)
+
+If the gear is plugged in but not found, send `--doctor` and the dialog's Gear card text. In an emergency, `--force-start` (command line, also with `--choose`) starts anyway, with a red banner in the console.
 
 Play a set: a track, a build, a drop, then mix into another track.
 
@@ -434,6 +436,7 @@ misbehaving) in `NOTES.md`.
 | Symptom | First thing to check |
 |--------|----------------------|
 | No lights at all | `--doctor` shows the Enttec (FTDI VID `0x0403`)? DMX terminator on? |
+| Start is greyed out (live show) | The Gear card says which is missing: plug in the Enttec's or the XDJ's USB cable. Emergencies only: `--force-start` |
 | Wrong fixture responds | DMX address/mode on that fixture vs. `default_rig.json` |
 | A channel does the wrong thing | Channel map in `fixtures/profiles.py` (send the session, Claude fixes it) |
 | "No DJ-Link device seen" | Static IP `169.254.50.50/16`, Link on, firewall UDP 50000–50002 |

@@ -132,11 +132,29 @@ def shots(out_dir: str, tag: str) -> None:
     viz.close()
 
 
+def _fake_gear(adapter: bool, board: bool):
+    """A Detection like the real watcher's, for the gate's screenshots."""
+    from livereact.devices import Detection, find_dj_audio, find_dj_midi, find_dmx_adapters
+
+    port = type("Port", (), dict(device="/dev/cu.usbserial-EN123456", vid=0x0403, pid=0x6001,
+                                 serial_number="EN123456", manufacturer="ENTTEC", product="DMX USB PRO",
+                                 description="DMX USB PRO", location=None))
+    det = Detection()
+    if adapter:
+        det.adapters = find_dmx_adapters([port])
+    if board:
+        det.audio = find_dj_audio([{"name": "XDJ-XZ", "max_input_channels": 8}])
+        det.midi = find_dj_midi(["XDJ-XZ (1)", "XDJ-XZ (2)"])
+        det.djlink = ["XDJ-XZ"]
+    return det
+
+
 def launch(out_dir: str) -> None:
     import shutil
     import tempfile
 
     from livereact.__main__ import _build_parser
+    from livereact.devices import remember_rig
     from livereact.ui.launch_dialog import LaunchDialog, save_last_launch
     from livereact.ui.theme import apply_theme
 
@@ -145,12 +163,22 @@ def launch(out_dir: str) -> None:
     phone = "--phone" in _build_parser()._option_string_actions
     with tempfile.TemporaryDirectory() as cwd:   # the repo's rigs, a clean memory file
         shutil.copytree(os.path.join(ROOT, "rigs"), os.path.join(cwd, "rigs"))
-        for name, choice in [
-            ("live", {"mode": "live", "rig": os.path.join("rigs", "junior_crib.json"), "record": True}),
-            ("demo", {"mode": "demo", "rig": os.path.join("rigs", "sophias_thai.json"), "record": False}),
+        home = os.path.join(cwd, "home")
+        live = {"mode": "live", "rig": os.path.join("rigs", "josh_rig.json"), "record": True}
+        for name, choice, gear, opts in [
+            ("live-nothing", live, (False, False), {}),
+            ("live-adapter-only", live, (True, False), {}),
+            ("live-first-use", live, (True, True), {}),
+            ("live-ready", {**live, "rig": os.path.join("rigs", "junior_crib.json")}, (True, True), {}),
+            ("live-force-start", live, (False, True), {"force_start": True}),
+            ("demo", {"mode": "demo", "rig": os.path.join("rigs", "sophias_thai.json"), "record": False},
+             (False, False), {}),
         ]:
+            if name == "live-ready":     # the adapter was used with Josh's rig before
+                remember_rig("EN123456", os.path.join(cwd, "rigs", "josh_rig.json"), home)
             save_last_launch(cwd, choice)
-            dlg = LaunchDialog(cwd, phone_supported=phone)
+            dlg = LaunchDialog(cwd, phone_supported=phone, watch=False, home=home, **opts)
+            dlg.set_detection(_fake_gear(*gear))
             dlg.show()
             _pump(0.4)
             path = os.path.join(out_dir, f"launch-dialog-{name}.png")
