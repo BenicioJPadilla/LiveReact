@@ -196,7 +196,7 @@ def test_the_watcher_reports_each_scan_and_frees_the_port():
     probe = Probe()
     probe.seen["XDJ-XZ"] = time.monotonic()
     w = devices.DeviceWatcher(seen.append, lambda: "typed", period_s=0.05,
-                              scan=lambda wanted: Detection(adapters=[adapter()] if wanted == "typed" else []),
+                              scan=lambda wanted, stopped: Detection(adapters=[adapter()] if wanted == "typed" else []),
                               probe=probe)
     w.start()
     deadline = time.monotonic() + 3
@@ -338,3 +338,26 @@ def test_force_start_is_documented_as_for_emergencies():
 def test_rig_memory_file_is_plain_json(tmp_path):
     remember_rig("EN1", "/abs/rig.json", str(tmp_path))
     assert json.loads((tmp_path / devices.RIG_MEMORY_FILE).read_text()) == {"adapters": {"EN1": "/abs/rig.json"}}
+
+
+def test_a_hung_scan_still_frees_the_djlink_port_and_never_restarts_portaudio(monkeypatch):
+    """After the dialog closes, a show may own the audio and the DJ Link port."""
+    import threading
+
+    release = threading.Event()
+    refreshed = []
+    monkeypatch.setattr(devices, "_refresh_portaudio", lambda sd: refreshed.append(True))
+
+    def hung_scan(wanted, stopped):
+        release.wait(5)                          # e.g. a port scan that hangs
+        return devices.scan_usb(wanted, stopped=stopped)
+
+    probe = DjLinkProbe(port=0)
+    w = devices.DeviceWatcher(lambda det: None, scan=hung_scan, probe=probe)
+    w.start()
+    time.sleep(0.1)
+    w.stop(timeout=0.2)
+    assert probe.sock is None                    # freed although the thread is still in the scan
+    release.set()
+    w.join(3)
+    assert refreshed == []

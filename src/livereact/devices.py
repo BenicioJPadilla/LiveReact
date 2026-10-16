@@ -289,9 +289,11 @@ def _refresh_portaudio(sd) -> None:
         log.debug("Could not refresh the audio device list", exc_info=True)
 
 
-def scan_usb(audio_device: str = "", refresh_audio: bool = True) -> Detection:
+def scan_usb(audio_device: str = "", refresh_audio: bool = True, stopped=lambda: False) -> Detection:
     """One look at the serial ports, audio devices and MIDI ports. Never
-    raises: a probe that fails says so in ``errors``."""
+    raises: a probe that fails says so in ``errors``. ``stopped`` is checked
+    before restarting PortAudio: once the dialog has closed, a show may be
+    using it, and a restart would cut its audio stream."""
     det = Detection()
     try:
         from serial.tools import list_ports
@@ -302,7 +304,7 @@ def scan_usb(audio_device: str = "", refresh_audio: bool = True) -> Detection:
     try:
         import sounddevice as sd
 
-        if refresh_audio:
+        if refresh_audio and not stopped():
             _refresh_portaudio(sd)
         det.audio = find_dj_audio(sd.query_devices(), audio_device)
     except Exception as exc:  # noqa: BLE001
@@ -337,7 +339,7 @@ class DeviceWatcher(threading.Thread):
         try:
             while not self.stop_event.is_set():
                 started = time.monotonic()
-                det = self.scan(self.audio_device())
+                det = self.scan(self.audio_device(), stopped=self.stop_event.is_set)
                 det.djlink, det.djlink_note = self.probe.heard(), self.probe.note
                 if det.key() != last:
                     log.info("Devices now:\n%s", describe(det))
@@ -351,10 +353,14 @@ class DeviceWatcher(threading.Thread):
             self.probe.close()
 
     def stop(self, timeout: float = 3.0) -> None:
-        """Stop and wait, so the DJ Link port is free for the engine."""
+        """Stop and wait. The DJ Link port is freed for the engine even if a
+        scan hangs past ``timeout`` (the engine's socket could not share it)."""
         self.stop_event.set()
         if self.is_alive():
             self.join(timeout)
+        if self.is_alive():
+            log.warning("Device detection did not stop within %.0f s; closing its DJ Link socket", timeout)
+        self.probe.close()
 
 
 def detect_once(audio_device: str = "", djlink_wait_s: float = 3.0) -> Detection:

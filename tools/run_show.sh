@@ -14,12 +14,22 @@ PY="${PY:-}"
 if [ -z "$PY" ]; then
   if [ -x .venv313/bin/python ]; then PY=.venv313/bin/python; else PY=.venv/bin/python; fi
 fi
+# The first launch is gear-gated (--hardware refuses without the Enttec and
+# the DJ board, exit 2: the loop ends). A relaunch after a crash is mid-set,
+# so it adds --force-start: a pulled cable must never keep the show down.
+first=1
 while true; do
-  echo "$(date '+%H:%M:%S') launching with $PY ($($PY --version)): $*"
-  "$PY" -m livereact "$@" --log-file "logs/launch-$(date +%Y%m%d-%H%M%S).log"
+  extra=()
+  [ $first -eq 0 ] && extra=(--force-start)
+  echo "$(date '+%H:%M:%S') launching with $PY ($($PY --version)): $* ${extra[*]}"
+  "$PY" -m livereact "$@" "${extra[@]}" --log-file "logs/launch-$(date +%Y%m%d-%H%M%S).log"
   code=$?
   if [ -f logs/STOP ]; then rm -f logs/STOP; echo "$(date '+%H:%M:%S') STOP file: done"; break; fi
   if [ $code -eq 0 ]; then echo "$(date '+%H:%M:%S') clean exit: done"; break; fi
+  if [ $first -eq 1 ] && [ $code -eq 2 ]; then
+    echo "$(date '+%H:%M:%S') not started (gear missing or bad arguments, see above): done"; break
+  fi
+  first=0
   echo "$(date '+%H:%M:%S') LiveReact exited with code $code -- relaunching in 3 s"
   sleep 3
 done
