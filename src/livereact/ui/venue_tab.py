@@ -50,8 +50,9 @@ from ..fixtures.geometry import (
 from ..fixtures.profiles import Laser, MotionBounds, MovingHead, _to16
 from ..fixtures.rig import Rig, RigError, save_rig
 from ..merge.merge import CalibrationPins
+from . import icons, theme
 from .floorplan import DEFAULT_VENUE_FT, FloorPlanView
-from .theme import MUTED
+from .widgets import Card, label
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def _ft_box(value_m: float, decimals: int = 1, step: float = 0.5, lo: float = 0.
     b.setSuffix(" ft")
     b.setValue(m_to_ft(value_m))
     b.setKeyboardTracking(False)
-    return b
+    return theme.pad_spinbox(b)
 
 
 def _deg_box(value: float, lo: float = -180.0, hi: float = 180.0) -> QtWidgets.QDoubleSpinBox:
@@ -77,14 +78,24 @@ def _deg_box(value: float, lo: float = -180.0, hi: float = 180.0) -> QtWidgets.Q
     b.setSuffix("°")
     b.setValue(value)
     b.setKeyboardTracking(False)
-    return b
+    return theme.pad_spinbox(b)
 
 
 def _hint(text: str) -> QtWidgets.QLabel:
-    lbl = QtWidgets.QLabel(text)
-    lbl.setWordWrap(True)
-    lbl.setStyleSheet(f"color:{MUTED}; font-size:12px;")
-    return lbl
+    return label(text, "hint", wrap=True)
+
+
+def _action(text: str, icon_name: str, role: str | None = None, tip: str = "") -> QtWidgets.QPushButton:
+    b = QtWidgets.QPushButton(text)
+    if role:
+        b.setObjectName(role)
+    b.setIcon(icons.icon(icon_name, theme.ON_ACCENT if role == "primary" else theme.TEXT_2, size=16))
+    if tip:
+        b.setToolTip(tip)
+    return b
+
+
+_STATUS_CSS = {"muted": f"color:{theme.TEXT_3};", "ok": f"color:{theme.ACCENT};", "bad": f"color:{theme.DANGER_TEXT};"}
 
 
 class _WheelGuard(QtCore.QObject):
@@ -119,23 +130,29 @@ class VenueTab(QtWidgets.QWidget):
             self.rig.refresh_geometry()
 
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
-        outer.setSpacing(8)
+        outer.setContentsMargins(theme.SP4, theme.SP4, theme.SP4, theme.SP2)
+        outer.setSpacing(theme.SP3)
         outer.addWidget(self._build_venue_bar())
 
         split = QtWidgets.QSplitter()
+        split.setChildrenCollapsible(False)
         self.plan = FloorPlanView(rig, editable=True, on_changed=self._plan_changed)
         self.plan.fixture_selected.connect(self._on_plan_selected)
         left = QtWidgets.QWidget()
         lv = QtWidgets.QVBoxLayout(left)
-        lv.setContentsMargins(0, 0, 0, 0)
-        lv.addWidget(self.plan, 1)
+        lv.setContentsMargins(0, 0, theme.SP1, 0)
+        lv.setSpacing(theme.SP3)
+        plan_card = Card("Floor plan", "venue")
+        plan_card.add_accessory(label("Drag fixtures and targets. Snaps to half a foot.", "hint"))
+        plan_card.body.addWidget(self.plan, 1)
+        lv.addWidget(plan_card, 1)
         lv.addWidget(self._build_targets())
         split.addWidget(left)
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         panel = self._build_property_panel()
         scroll.setWidget(panel)
         # 2026-10-10 (Josh: "I can't scroll on the right section"): the panel
@@ -151,27 +168,37 @@ class VenueTab(QtWidgets.QWidget):
                 child.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
                 child.installEventFilter(self._wheel_guard)
         split.addWidget(scroll)
-        split.setSizes([760, 480])
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        split.setSizes([820, 540])
         outer.addWidget(split, 1)
 
-        self.status = QtWidgets.QLabel("")
+        self.status = label("", "hint")
+        self.status.setMinimumHeight(20)
         outer.addWidget(self.status)
         self._select_first()
 
     # ------------------------------------------------------------------ venue bar
     def _build_venue_bar(self) -> QtWidgets.QWidget:
         v = self.rig.venue
-        box = QtWidgets.QGroupBox("Venue")
+        box = QtWidgets.QFrame()
+        box.setObjectName("card")
         h = QtWidgets.QHBoxLayout(box)
+        h.setContentsMargins(theme.SP4 + 4, theme.SP3, theme.SP3, theme.SP3)
+        h.setSpacing(theme.SP2)
+        h.addWidget(label("Venue", "pageTitle"))
+        h.addSpacing(theme.SP4)
         self.sb_width = _ft_box(v.width_m, lo=3.0)
         self.sb_length = _ft_box(v.length_m, lo=3.0)
         self.sb_height = _ft_box(v.height_m if v.height_m is not None else ft_to_m(12.0), lo=3.0)
         for cap, w in (("Width", self.sb_width), ("Length", self.sb_length), ("Ceiling", self.sb_height)):
-            h.addWidget(QtWidgets.QLabel(cap))
+            w.setMinimumWidth(104)
+            h.addWidget(label(cap.upper(), "overline"))
             h.addWidget(w)
+            h.addSpacing(theme.SP2)
         h.addStretch(1)
-        self.b_reset = QtWidgets.QPushButton("Reset positions")
-        self.b_save = QtWidgets.QPushButton("Save rig…")
+        self.b_reset = _action("Reset positions", "reset", tip="Forget every fixture's position and facing.")
+        self.b_save = _action("Save rig…", "save", "primary", tip="Write the venue, positions and calibration to a rig file.")
         h.addWidget(self.b_reset)
         h.addWidget(self.b_save)
         self.sb_width.valueChanged.connect(self._venue_changed)
@@ -195,7 +222,7 @@ class VenueTab(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------ targets
     def _build_targets(self) -> QtWidgets.QWidget:
-        box = QtWidgets.QGroupBox("Targets (named aim points, ft)")
+        box = QtWidgets.QGroupBox("TARGETS  ·  NAMED AIM POINTS, FT")
         self._targets_form = QtWidgets.QGridLayout(box)
         self._target_boxes: dict[str, tuple[QtWidgets.QDoubleSpinBox, ...]] = {}
         self._refresh_targets()
@@ -209,12 +236,13 @@ class VenueTab(QtWidgets.QWidget):
             if w is not None:
                 w.deleteLater()
         self._target_boxes.clear()
-        for col, cap in enumerate(("", "X", "Y", "Height")):
-            self._targets_form.addWidget(_hint(cap), 0, col)
+        for col, cap in enumerate(("", "X", "Y", "HEIGHT")):
+            self._targets_form.addWidget(label(cap, "overline"), 0, col)
         for row, (name, p) in enumerate(sorted(self.rig.venue.targets.items()), start=1):
-            self._targets_form.addWidget(QtWidgets.QLabel(name), row, 0)
+            self._targets_form.addWidget(label(name, "value"), row, 0)
             boxes = (_ft_box(p.x), _ft_box(p.y), _ft_box(p.z))
             for col, b in enumerate(boxes, start=1):
+                b.setProperty("compact", True)
                 self._targets_form.addWidget(b, row, col)
                 b.valueChanged.connect(lambda _v, n=name: self._target_edited(n))
             self._target_boxes[name] = boxes
@@ -232,11 +260,14 @@ class VenueTab(QtWidgets.QWidget):
     def _build_property_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(panel)
-        v.setContentsMargins(0, 0, 0, 0)
+        v.setContentsMargins(theme.SP1, 0, theme.SP1, 0)
+        v.setSpacing(theme.SP3)
 
         # fixture picker + placement
-        place = QtWidgets.QGroupBox("Fixture")
+        place = QtWidgets.QGroupBox("FIXTURE")
         form = QtWidgets.QFormLayout(place)
+        form.setVerticalSpacing(theme.SP2)
+        form.setHorizontalSpacing(theme.SP4)
         self.cb_fixture = QtWidgets.QComboBox()
         for fx in self.rig.fixtures:
             self.cb_fixture.addItem(f"{fx.label}  ·  addr {fx.address}", getattr(fx, "slot_id", fx.label))
@@ -246,35 +277,41 @@ class VenueTab(QtWidgets.QWidget):
         self.sb_y = _ft_box(0.0)
         self.sb_z = _ft_box(0.0, decimals=2, step=0.25)
         self.sb_facing = _deg_box(0.0)
-        form.addRow("X (along booth wall)", self.sb_x)
-        form.addRow("Y (out into the crowd)", self.sb_y)
-        form.addRow("Height (lens above floor)", self.sb_z)
-        form.addRow("Facing (0 = into the crowd)", self.sb_facing)
+        form.addRow(label("X, along the booth wall", "body2"), self.sb_x)
+        form.addRow(label("Y, out into the crowd", "body2"), self.sb_y)
+        form.addRow(label("Height, lens above floor", "body2"), self.sb_z)
+        form.addRow(label("Facing, 0 = into the crowd", "body2"), self.sb_facing)
         for b in (self.sb_x, self.sb_y, self.sb_z, self.sb_facing):
             b.valueChanged.connect(self._placement_edited)
         v.addWidget(place)
 
         # moving head: calibrate
-        self.grp_head = QtWidgets.QGroupBox("Calibrate (moving head)")
+        self.grp_head = QtWidgets.QGroupBox("CALIBRATE  ·  MOVING HEAD")
         hf = QtWidgets.QFormLayout(self.grp_head)
-        self.cb_light = QtWidgets.QCheckBox("Light the selected head — open white at full, so you can see the beam")
+        hf.setVerticalSpacing(theme.SP2)
+        hf.setHorizontalSpacing(theme.SP4)
+        self.cb_light = QtWidgets.QCheckBox("Light the head (open white, full)")
+        self.cb_light.setToolTip("Open white at full so you can see the beam while you calibrate.")
         self.cb_light.setChecked(True)
-        self.cb_jog = QtWidgets.QCheckBox("Jog live — pins the REAL head to the sliders")
+        self.cb_jog = QtWidgets.QCheckBox("Jog live (pins the real head to the sliders)")
         self.s_pan = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal); self.s_pan.setRange(0, 65535); self.s_pan.setValue(32768)
         self.s_tilt = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal); self.s_tilt.setRange(0, 65535); self.s_tilt.setValue(32768)
-        self.l_pan = QtWidgets.QLabel("0.500"); self.l_tilt = QtWidgets.QLabel("0.500")
-        pan_row = QtWidgets.QHBoxLayout(); pan_row.addWidget(self.s_pan, 1); pan_row.addWidget(self.l_pan)
-        tilt_row = QtWidgets.QHBoxLayout(); tilt_row.addWidget(self.s_tilt, 1); tilt_row.addWidget(self.l_tilt)
+        self.l_pan = label("0.500", "value"); self.l_tilt = label("0.500", "value")
+        for lbl in (self.l_pan, self.l_tilt):
+            lbl.setMinimumWidth(52)
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        pan_row = QtWidgets.QHBoxLayout(); pan_row.setSpacing(theme.SP3); pan_row.addWidget(self.s_pan, 1); pan_row.addWidget(self.l_pan)
+        tilt_row = QtWidgets.QHBoxLayout(); tilt_row.setSpacing(theme.SP3); tilt_row.addWidget(self.s_tilt, 1); tilt_row.addWidget(self.l_tilt)
         self.cb_target = QtWidgets.QComboBox()
         self.cb_invert_pan = QtWidgets.QCheckBox("Invert pan")
         self.cb_invert_tilt = QtWidgets.QCheckBox("Invert tilt")
-        inv = QtWidgets.QHBoxLayout(); inv.addWidget(self.cb_invert_pan); inv.addWidget(self.cb_invert_tilt); inv.addStretch(1)
-        self.b_set_aim = QtWidgets.QPushButton("SET AIM — the head is on this target now")
-        self.b_set_aim.setObjectName("cue")
-        self.b_set_aim2 = QtWidgets.QPushButton("ADD 2ND POINT — the head is on a DIFFERENT target now (solves direction + range)")
-        self.b_aim = QtWidgets.QPushButton("Aim at target (verify)")
-        self.b_home = QtWidgets.QPushButton("Set home = target")
-        self.l_cal = QtWidgets.QLabel("Not captured")
+        inv = QtWidgets.QHBoxLayout(); inv.setSpacing(theme.SP6); inv.addWidget(self.cb_invert_pan); inv.addWidget(self.cb_invert_tilt); inv.addStretch(1)
+        self.b_set_aim = _action("Set aim: the head is on this target", "crosshair", "primary")
+        self.b_set_aim2 = _action("Add 2nd point: on a different target", "plus",
+                                  tip="The head is on a DIFFERENT target now. Solves pan/tilt direction and range.")
+        self.b_aim = _action("Aim at target (verify)", "target")
+        self.b_home = _action("Set home = target", "home")
+        self.l_cal = label("Not captured", "body2")
         self.l_cal.setWordWrap(True)
         hf.addRow(self.cb_light)
         hf.addRow(self.cb_jog)
@@ -289,24 +326,26 @@ class VenueTab(QtWidgets.QWidget):
         hf.addRow(self.l_cal)
         # Raw motion box (2026-10-10): jog the beam onto each edge the crowd
         # can see, ADD BOUND POINT each time; every scene then stays inside.
-        self.l_bounds = QtWidgets.QLabel("Motion box: none — the head sweeps its full travel")
-        self.l_bounds.setWordWrap(True)
-        self.b_bound_add = QtWidgets.QPushButton("ADD BOUND POINT — the beam is on an edge now")
-        self.b_bound_add.setObjectName("cue")
-        self.b_bound_clear = QtWidgets.QPushButton("Clear box")
+        self.l_bounds = label("Motion box: none. The head sweeps its full travel.", "body2", wrap=True)
+        self.b_bound_add = _action("Add bound point: the beam is on an edge", "plus", "primary")
+        self.b_bound_clear = _action("Clear box", "trash")
         brow = QtWidgets.QHBoxLayout(); brow.addWidget(self.b_bound_add, 1); brow.addWidget(self.b_bound_clear)
-        hf.addRow(_hint("MOTION BOX (no geometry needed): tick Jog live, slide the beam onto the venue's "
-                        "LEFT edge → ADD BOUND POINT; RIGHT edge → ADD BOUND POINT; then the lowest and "
-                        "highest points you want it to reach (booth edges / far wall) → ADD BOUND POINT each. "
-                        "Every scene's movement is then squeezed inside that box. Untick Jog live, Save rig…"))
+        hf.addRow(label("MOTION BOX", "overline"))
+        hf.addRow(_hint("No geometry needed. Tick Jog live, slide the beam onto the venue's LEFT edge and "
+                        "add a bound point, then the RIGHT edge, then the lowest and highest points you want "
+                        "it to reach (booth edges, far wall). Every scene's movement is then squeezed inside "
+                        "that box. Untick Jog live, Save rig…"))
         hf.addRow(brow)
         hf.addRow(self.l_bounds)
-        hf.addRow(_hint("Selecting a head lights it (the no-music blackout is held off while it is pinned).  "
-                        "1 Place the head and the dj_booth target.  2 Tick Jog live, slide Pan/Tilt until the "
-                        "real beam sits on the booth.  3 SET AIM.  4 Jog onto a SECOND, well-separated target, "
-                        "pick it, ADD 2ND POINT — this solves pan/tilt direction and travel for this unit as hung "
-                        "(the Invert boxes are set for you).  5 Aim at a third target to verify.  "
-                        "6 Untick Jog live, Save rig…"))
+        hf.addRow(label("HOW TO", "overline"))
+        hf.addRow(_hint("Selecting a head lights it (the no-music blackout is held off while it is pinned).\n"
+                        "1  Place the head and the dj_booth target.\n"
+                        "2  Tick Jog live, slide Pan/Tilt until the real beam sits on the booth.\n"
+                        "3  Set aim.\n"
+                        "4  Jog onto a SECOND, well-separated target, pick it, Add 2nd point. This solves "
+                        "pan/tilt direction and travel for this unit as hung (the Invert boxes are set for you).\n"
+                        "5  Aim at a third target to verify.\n"
+                        "6  Untick Jog live, Save rig…"))
         v.addWidget(self.grp_head)
         self.cb_light.toggled.connect(self._light_toggled)
         self.cb_jog.toggled.connect(self._jog_toggled)
@@ -320,13 +359,17 @@ class VenueTab(QtWidgets.QWidget):
         self.b_home.clicked.connect(self._set_home)
 
         # laser: beam geometry + probe
-        self.grp_laser = QtWidgets.QGroupBox("Laser beam")
+        self.grp_laser = QtWidgets.QGroupBox("LASER BEAM")
         lf = QtWidgets.QFormLayout(self.grp_laser)
+        lf.setVerticalSpacing(theme.SP2)
+        lf.setHorizontalSpacing(theme.SP4)
         self.sb_beam_tilt = _deg_box(0.0, -90.0, 90.0)
         self.sb_fan = _deg_box(30.0, 1.0, 90.0)
         self.s_hoff = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal); self.s_hoff.setRange(0, 127); self.s_hoff.setValue(64)
-        self.l_hoff = QtWidgets.QLabel("64")
-        hrow = QtWidgets.QHBoxLayout(); hrow.addWidget(self.s_hoff, 1); hrow.addWidget(self.l_hoff)
+        self.l_hoff = label("64", "value")
+        self.l_hoff.setMinimumWidth(36)
+        self.l_hoff.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        hrow = QtWidgets.QHBoxLayout(); hrow.setSpacing(theme.SP3); hrow.addWidget(self.s_hoff, 1); hrow.addWidget(self.l_hoff)
         self.cb_probe = QtWidgets.QCheckBox("Probe static line live (needs Arm lasers)")
         lf.addRow("Beam tilt (+ up)", self.sb_beam_tilt)
         lf.addRow("Fan half-angle", self.sb_fan)
@@ -462,7 +505,7 @@ class VenueTab(QtWidgets.QWidget):
 
     def _jog_toggled(self, on: bool) -> None:
         if on and self.is_frozen():
-            self.status.setText("Freeze is on — unfreeze (F) to jog the head.")
+            self._say("Freeze is on. Unfreeze (F) to jog the head.", "bad")
         self._push_head_pins()
 
     def _light_toggled(self, on: bool) -> None:
@@ -514,7 +557,7 @@ class VenueTab(QtWidgets.QWidget):
         if not isinstance(fx, MovingHead) or tp is None:
             return
         if fx.position is None:
-            self.status.setText("Place the head first (X / Y / Height).")
+            self._say("Place the head first (X / Y / Height).")
             return
         name, target = tp
         pan01, tilt01 = self._pan_tilt01()
@@ -523,7 +566,7 @@ class VenueTab(QtWidgets.QWidget):
             invert_pan=self.cb_invert_pan.isChecked(), invert_tilt=self.cb_invert_tilt.isChecked(),
             target_name=name)
         self._update_cal_label()
-        self.status.setText(f"Captured {fx.label} on {name}. Now 'Aim at target' with another target to verify.")
+        self._say(f"Captured {fx.label} on {name}. Now 'Aim at target' with another target to verify.")
         self._mark_dirty()
 
     def _set_aim_second(self) -> None:
@@ -536,15 +579,15 @@ class VenueTab(QtWidgets.QWidget):
         if not isinstance(fx, MovingHead) or tp is None:
             return
         if fx.position is None:
-            self.status.setText("Place the head first (X / Y / Height).")
+            self._say("Place the head first (X / Y / Height).")
             return
         c: HeadCalibration = fx.calibration
         if not c.captured or c.pan01 is None or c.tilt01 is None or c.target not in self.rig.venue.targets:
-            self.status.setText("SET AIM on the first target before adding a second point.")
+            self._say("SET AIM on the first target before adding a second point.")
             return
         name_b, target_b = tp
         if name_b == c.target:
-            self.status.setText(f"Pick a target other than {c.target} for the second point.")
+            self._say(f"Pick a target other than {c.target} for the second point.")
             return
         pan_b, tilt_b = self._pan_tilt01()
         target_a = self.rig.venue.targets[c.target]
@@ -564,8 +607,8 @@ class VenueTab(QtWidgets.QWidget):
         self._update_cal_label()
         msg = f"Solved {fx.label} from {c.target} + {name_b}. Now 'Aim at target' with a third target to verify."
         if weak:
-            msg += f"  ({'/'.join(weak)} barely moved between the two points — kept the profile's range for it; pick points further apart.)"
-        self.status.setText(msg)
+            msg += f"  ({'/'.join(weak)} barely moved between the two points: kept the profile's range for it; pick points further apart.)"
+        self._say(msg)
         self._mark_dirty()
 
     def _aim_at_target(self) -> None:
@@ -577,8 +620,8 @@ class VenueTab(QtWidgets.QWidget):
         pan01, tilt01, ok = aim(fx.position, fx.facing_deg, target, fx.calibration, fx.PAN_RANGE_DEG, fx.TILT_RANGE_DEG)
         self.s_pan.setValue(int(round(pan01 * 65535)))
         self.s_tilt.setValue(int(round(tilt01 * 65535)))
-        self.status.setText(f"Aimed at {name}: pan {pan01:.3f} tilt {tilt01:.3f}"
-                            + ("" if ok else "  — OUT OF RANGE, clamped"))
+        self._say(f"Aimed at {name}: pan {pan01:.3f} tilt {tilt01:.3f}"
+                            + ("" if ok else "  · OUT OF RANGE, clamped"))
 
     def _set_home(self) -> None:
         fx = self._fx()
@@ -588,7 +631,7 @@ class VenueTab(QtWidgets.QWidget):
         name, target = tp
         pan01, tilt01, ok = aim(fx.position, fx.facing_deg, target, fx.calibration, fx.PAN_RANGE_DEG, fx.TILT_RANGE_DEG)
         fx.home_pan, fx.home_tilt = pan01, tilt01
-        self.status.setText(f"Home = {name} (pan {pan01:.3f}, tilt {tilt01:.3f})" + ("" if ok else " — clamped"))
+        self._say(f"Home = {name} (pan {pan01:.3f}, tilt {tilt01:.3f})" + ("" if ok else " · clamped"))
         self._update_cal_label()
         self._mark_dirty()
 
@@ -603,10 +646,10 @@ class VenueTab(QtWidgets.QWidget):
         self._update_bounds_label()
         b = fx.bounds
         if b.pan_max - b.pan_min < 0.01 and b.tilt_max - b.tilt_min < 0.01:
-            self.status.setText(f"{fx.label}: first edge stored (pan {pan01:.3f} / tilt {tilt01:.3f}). "
+            self._say(f"{fx.label}: first edge stored (pan {pan01:.3f} / tilt {tilt01:.3f}). "
                                 "Jog to the opposite edge and ADD BOUND POINT again.")
         else:
-            self.status.setText(f"{fx.label} motion box: pan {b.pan_min:.3f}–{b.pan_max:.3f}, "
+            self._say(f"{fx.label} motion box: pan {b.pan_min:.3f}–{b.pan_max:.3f}, "
                                 f"tilt {b.tilt_min:.3f}–{b.tilt_max:.3f}. Add more edges or Save rig…")
         self._mark_dirty()
 
@@ -616,7 +659,7 @@ class VenueTab(QtWidgets.QWidget):
             return
         fx.bounds = None
         self._update_bounds_label()
-        self.status.setText(f"{fx.label}: motion box cleared — full travel again.")
+        self._say(f"{fx.label}: motion box cleared. Full travel again.")
         self._mark_dirty()
 
     def _update_bounds_label(self) -> None:
@@ -625,7 +668,7 @@ class VenueTab(QtWidgets.QWidget):
             return
         b = fx.bounds
         if b is None:
-            self.l_bounds.setText("Motion box: none — the head sweeps its full travel")
+            self.l_bounds.setText("Motion box: none. The head sweeps its full travel.")
         else:
             self.l_bounds.setText(f"Motion box: pan {b.pan_min:.3f} → {b.pan_max:.3f}  ·  "
                                   f"tilt {b.tilt_min:.3f} → {b.tilt_max:.3f}  (every scene stays inside)")
@@ -687,9 +730,12 @@ class VenueTab(QtWidgets.QWidget):
         self.on_pins(CalibrationPins(channels=channels, laser_open=True))
 
     # ------------------------------------------------------------------ save
+    def _say(self, text: str, tone: str = "muted") -> None:
+        self.status.setText(text)
+        theme.set_css(self.status, _STATUS_CSS[tone])
+
     def _mark_dirty(self) -> None:
-        self.status.setText("Unsaved changes — Save rig… writes them to the rig file.")
-        self.status.setStyleSheet(f"color:{MUTED};")
+        self._say("● Unsaved changes. Save rig… writes them to the rig file.", "muted")
 
     def _save(self) -> None:
         default_path = self.rig_path or os.path.join("rigs", "custom_rig.json")
@@ -699,11 +745,9 @@ class VenueTab(QtWidgets.QWidget):
         try:
             save_rig(self.rig, path, "Venue layout + calibration edited in the LiveReact console's Venue tab.")
         except RigError as exc:
-            self.status.setText(f"Not saved — {exc}")
-            self.status.setStyleSheet("color:#c33;")
+            self._say(f"Not saved: {exc}", "bad")
             return
-        self.status.setText(f"Saved to {path}. Positions/calibration are already live; fixture patching needs a restart.")
-        self.status.setStyleSheet("color:#3c6;")
+        self._say(f"Saved to {path}. Positions/calibration are already live; fixture patching needs a restart.", "ok")
 
     def deactivate(self) -> None:
         """Called by the console when the operator leaves this tab."""

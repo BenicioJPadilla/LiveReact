@@ -21,6 +21,8 @@ from ..core.frame_buffer import DmxFrameBuffer
 from ..fixtures.profiles import Laser, MovingHead, Par, WashBar
 from ..fixtures.rig import Rig, load_rig
 from ..merge.merge import Contribution, ManualParams, render_universe
+from . import theme
+from .widgets import AppHeader, Card, shell
 
 log = logging.getLogger(__name__)
 
@@ -64,9 +66,10 @@ class RigView(QtWidgets.QGraphicsView):
         # editable=False (the console's Show tab, 2026-09-18): a live view
         # only -- nothing can be dragged mid-set by a stray click.
         self.editable = editable
-        self._scene = QtWidgets.QGraphicsScene(0, 0, _SCENE_W, _SCENE_H)
+        self._scene = QtWidgets.QGraphicsScene(0, 0, _SCENE_W, _SCENE_H, self)
         self.setScene(self._scene)
-        self.setBackgroundBrush(QtGui.QColor(12, 12, 16))
+        self.setBackgroundBrush(QtGui.QColor(theme.SURFACE))
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         self._bodies: dict[str, QtWidgets.QAbstractGraphicsShapeItem] = {}
         self._beams: dict[str, QtWidgets.QGraphicsLineItem] = {}
@@ -82,7 +85,7 @@ class RigView(QtWidgets.QGraphicsView):
         self.fitInView(self._scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     def _build_items(self) -> None:
-        pen = QtGui.QPen(QtGui.QColor(60, 60, 70))
+        pen = QtGui.QPen(QtGui.QColor(theme.LINE_3))
         movable = (
             QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable
             | QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
@@ -105,15 +108,18 @@ class RigView(QtWidgets.QGraphicsView):
             # Beam line for moving heads (shows pan/tilt).
             if isinstance(fx, MovingHead):
                 cx, cy = x + w / 2, y + h / 2
-                beam = self._scene.addLine(cx, cy, cx, cy + 60, QtGui.QPen(QtGui.QColor(80, 80, 90), 2))
+                beam = self._scene.addLine(cx, cy, cx, cy + 60, QtGui.QPen(QtGui.QColor(theme.LINE_3), 2))
                 self._beams[self._key(fx)] = beam
             # Parented to the body -> moves with it automatically when dragged
             # (child position is in the parent's own local coordinate frame,
             # which starts at the body's un-dragged origin, so this places it
             # in the same spot as before and keeps tracking on every drag).
             label = QtWidgets.QGraphicsTextItem(fx.label, item)
-            label.setFont(QtGui.QFont("Arial", 8))
-            label.setDefaultTextColor(QtGui.QColor(150, 150, 160))
+            font = QtGui.QFont()
+            font.setFamilies([theme.FONT_UI, "Helvetica Neue", "Arial"])
+            font.setPointSize(8)
+            label.setFont(font)
+            label.setDefaultTextColor(QtGui.QColor(theme.TEXT_2))
             label.setPos(x, y + h + 2)
             self._labels[self._key(fx)] = label  # keep a Python ref (parent alone isn't enough — PySide6 GC gotcha)
 
@@ -156,7 +162,9 @@ class RigView(QtWidgets.QGraphicsView):
             color = QtGui.QColor(int(vs.r * b), int(vs.g * b), int(vs.b * b))
             item = self._bodies[self._key(fx)]
             item.setBrush(QtGui.QBrush(color))
-            glow = QtGui.QColor(vs.r, vs.g, vs.b) if vs.active else QtGui.QColor(60, 60, 70)
+            if not vs.active:
+                item.setBrush(QtGui.QBrush(QtGui.QColor(theme.SURFACE_2)))
+            glow = QtGui.QColor(vs.r, vs.g, vs.b) if vs.active else QtGui.QColor(theme.LINE_3)
             item.setPen(QtGui.QPen(glow, 2 if vs.active else 1))
             beam = self._beams.get(self._key(fx))
             if beam is not None:
@@ -166,7 +174,7 @@ class RigView(QtWidgets.QGraphicsView):
                 dx = (vs.pan - 0.5) * 120
                 dy = 30 + vs.tilt * 60
                 beam.setLine(cx, cy, cx + dx, cy + dy)
-                beam.setPen(QtGui.QPen(color if vs.active else QtGui.QColor(50, 50, 60), 2))
+                beam.setPen(QtGui.QPen(color if vs.active else QtGui.QColor(theme.LINE_2), 2))
 
 
 class DmxInspector(QtWidgets.QTableWidget):
@@ -180,19 +188,33 @@ class DmxInspector(QtWidgets.QTableWidget):
             for local, ch in enumerate(fx.channels()):
                 self._rows.append((ch, fx.label, kinds[local].name))
         super().__init__(len(self._rows), 4)
-        self.setHorizontalHeaderLabels(["Ch", "Value", "Fixture", "Kind"])
+        self.setHorizontalHeaderLabels(["CH", "VALUE", "FIXTURE", "KIND"])
+        self.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self.horizontalHeader().setStretchLastSection(True)
         self.verticalHeader().setVisible(False)
+        self.verticalHeader().setDefaultSectionSize(28)
+        self.setShowGrid(False)
         self.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        mono = QtGui.QFont()
+        mono.setFamilies([theme.FONT_MONO, "Menlo", "Consolas"])
+        mono.setPixelSize(12)
         for r, (ch, label, kind) in enumerate(self._rows):
-            self.setItem(r, 0, QtWidgets.QTableWidgetItem(str(ch)))
-            self.setItem(r, 1, QtWidgets.QTableWidgetItem("0"))
-            self.setItem(r, 2, QtWidgets.QTableWidgetItem(label))
-            self.setItem(r, 3, QtWidgets.QTableWidgetItem(kind))
+            for col, text in enumerate((str(ch), "0", label, kind.lower())):
+                it = QtWidgets.QTableWidgetItem(text)
+                if col < 2:
+                    it.setFont(mono)
+                if col != 1:
+                    it.setForeground(QtGui.QColor(theme.TEXT_2 if col else theme.TEXT_3))
+                self.setItem(r, col, it)
         self.resizeColumnsToContents()
+        self._shown = [-1] * len(self._rows)
 
     def update_from_universe(self, uni: bytes) -> None:
         for r, (ch, _label, _kind) in enumerate(self._rows):
-            self.item(r, 1).setText(str(uni[ch - 1]))
+            v = uni[ch - 1]
+            if v != self._shown[r]:          # only touch cells whose value moved
+                self._shown[r] = v
+                self.item(r, 1).setText(str(v))
 
 
 class VisualizerWindow(QtWidgets.QMainWindow):
@@ -200,15 +222,27 @@ class VisualizerWindow(QtWidgets.QMainWindow):
 
     def __init__(self, rig: Rig) -> None:
         super().__init__()
-        self.setWindowTitle("LiveReact — Virtual Rig")
+        self.setWindowTitle("LiveReact · Virtual rig")
+        theme.apply_theme()
         self.rig_view = RigView(rig)
         self.inspector = DmxInspector(rig)
+        rig_card = Card("Virtual rig", "rig")
+        rig_card.body.addWidget(self.rig_view, 1)
+        dmx_card = Card("DMX inspector", "dmx")
+        dmx_card.body.addWidget(self.inspector, 1)
         split = QtWidgets.QSplitter()
-        split.addWidget(self.rig_view)
-        split.addWidget(self.inspector)
-        split.setSizes([820, 360])
-        self.setCentralWidget(split)
-        self.resize(1180, 600)
+        split.setChildrenCollapsible(False)
+        split.addWidget(rig_card)
+        split.addWidget(dmx_card)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 1)
+        split.setSizes([900, 380])
+        body = QtWidgets.QWidget()
+        bl = QtWidgets.QVBoxLayout(body)
+        bl.setContentsMargins(theme.SP4, theme.SP4, theme.SP4, theme.SP4)
+        bl.addWidget(split)
+        self.setCentralWidget(shell(AppHeader(subtitle="Virtual rig"), body))
+        self.resize(1280, 720)
 
     def update_from_universe(self, uni: bytes) -> None:
         self.rig_view.update_from_universe(uni)
@@ -269,13 +303,14 @@ def run(frame_buffer: DmxFrameBuffer, rig: Rig, fps: int = 30, status=None) -> i
     scene name) shown in the window title.
     """
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    theme.apply_theme(app)
     win = VisualizerWindow(rig)
     win.show()
 
     def refresh() -> None:
         win.update_from_universe(frame_buffer.latest())
         if status is not None:
-            win.setWindowTitle(f"LiveReact — Virtual Rig  |  Scene: {status()}")
+            win.setWindowTitle(f"LiveReact · Virtual rig · Scene: {status()}")
 
     timer = QtCore.QTimer()
     timer.timeout.connect(refresh)
