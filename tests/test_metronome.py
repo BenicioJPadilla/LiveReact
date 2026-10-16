@@ -1495,3 +1495,18 @@ def test_pdl_lost_needs_a_player_beat_first():
 
     m.queue.put(BeatMessage(clock.monotonic(), 1, 120.0, True, 1))  # back
     assert not m.tick().pdl_lost
+
+
+def test_pdl_lost_gives_up_after_the_hold():
+    """A long loss (DJ switched to vinyl after a CDJ played at soundcheck)
+    goes back to audio-only behaviour instead of holding all night."""
+    from livereact.core.metronome import PDL_LOST_HOLD_BARS, SECONDS_PER_BAR
+
+    clock = FakeClock()
+    m = _metronome(clock)
+    m.queue.put(BeatMessage(0.0, 1, 120.0, True, 1))
+    m.tick()
+    clock.advance(PDL_LOST_HOLD_BARS * SECONDS_PER_BAR - 1.0)
+    assert m.tick().pdl_lost
+    clock.advance(2.0)
+    assert not m.tick().pdl_lost
