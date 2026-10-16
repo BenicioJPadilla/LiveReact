@@ -38,7 +38,8 @@ Known rough edges, tracked in the repo rather than hidden:
   The other 619 tests pass.
 - Python 3.14's garbage collector has segfaulted inside the show-engine thread
   on live nights. A Python 3.13 venv (`.venv313`) is used for shows and has not
-  reproduced it; `tools/run_show.sh` prefers it and relaunches after a crash.
+  reproduced it; `tools/run_show.sh` prefers it, and the app's own supervisor
+  (`src/livereact/supervisor.py`) relaunches the engine after a crash.
 - The output backend is chosen once at launch. If the Enttec is absent then (or
   has dropped off USB before a relaunch), the run is log-only and never retries
   the port; replug, then relaunch. Mid-run send failures do get a reopen loop.
@@ -51,10 +52,15 @@ Known rough edges, tracked in the repo rather than hidden:
 # Demo mode: synthetic music, no hardware, operator console + virtual rig
 .venv/bin/python -m livereact --demo --visualize
 
-# A live night (preferred): relaunch loop, hardware, recording, a specific rig
+# A live night: hardware, recording, a specific rig. Any --hardware run is
+# supervised: if the engine crashes it is relaunched within ~1 s, with the
+# operator's blackout / brightness / strobe cap / laser disarm restored
+# (logs/supervisor.log says when and why). --no-supervise turns that off.
+python -m livereact --hardware --visualize --record --rig rigs/junior_crib.json --audio-device 1
+#   or, with the .venv313 interpreter and a per-night log:
 nohup tools/run_show.sh --hardware --visualize --record --rig rigs/junior_crib.json \
     --audio-device 1 > logs/watchdog.log 2>&1 & disown
-#   stop it: touch logs/STOP  then close the window (or kill the python PID)
+#   stop it: close the window (or touch logs/STOP, then close it)
 
 # Bring-up and diagnostics
 python -m livereact --fixture-test           # drive raw DMX channels
@@ -150,7 +156,7 @@ src/livereact/
   recorder.py, diagnostics.py, network.py, tap_tempo.py, dynamics.py
 rigs/                    rig JSON files (fixtures, addresses, venue geometry, laser profile)
 spec/                    LIGHTING_BIBLE.md + conformance.md
-tools/                   run_show.sh relaunch loop, laser_probe.py, offline simulators / replays
+tools/                   run_show.sh (picks .venv313), laser_probe.py, offline simulators / replays
 tests/                   pytest suite (deterministic via FakeClock)
 ```
 
