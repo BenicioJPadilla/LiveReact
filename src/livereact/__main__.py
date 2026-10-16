@@ -37,6 +37,16 @@ def _configure_logging(level: str, log_file: str | None = None, error_file: str 
         root.addHandler(eh)
 
 
+def _port(text: str) -> int:
+    try:
+        port = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a port number: {text!r}") from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"port must be 1..65535, got {port}")
+    return port
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="livereact",
@@ -62,6 +72,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Cold-start the energy normalizer instead of seeding it from the last "
                         "session's saved range (new venue / re-gained mixer).")
     p.add_argument("--audio-device", default=None, help="Explicit audio input device name/index for real audio analysis (default: auto-detect the XDJ).")
+    p.add_argument("--phone", nargs="?", const=8765, default=None, type=_port, metavar="PORT",
+                   help="Serve the phone console on the venue Wi-Fi (default port 8765): a page that can "
+                        "only blackout, dim, cap strobe and disarm lasers. The URL, with its access "
+                        "code, is logged at startup.")
     p.add_argument("--log-level", default="INFO", help="DEBUG, INFO, WARNING, ERROR (default: INFO).")
     # Recording / feedback (capture a session to hand back for analysis).
     p.add_argument("--record", action="store_true", help="Record this session (logs + state + notes) to recordings/.")
@@ -222,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
                        norm_seed=not args.no_norm_seed,
                        bible_failsafe_enabled=args.bible_failsafe,
                        full_catalog=args.full_catalog,
+                       phone_port=args.phone,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)
     if args.engine_child:
@@ -231,6 +246,12 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("Relaunched after an engine crash (#%d); operator state restored: %s",
                         relaunches, restored or "nothing saved yet")
         supervisor.start_child_threads(app)
+    if args.phone is not None and not args.visualize:
+        # The phone can blackout but never release (by design); headless,
+        # nothing on the laptop can release it either.
+        log.warning("--phone without --visualize: a blackout pressed on the phone can NOT be "
+                    "released from the laptop in headless mode; only a restart clears it. "
+                    "Add --visualize for the console's B key.")
 
     if args.visualize:
         # Qt must own the main thread: run the pipeline in the background and the
