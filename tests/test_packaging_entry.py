@@ -136,3 +136,22 @@ def test_livereact_parser_rejects_unknown_flags_and_help():
         entry.parse_livereact_args(["--bogus"])
     with pytest.raises(ValueError, match="--help"):
         entry.parse_livereact_args(["--help"])  # exits 0: no show to start
+
+
+def test_first_launch_defaults_to_the_launch_dialog_when_the_build_has_it(tmp_path):
+    import argparse
+
+    la = entry
+
+    def with_choose(args):
+        p = argparse.ArgumentParser()
+        p.add_argument("--choose", action="store_true")
+        p.add_argument("--rig")
+        try:
+            return p.parse_args(args)
+        except SystemExit:
+            raise ValueError("unknown option") from None
+
+    args, reason = la.resolve_default_args(tmp_path, parse=with_choose)
+    assert args == ["--choose"] and reason is None
+    assert (tmp_path / la.LAUNCH_ARGS_FILE).read_text().strip().endswith("--choose")
