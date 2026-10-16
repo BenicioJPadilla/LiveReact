@@ -6,7 +6,9 @@ import argparse
 import logging
 import os
 import sys
+import time
 
+from . import crash, supervisor
 from .app import App, AppConfig
 
 
@@ -79,6 +81,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--doctor", action="store_true", help="Write an environment/device diagnostics report and exit.")
     p.add_argument("--bundle", nargs="?", const="__latest__", default=None,
                    help="Zip a session folder for sharing (default: the latest), then exit.")
+    p.add_argument("--supervise", action=argparse.BooleanOptionalAction, default=None,
+                   help="Relaunch the engine within seconds if it crashes (default: on with "
+                        "--hardware, off in demo). Stop with logs/STOP, Ctrl-C, or by closing the window.")
+    p.add_argument(supervisor.CHILD_FLAG, action="store_true", help=argparse.SUPPRESS)
     return p.parse_args(argv)
 
 
@@ -129,8 +135,17 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:  # noqa: BLE001
             pass
 
-    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    raw_argv = list(argv if argv is not None else sys.argv[1:])
+    args = _parse_args(raw_argv)
     demo = not args.hardware  # demo is the default; --demo is explicit-but-redundant
+    is_tool = (args.doctor or args.bundle is not None or args.net_check
+               or args.midi_monitor or args.fixture_test or args.strobe_calibrate)
+    supervise = args.supervise if args.supervise is not None else not demo
+    if supervise and not is_tool and not args.engine_child:
+        # This process becomes the supervisor; the show runs in a child that
+        # it relaunches on a crash (supervisor.py). Before any session folder
+        # or log file exists, so the child creates its own.
+        return supervisor.supervise(raw_argv)
 
     # Resolve a session directory if recording, and route logs into it.
     session_dir = None
@@ -140,6 +155,15 @@ def main(argv: list[str] | None = None) -> int:
         session_dir = args.session_dir or create_session_dir()
         os.makedirs(session_dir, exist_ok=True)  # an explicit --session-dir may not exist yet
     log_file = (os.path.join(session_dir, "session.log") if session_dir else args.log_file)
+    if not is_tool and not demo and log_file is None:
+        # A hardware night always leaves a log behind (2026-10-16), the same
+        # logs/launch-*.log name tools/run_show.sh gives its runs. Best
+        # effort: an unwritable folder must not stop the show.
+        try:
+            os.makedirs("logs", exist_ok=True)
+            log_file = os.path.join("logs", f"launch-{time.strftime('%Y%m%d-%H%M%S')}.log")
+        except OSError:
+            log_file = None
     error_file = os.path.join(session_dir, "errors.log") if session_dir else None
     _configure_logging(args.log_level, log_file=log_file, error_file=error_file)
     log = logging.getLogger("livereact")
@@ -183,6 +207,15 @@ def main(argv: list[str] | None = None) -> int:
         return run_strobe_calibration(rig_path=args.rig, hardware=args.hardware,
                                       slot=args.strobe_fixture, seconds=args.strobe_seconds)
 
+    try:
+        crash.install("logs")
+    except OSError:
+        log.warning("Crash logging unavailable (logs/ not writable); the show runs without it",
+                    exc_info=True)
+    warning = crash.python_warning()
+    if warning:
+        log.warning(warning)
+
     config = AppConfig(demo=demo, dmx_rate_hz=args.rate, duration=args.duration,
                        pdl_interface=args.pdl_interface, rig_path=args.rig,
                        audio_device=args.audio_device,
@@ -191,6 +224,13 @@ def main(argv: list[str] | None = None) -> int:
                        full_catalog=args.full_catalog,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)
+    if args.engine_child:
+        relaunches = supervisor.relaunch_count()
+        if relaunches:
+            restored = supervisor.restore_live_state(app.manual)
+            log.warning("Relaunched after an engine crash (#%d); operator state restored: %s",
+                        relaunches, restored or "nothing saved yet")
+        supervisor.start_child_threads(app)
 
     if args.visualize:
         # Qt must own the main thread: run the pipeline in the background and the

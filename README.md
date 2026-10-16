@@ -27,21 +27,26 @@ Phrase + Transition engines → priority merge / safety → DMX writer) runs on 
 hardware with an operator console. The Enttec serial output, real audio
 capture + FFT analysis, Pro DJ Link beat grid, and MIDI input have all been
 verified on the physical rig. `--hardware` still degrades gracefully: with no
-Enttec it logs frames instead of sending them; with no XDJ, point
+Enttec it keeps looking for one and starts sending when it's plugged in; with no XDJ, point
 `--audio-device` at the laptop mic and beat timing falls back to tap tempo and
 a free-running metronome.
 
 Known rough edges, tracked in the repo rather than hidden:
 
-- `tests/test_spec_conformance_gaps.py` holds **3 intentionally failing tests**
-  that encode spec behaviour the merge/failsafe code does not yet implement.
-  The other 619 tests pass.
+- `tests/test_spec_conformance_gaps.py` holds **3 known-gap tests** that encode
+  spec behaviour the merge/failsafe code does not yet implement. They are
+  marked `xfail(strict=True)`: the suite stays green, and a gap that starts
+  passing fails the run until its marker comes off.
 - Python 3.14's garbage collector has segfaulted inside the show-engine thread
-  on live nights. A Python 3.13 venv (`.venv313`) is used for shows and has not
-  reproduced it; `tools/run_show.sh` prefers it and relaunches after a crash.
-- The output backend is chosen once at launch. If the Enttec is absent then (or
-  has dropped off USB before a relaunch), the run is log-only and never retries
-  the port; replug, then relaunch. Mid-run send failures do get a reopen loop.
+  on live nights. Shows run on Python 3.13 (`.venv313`), which has not
+  reproduced it; `pyproject.toml` caps installs below 3.14, and the app's own
+  supervisor (`src/livereact/supervisor.py`) relaunches the engine after a crash. Every show run
+  arms a crash log (`logs/crash-*.log`, Python stacks of every thread even on
+  a segfault; empty ones are removed on a clean exit), and `--hardware` runs
+  always write `logs/launch-*.log` when no other log file is given.
+- The Enttec is hot-pluggable (2026-10-16): absent at launch or pulled mid-set,
+  the DMX writer keeps retrying about once a second and output resumes by
+  itself within about a second of plugging it back in. No relaunch needed.
 - The fixture-side strobe flash rate is set by a static DMX byte, so photosensitive-safety
   frequency limits cannot be enforced in software. See `spec/LIGHTING_BIBLE.md`.
 
@@ -51,10 +56,15 @@ Known rough edges, tracked in the repo rather than hidden:
 # Demo mode: synthetic music, no hardware, operator console + virtual rig
 .venv/bin/python -m livereact --demo --visualize
 
-# A live night (preferred): relaunch loop, hardware, recording, a specific rig
+# A live night: hardware, recording, a specific rig. Any --hardware run is
+# supervised: if the engine crashes it is relaunched within ~1 s, with the
+# operator's blackout / brightness / strobe cap / laser disarm restored
+# (logs/supervisor.log says when and why). --no-supervise turns that off.
+python -m livereact --hardware --visualize --record --rig rigs/junior_crib.json --audio-device 1
+#   or, with the .venv313 interpreter and a per-night log:
 nohup tools/run_show.sh --hardware --visualize --record --rig rigs/junior_crib.json \
     --audio-device 1 > logs/watchdog.log 2>&1 & disown
-#   stop it: touch logs/STOP  then close the window (or kill the python PID)
+#   stop it: close the window (or touch logs/STOP, then close it)
 
 # Bring-up and diagnostics
 python -m livereact --fixture-test           # drive raw DMX channels
@@ -99,11 +109,13 @@ capture motion-box bounds, save rig), and **Rig Config**.
 
 ## Quick start
 
-Python **3.12 or 3.13** (3.14 currently crashes under load — see Status).
+Python **3.13** for shows (3.12 also works). `pyproject.toml` refuses 3.14,
+whose garbage collector crashed mid-set (see Status), and the app warns at
+launch if it finds itself on one anyway.
 
 ```bash
 # macOS / Linux
-python3 -m venv .venv
+python3.13 -m venv .venv
 .venv/bin/python -m pip install -e ".[ui,hardware,dev]"
 .venv/bin/python -m livereact --demo --duration 3     # short headless demo
 .venv/bin/python -m pytest                            # test suite
@@ -119,6 +131,12 @@ Extras: `ui` (PySide6 console), `hardware` (pyserial, mido, python-rtmidi,
 sounddevice, numpy), `net` (Art-Net output), `dev` (pytest). Pro DJ Link needs
 the git-only `python-prodj-link` library; see [`HARDWARE.md`](HARDWARE.md).
 The dev launchers `run.bat` / `./run.command` start demo mode from `.venv`.
+
+CI (`.github/workflows/ci.yml`) runs the suite on macOS, Windows and Linux.
+`tests/test_golden_frames.py` replays every rig's demo show (a scripted
+break, build, drop and peak) and compares each DMX frame's hash with
+`tests/golden/frames.json`. If a change is meant to alter the show,
+re-record with `python tests/golden_frames.py --update` and say so in the PR.
 
 ## Lighting spec & look library
 
@@ -151,8 +169,9 @@ src/livereact/
   recorder.py, diagnostics.py, network.py, tap_tempo.py, dynamics.py
 rigs/                    rig JSON files (fixtures, addresses, venue geometry, laser profile)
 spec/                    LIGHTING_BIBLE.md + conformance.md
-tools/                   run_show.sh relaunch loop, laser_probe.py, offline simulators / replays
-tests/                   pytest suite (deterministic via FakeClock)
+tools/                   run_show.sh (picks .venv313), laser_probe.py, offline simulators / replays
+tests/                   pytest suite (deterministic via FakeClock); golden_frames.py hashes
+                         every rig's demo show so a PR proves the looks are unchanged
 ```
 
 ## Design notes baked into the foundation
