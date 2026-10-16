@@ -84,11 +84,13 @@ def test_seed_rigs_missing_source_is_a_no_op(tmp_path):
     assert entry.seed_rigs(tmp_path / "nope", tmp_path / "rigs") == ([], [])
 
 
-def test_resolve_default_args_first_launch_creates_file(tmp_path):
+def test_resolve_default_args_first_launch_creates_file(tmp_path, monkeypatch):
+    # The fixed-rig default (a build without the launch dialog's --choose).
+    monkeypatch.setattr(entry, "_default_text", lambda parse: entry.DEFAULT_LAUNCH_ARGS_TEXT)
     (tmp_path / "rigs").mkdir()
     (tmp_path / "rigs" / "junior_crib.json").write_text("{}")
     args, reason = entry.resolve_default_args(tmp_path)
-    assert (tmp_path / "launch-args.txt").read_text() in (entry.DEFAULT_LAUNCH_ARGS_TEXT, entry.CHOOSE_LAUNCH_ARGS_TEXT)
+    assert (tmp_path / "launch-args.txt").read_text() == entry.DEFAULT_LAUNCH_ARGS_TEXT
     assert reason is None
     assert args[-2:] == ["--rig", str(tmp_path / "rigs" / "junior_crib.json")]
 
