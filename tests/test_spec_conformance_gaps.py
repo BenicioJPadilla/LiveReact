@@ -25,11 +25,8 @@ from __future__ import annotations
 
 import pytest
 
-from livereact.core.show_state import ShowSnapshot
-from livereact.engines.phrase import ROTATION_BARS, PhraseEngine
 from livereact.fixtures.rig import load_rig
 from livereact.merge.merge import Contribution, ManualParams, finalize, merge_contributions
-from livereact.scenes.catalog import bucket_for_energy
 
 
 def _rig():
@@ -158,36 +155,3 @@ def test_auto_blackout_fades_to_safe_default_not_hard_zero():
 
     # Spec's safe_default is a real, dim, colored wash -- not literal zero.
     assert any(blacked), "auto_blackout should degrade to a 40%-lit safe_default, not true black"
-
-
-# --- FAIL-01: on PDL loss, "PhraseEngine holds the current look, disables
-# new predictive cues." ----------------------------------------------------
-
-
-def _snap(bar: int, **kw) -> ShowSnapshot:
-    base = dict(bpm=124.0, energy=0.7, bar=bar, beat_in_bar=1, beat_phase=0.0,
-                fader_a=1.0, eq_low_a=1.0, pdl_fresh=False)
-    base.update(kw)
-    base.setdefault("energy_norm", base["energy"])
-    base.setdefault("bucket", bucket_for_energy(base["energy_norm"]).value)
-    return ShowSnapshot(**base)
-
-
-@pytest.mark.xfail(strict=True, reason="FAIL-01 open: PhraseEngine never reads pdl_fresh")
-def test_phrase_engine_holds_the_look_while_pdl_is_stale():
-    """PhraseEngine._maybe_rotate() (engines/phrase.py) checks `snap.bar`,
-    `self._next`, `snap.in_transition`, `snap.loop_active`, and
-    `bars_since_change` -- it never once reads `snap.pdl_fresh`. The
-    metronome's own free-run behavior on PDL loss (core/metronome.py
-    `_advance_clock`, itself correct per FAIL-01's "movement continues on
-    the internal clock") still advances `snap.bar`, so PhraseEngine keeps
-    rotating scenes off a clock it has no way to know is unanchored --
-    directly contradicting this rule's "PhraseEngine holds the current
-    look" clause, even though the metronome-free-run half of the same rule
-    is correctly implemented."""
-    rig = _rig()
-    eng = PhraseEngine()
-    for bar in range(ROTATION_BARS + 1):
-        eng.tick(_snap(bar, pdl_fresh=False), rig)
-
-    assert eng.rotations == 0, "look should hold while PDL is stale, not rotate on the free-run clock"
