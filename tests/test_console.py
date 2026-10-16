@@ -456,3 +456,15 @@ def test_laser_hit_button_and_j_key_count_moments(qapp):
     win.b_laser_hit.click()
     win.b_laser_hit.click()
     assert app.manual.laser_hit == 2
+
+
+def test_a_forced_start_shows_a_warning_banner_for_the_set(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    win = ConsoleWindow(_app())
+    assert win.l_forced.isHidden()                       # the normal case: no banner
+    forced = App(AppConfig(demo=True, config_path=None,
+                           force_start_note="Forced start: no DJ board at launch. Check the gear."))
+    win = ConsoleWindow(forced)
+    win.refresh()
+    assert not win.l_forced.isHidden() and "no DJ board" in win.l_forced.text()

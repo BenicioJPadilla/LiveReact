@@ -183,3 +183,32 @@ def run_fixture_test(rig: Rig, backend, clock, dmx_rate_hz: float = 40.0, rig_pa
     finally:
         stop.set()
         writer.join(timeout=3.0)
+
+
+def show_fixture_test(rig: Rig, backend, clock, dmx_rate_hz: float = 40.0,
+                      rig_path: str | None = None) -> None:
+    """The panel as a modal window (the launch dialog's "Flash each light"),
+    blocking until it is closed. Everything goes dark before the writer
+    stops and the port is released: the Enttec repeats its last frame, so a
+    flashed light would otherwise stay on until the show starts."""
+    import threading
+
+    from ..output.writer import DmxWriter
+
+    frame_buffer = DmxFrameBuffer()
+    stop = threading.Event()
+    writer = DmxWriter(frame_buffer, backend, clock, stop, hz=dmx_rate_hz)
+    writer.start()
+    try:
+        win = FixtureTestPanel(rig, frame_buffer, rig_path=rig_path)
+        win.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        win.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
+        loop = QtCore.QEventLoop()
+        win.destroyed.connect(loop.quit)
+        win.show()
+        loop.exec()
+    finally:
+        frame_buffer.publish(bytes(UNIVERSE_SIZE))
+        clock.sleep(3.0 / dmx_rate_hz)            # a few writer ticks of all-zero
+        stop.set()
+        writer.join(timeout=3.0)
