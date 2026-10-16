@@ -71,6 +71,9 @@ Useful flags: `--rig <json>` (fixtures + laser profile), `--audio-device
 music stops), `--no-norm-seed` (cold-start the energy normaliser at a new venue).
 `python -m livereact --help` lists the rest.
 
+A double-click macOS app (no terminal or venv) can be built with
+`packaging/macos/build_app.sh`; see `packaging/macos/README.md`.
+
 ### Rigs and laser profiles
 
 `--rig rigs/<file>.json` picks the fixtures, their DMX addresses, the venue
