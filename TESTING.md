@@ -586,7 +586,9 @@ button yet. This test measures it with a phone.
 affected by flashing light (photosensitive epilepsy, migraine). Each step
 strobes for 3 seconds. The tool only climbs until a step measures over 4
 flashes per second, then narrows down *below* that byte; it never goes
-higher. Lasers and every other fixture stay at 0 the whole time. Type `q`
+higher. It assumes every count might be one flash short (a flash cut off at
+the edge of the clip, or missed), so 12 flashes in 3 seconds already counts
+as over 4 per second. Lasers and every other fixture stay at 0 the whole time. Type `q`
 at any prompt or press Ctrl-C to stop; every exit blacks everything out.
 
 Try it first with no hardware (nothing lights, same prompts):
@@ -622,9 +624,14 @@ default strobe window per step.
    fixture. If a count looks lower than a slower byte's, it asks you to
    type it again (typo check).
 
-At the end it prints e.g. `highest safe byte for Wash Bar: 40 (4.0 Hz)`.
-If any step reaches 8 flashes per second or more, it stops that fixture
-immediately and says so; that's expected on a steep fixture, not an error.
+At the end it prints, from everything in the results file so far, e.g.
+`highest safe byte for Wash Bar: 40 (3.3 Hz, at most 3.7 Hz allowing one
+missed flash)` for each fixture, then the one `strobe_cap` that covers them
+all. The show has a single strobe cap for every fixture, so it has to be
+the *lowest* of the fixtures' safe bytes. If any step reaches 8 flashes per
+second or more, it stops that fixture immediately and says so; that's
+expected on a steep fixture, not an error. The moving head is lit at its
+power-on aim (tilted down), so point the stand where that lands.
 
 **What to send back:** `strobe_calibration.json` (written in the folder you
 ran the command from, next to `config.json`). Running it again adds to the
