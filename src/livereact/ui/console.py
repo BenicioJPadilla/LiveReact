@@ -308,6 +308,12 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         v = QtWidgets.QVBoxLayout(w)
         v.setContentsMargins(0, 0, theme.SP1, 0)
         v.setSpacing(theme.SP3)
+        # --force-start skipped the gear gate: say so for the whole set.
+        note = self.app.config.force_start_note
+        self.l_forced = label(f"▲ {note}", "banner", wrap=True)
+        set_css(self.l_forced, _TONES["bad"])
+        v.addWidget(self.l_forced)
+        self.l_forced.setVisible(bool(note))
         v.addWidget(self._build_hero())
 
         rig = Card("Rig", "venue")

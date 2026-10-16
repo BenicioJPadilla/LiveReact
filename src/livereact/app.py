@@ -61,6 +61,8 @@ class AppConfig:
     norm_seed: bool = True  # seed the energy normalizer from the last real session's
         # persisted range (config.py energy_norm, 2026-09-17); `--no-norm-seed` for a
         # cold start (new venue, re-gained mixer). Demo mode never reads or writes it.
+    force_start_note: str = ""  # set when --force-start skipped the gear gate: the
+        # console's warning banner, shown for the whole set (devices.py).
 
 
 class App:

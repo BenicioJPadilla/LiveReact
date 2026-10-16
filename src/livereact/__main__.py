@@ -75,6 +75,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--choose", action="store_true",
                    help="Open the launch dialog first to pick the rig, mode and options "
                         "(remembered in last-launch.json). Quit there exits.")
+    p.add_argument("--force-start", action="store_true",
+                   help="EMERGENCIES ONLY: start a --hardware show even though the light "
+                        "adapter or the DJ board was not detected. The console shows a "
+                        "warning banner for the whole set.")
     return p
 
 
@@ -114,10 +118,38 @@ def _choose(argv: list[str]) -> list[str] | None:
     from .ui.launch_dialog import choose_launch_args
 
     phone = "--phone" in _build_parser()._option_string_actions
-    chosen = choose_launch_args(os.getcwd(), phone_supported=phone)
+    chosen = choose_launch_args(os.getcwd(), phone_supported=phone,
+                                force_start="--force-start" in argv)
     if chosen is None:
         return None
     return _passthrough(argv) + chosen
+
+
+def _is_tool(args: argparse.Namespace) -> bool:
+    """A bring-up tool that runs and exits (never gated: it is how gear is checked)."""
+    return bool(args.doctor or args.bundle is not None or args.net_check
+                or args.midi_monitor or args.fixture_test)
+
+
+def _gear_gate(args: argparse.Namespace) -> tuple[bool, str]:
+    """The --hardware start gate: (start?, the note for the console banner).
+    Refuses (printing what is missing) when the light adapter or the DJ board
+    is not detected, unless --force-start; "" note when nothing is missing."""
+    from .devices import describe, detect_once
+
+    det = detect_once(args.audio_device or "")
+    if det.ok:
+        print(f"Gear check:\n{describe(det)}")
+        return True, ""
+    missing = " and the ".join(det.missing())
+    if not args.force_start:
+        print(f"livereact: not starting the live show, the {missing} "
+              f"{'is' if len(det.missing()) == 1 else 'are'} not connected.\n{describe(det)}\n"
+              "Plug it in and start again, or use --demo. Emergencies only: --force-start.",
+              file=sys.stderr)
+        return False, ""
+    print(f"WARNING: --force-start: starting without the {missing}.\n{describe(det)}", file=sys.stderr)
+    return True, f"Forced start: no {missing} at launch. Check the gear."
 
 
 def _bundle(which: str, log) -> int:
@@ -175,7 +207,9 @@ def main(argv: list[str] | None = None) -> int:
     # log file exists; its answer is parsed as if it had been typed. Never in
     # an engine child (the supervisor's relaunch): that one gets the chosen
     # args, which do not contain --choose.
-    if args.choose and not getattr(args, "engine_child", False):
+    engine_child = getattr(args, "engine_child", False)
+    chose = False
+    if args.choose and not engine_child:
         try:
             chosen = _choose(argv)
         except ImportError as exc:
@@ -185,11 +219,23 @@ def main(argv: list[str] | None = None) -> int:
         if chosen is None:
             return 0
         argv = chosen
+        chose = True
         if from_cli:
             sys.argv[1:] = argv  # anything that re-reads the command line sees the choice
         args = _parse_args(argv)
 
     demo = not args.hardware  # demo is the default; --demo is explicit-but-redundant
+
+    # The gear gate: a live show starts only with the light adapter and the DJ
+    # board detected. Before any session folder, so a refusal leaves nothing
+    # behind. Not for the tools, not for an engine child (a crash relaunch
+    # mid-set must never be held up), and not after the launch dialog, whose
+    # Start already was the gate (except --force-start: the banner needs it).
+    force_note = ""
+    if not demo and not _is_tool(args) and not engine_child and (not chose or args.force_start):
+        ok, force_note = _gear_gate(args)
+        if not ok:
+            return 2
 
     # Resolve a session directory if recording, and route logs into it.
     session_dir = None
@@ -242,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
                        audio_device=args.audio_device,
                        norm_seed=not args.no_norm_seed,
                        bible_failsafe_enabled=args.bible_failsafe,
-                       full_catalog=args.full_catalog,
+                       full_catalog=args.full_catalog, force_start_note=force_note,
                        record=bool(session_dir), session_dir=session_dir)
     app = App(config)
 
