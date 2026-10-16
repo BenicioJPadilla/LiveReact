@@ -47,7 +47,7 @@ def _port(text: str) -> int:
     return port
 
 
-def _parse_args(argv: list[str]) -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="livereact",
         description="Beat-reactive DMX stage-lighting controller for live DJ sets.",
@@ -99,7 +99,52 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Relaunch the engine within seconds if it crashes (default: on with "
                         "--hardware, off in demo). Stop with logs/STOP, Ctrl-C, or by closing the window.")
     p.add_argument(supervisor.CHILD_FLAG, action="store_true", help=argparse.SUPPRESS)
-    return p.parse_args(argv)
+    p.add_argument("--choose", action="store_true",
+                   help="Open the launch dialog first to pick the rig, mode and options "
+                        "(remembered in last-launch.json). Quit there exits.")
+    return p
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    return _build_parser().parse_args(argv)
+
+
+# Options the launch dialog decides; everything else on a --choose command
+# line (--log-file, --rate, ...) is passed through. value: takes an argument.
+_CHOSEN_OPTIONS = {"--demo": False, "--hardware": False, "--visualize": False, "--record": False,
+                   "--rig": True, "--audio-device": True, "--phone": None, "--choose": False}
+
+
+def _passthrough(argv: list[str]) -> list[str]:
+    """``argv`` minus the options the dialog chooses (and their values)."""
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        opt = tok.split("=", 1)[0]
+        if opt in _CHOSEN_OPTIONS:
+            takes = _CHOSEN_OPTIONS[opt]
+            if "=" not in tok and i + 1 < len(argv):
+                nxt = argv[i + 1]
+                if takes or (takes is None and not nxt.startswith("-")):  # --phone [PORT]
+                    i += 1
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
+def _choose(argv: list[str]) -> list[str] | None:
+    """Run the launch dialog; the argv to continue with, or None on Quit.
+    Raises ImportError when PySide6 is missing."""
+    from .ui.launch_dialog import choose_launch_args
+
+    phone = "--phone" in _build_parser()._option_string_actions
+    chosen = choose_launch_args(os.getcwd(), phone_supported=phone)
+    if chosen is None:
+        return None
+    return _passthrough(argv) + chosen
 
 
 def _bundle(which: str, log) -> int:
@@ -149,8 +194,29 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:  # noqa: BLE001
             pass
 
-    raw_argv = list(argv if argv is not None else sys.argv[1:])
-    args = _parse_args(raw_argv)
+    from_cli = argv is None
+    argv = list(sys.argv[1:] if from_cli else argv)
+    args = _parse_args(argv)
+
+    # --choose: the launch dialog runs once, here, before any session dir or
+    # log file exists; its answer is parsed as if it had been typed. Never in
+    # an engine child (the supervisor's relaunch): that one gets the chosen
+    # args, which do not contain --choose.
+    if args.choose and not getattr(args, "engine_child", False):
+        try:
+            chosen = _choose(argv)
+        except ImportError as exc:
+            print(f"livereact: --choose needs PySide6 for the launch dialog ({exc}). "
+                  'Install it with: python -m pip install -e ".[ui]"', file=sys.stderr)
+            return 1
+        if chosen is None:
+            return 0
+        argv = chosen
+        if from_cli:
+            sys.argv[1:] = argv  # anything that re-reads the command line sees the choice
+        args = _parse_args(argv)
+    raw_argv = argv
+
     demo = not args.hardware  # demo is the default; --demo is explicit-but-redundant
     is_tool = (args.doctor or args.bundle is not None or args.net_check
                or args.midi_monitor or args.fixture_test or args.strobe_calibrate)

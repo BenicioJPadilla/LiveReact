@@ -360,6 +360,8 @@ appear at all — note which.)
 python -m livereact --hardware --visualize --record --rig rigs/josh_rig.json
 ```
 
+(Or `python -m livereact --choose`: the launch dialog, pick **Live show**, the rig and **Record this session**, then **Start**.)
+
 Play a set: a track, a build, a drop, then mix into another track.
 
 **Expected:**
