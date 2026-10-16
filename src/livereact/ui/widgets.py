@@ -11,8 +11,8 @@ which fires only when the colour moves by a visible step.
 
 from __future__ import annotations
 
-import time
 from collections import deque
+from functools import lru_cache
 from typing import Iterable
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -29,21 +29,9 @@ _TONE_COLORS = {"ok": OK, "bad": DANGER, "warn": WARN, "idle": TEXT_3, "off": TE
 _ALIGN = QtCore.Qt.AlignmentFlag
 
 
-def _c(color: str, alpha: float | None = None) -> QtGui.QColor:
-    """A QColor from a token, including the stylesheet's ``rgba(r,g,b,a)``."""
-    if color.startswith("rgba("):
-        r, g, b, a = (int(x) for x in color[5:-1].split(","))
-        q = QtGui.QColor(r, g, b, a)
-    else:
-        q = QtGui.QColor(color)
-    if alpha is not None:
-        q.setAlphaF(alpha)
-    return q
-
-
+_c = theme.qcolor
 LINE_C = _c(theme.LINE)
 LINE_2_C = _c(theme.LINE_2)
-LINE_3_C = _c(theme.LINE_3)
 HI_C = _c(theme.HIGHLIGHT)
 
 
@@ -73,11 +61,6 @@ def label(text: str, role: str | None = None, wrap: bool = False) -> QtWidgets.Q
     return lbl
 
 
-def overline(text: str) -> QtWidgets.QLabel:
-    """A small field label. Sentence case: v2 drops the tracked-caps eyebrows."""
-    return label(text, "label")
-
-
 def hair(vertical: bool = False) -> QtWidgets.QFrame:
     f = QtWidgets.QFrame()
     f.setObjectName("vhair" if vertical else "hair")
@@ -91,14 +74,47 @@ def icon_label(name: str, color: str = TEXT_3, size: int = 16) -> QtWidgets.QLab
     return ic
 
 
-def heading(text: str, icon_name: str | None = None, role: str = "h3") -> QtWidgets.QHBoxLayout:
-    """A section heading: a quiet glyph and a condensed title."""
+def heading(text: str, icon_name: str | None = None, role: str = "h3", color: str = TEXT_3,
+            size: int = 16, spacing: int = theme.SP2) -> QtWidgets.QHBoxLayout:
+    """A section heading: a quiet glyph and a title."""
     h = QtWidgets.QHBoxLayout()
-    h.setSpacing(theme.SP2)
+    h.setSpacing(spacing)
     if icon_name:
-        h.addWidget(icon_label(icon_name))
+        h.addWidget(icon_label(icon_name, color, size))
     h.addWidget(label(text, role))
     h.addStretch(1)
+    return h
+
+
+def press_target(w: QtWidgets.QWidget) -> QtWidgets.QWidget:
+    """A control you click, never one that takes the keyboard: B, Space and
+    the arrows must stay the show's shortcuts."""
+    w.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+    w.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+    return w
+
+
+def tile(icon_name: str, tone: str, fill: float = 0.08, edge: float = 0.25,
+         lbl: QtWidgets.QLabel | None = None) -> QtWidgets.QLabel:
+    """A 36 px icon tile tinted by ``tone`` (restyles ``lbl`` if given)."""
+    t = lbl or QtWidgets.QLabel()
+    t.setFixedSize(36, 36)
+    t.setAlignment(_ALIGN.AlignCenter)
+    t.setPixmap(icons.pixmap(icon_name, tone, 19))
+    theme.set_css(t, f"background:{theme.rgba(tone, fill)}; border:1px solid {theme.rgba(tone, edge)};"
+                     f" border-radius:{theme.R_SM}px;")
+    return t
+
+
+def brand_row(mode: str = "", size: int = 22) -> QtWidgets.QHBoxLayout:
+    """The mark, the wordmark and an optional mode badge."""
+    h = QtWidgets.QHBoxLayout()
+    h.setSpacing(theme.SP2)
+    h.addWidget(icon_label("logo", TEXT, size))
+    h.addWidget(label("LiveReact", "wordmark"))
+    h.addStretch(1)
+    if mode:
+        h.addWidget(label(mode, "modeBadge"), 0, _ALIGN.AlignVCenter)
     return h
 
 
@@ -114,24 +130,14 @@ class Card(QtWidgets.QFrame):
         self.body.setSpacing(theme.SP3)
         self._head: QtWidgets.QHBoxLayout | None = None
         if title:
-            self._head = QtWidgets.QHBoxLayout()
-            self._head.setSpacing(theme.SP2)
-            if icon_name:
-                self._head.addWidget(icon_label(icon_name))
-            self.title = label(title, "cardTitle")
-            self.title.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Fixed)
-            self._head.addWidget(self.title)
-            self._head.addStretch(1)
+            self._head = heading(title, icon_name, role="cardTitle")
+            self.title = self._head.itemAt(self._head.count() - 2).widget()
             self.body.addLayout(self._head)
 
     def add_accessory(self, w: QtWidgets.QWidget) -> None:
         if self._head is not None:
             w.setSizePolicy(w.sizePolicy().horizontalPolicy(), QtWidgets.QSizePolicy.Policy.Fixed)
             self._head.addWidget(w)
-
-    def cap_height(self) -> None:
-        """Never grow past what the content can use."""
-        self.body.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinAndMaxSize)
 
 
 def panel(margins=(0, 0, 0, 0), spacing: int = 0, vertical: bool = True) -> tuple[QtWidgets.QFrame, QtWidgets.QBoxLayout]:
@@ -143,8 +149,9 @@ def panel(margins=(0, 0, 0, 0), spacing: int = 0, vertical: bool = True) -> tupl
     return f, lay
 
 
-def segmented(names: list[str], parent=None) -> tuple[QtWidgets.QFrame, QtWidgets.QButtonGroup, list[QtWidgets.QPushButton]]:
-    """A sunk well of exclusive buttons, the picked one raised."""
+def segmented(names: list[str], parent=None, cls=QtWidgets.QPushButton) -> tuple[
+        QtWidgets.QFrame, QtWidgets.QButtonGroup, list[QtWidgets.QAbstractButton]]:
+    """A sunk well of exclusive buttons (or radio buttons), the picked one raised."""
     frame = QtWidgets.QFrame(parent)
     frame.setObjectName("seg")
     h = QtWidgets.QHBoxLayout(frame)
@@ -154,11 +161,9 @@ def segmented(names: list[str], parent=None) -> tuple[QtWidgets.QFrame, QtWidget
     group.setExclusive(True)
     buttons = []
     for n in names:
-        b = QtWidgets.QPushButton(n)
+        b = press_target(cls(n))
         b.setObjectName("segItem")
         b.setCheckable(True)
-        b.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        b.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         group.addButton(b)
         h.addWidget(b, 1)
         buttons.append(b)
@@ -167,19 +172,29 @@ def segmented(names: list[str], parent=None) -> tuple[QtWidgets.QFrame, QtWidget
 
 # --- painting helpers -----------------------------------------------------------
 
+@lru_cache(maxsize=1)
+def _keycap_font() -> tuple[QtGui.QFont, QtGui.QFontMetricsF]:
+    f = font(11, _W.Medium, mono=True)
+    return f, QtGui.QFontMetricsF(f)
+
+
 def draw_keycap(p: QtGui.QPainter, right: float, cy: float, key: str, lit: bool = False,
-                ink: QtGui.QColor | None = None) -> float:
-    """A Raycast-style keycap whose right edge is ``right``; returns its width."""
-    f = font(10.5, _W.Medium, mono=True)
-    fm = QtGui.QFontMetricsF(f)
+                ink: QtGui.QColor | None = None, plate: tuple[str, str] | None = None) -> float:
+    """A Raycast-style keycap whose right edge is ``right``; returns its width.
+    ``plate`` = (fill, edge) colours for a keycap on a light surface."""
+    f, fm = _keycap_font()
     w = max(20.0, fm.horizontalAdvance(key) + 10)
     r = QtCore.QRectF(right - w, cy - 10, w, 20)
     p.save()
     p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-    if lit:
+    if plate:
+        p.setPen(QtGui.QPen(QtGui.QColor(plate[1]), 1))
+        p.setBrush(QtGui.QColor(plate[0]))
+        text = ink or QtGui.QColor(TEXT_2)
+    elif lit:
         p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 50), 1))
         p.setBrush(QtGui.QColor(0, 0, 0, 46))
-        text = ink or QtGui.QColor(0, 0, 0, 180)
+        text = ink or QtGui.QColor(0, 0, 0, 220)
     else:
         g = QtGui.QLinearGradient(r.topLeft(), r.bottomLeft())
         g.setColorAt(0, QtGui.QColor(SURFACE_3))
@@ -196,8 +211,14 @@ def draw_keycap(p: QtGui.QPainter, right: float, cy: float, key: str, lit: bool 
 
 
 def draw_tinted(p: QtGui.QPainter, name: str, x: float, y: float, size: int, color: QtGui.QColor) -> None:
-    """An icon in an arbitrary colour without growing the pixmap cache: the
-    white pixmap is recoloured with SourceIn on a scratch image."""
+    """An icon in an arbitrary colour (the glow): the white pixmap recoloured
+    with SourceIn, kept in a small cache so a repaint doesn't allocate."""
+    p.drawImage(QtCore.QPointF(x, y), _tinted(name, size, color.rgba()))
+
+
+@lru_cache(maxsize=96)
+def _tinted(name: str, size: int, rgba: int) -> QtGui.QImage:
+    color = QtGui.QColor.fromRgba(rgba)
     src = icons.pixmap(name, "#FFFFFF", size)
     img = QtGui.QImage(src.size(), QtGui.QImage.Format.Format_ARGB32_Premultiplied)
     img.setDevicePixelRatio(src.devicePixelRatio())
@@ -207,7 +228,7 @@ def draw_tinted(p: QtGui.QPainter, name: str, x: float, y: float, size: int, col
     ip.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_SourceIn)
     ip.fillRect(img.rect(), color)
     ip.end()
-    p.drawImage(QtCore.QPointF(x, y), img)
+    return img
 
 
 def draw_switch(p: QtGui.QPainter, r: QtCore.QRectF, on: bool, enabled: bool = True) -> None:
@@ -241,9 +262,6 @@ class Dot(QtWidgets.QWidget):
             self._tone = tone
             self.update()
 
-    def tone(self) -> str:
-        return self._tone
-
     def paintEvent(self, _e) -> None:  # noqa: N802
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
@@ -262,10 +280,10 @@ class Dot(QtWidgets.QWidget):
 class StatusLine(QtWidgets.QWidget):
     """A quiet dot and a plain-language status ("Hearing the music")."""
 
-    def __init__(self, text: str = "", tone: str = "off", parent=None) -> None:
+    def __init__(self, text: str = "", tone: str = "off", role: str = "body2", parent=None) -> None:
         super().__init__(parent)
         self.dot = Dot(tone)
-        self.text = label(text, "body2")
+        self.text = label(text, role)
         h = QtWidgets.QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(theme.SP2)
@@ -279,38 +297,27 @@ class StatusLine(QtWidgets.QWidget):
 
 
 class StatusPill(QtWidgets.QWidget):
-    """A row of ``dot Label [value]`` segments (the technical link dots in
-    Under the hood). ``set`` takes the segment index; nothing repaints
-    unless a segment changed."""
+    """A row of ``dot Label`` segments (the technical link dots in Under the
+    hood). ``set`` takes the segment index; nothing repaints unless a tone
+    changed."""
 
-    def __init__(self, segments: Iterable[tuple[str, str]], mono_value: bool = False, parent=None) -> None:
+    def __init__(self, segments: Iterable[tuple[str, str]], parent=None) -> None:
         super().__init__(parent)
-        # each segment: [label, value, tone, colour override]
-        self._segs: list[list] = [[lbl, "", tone, None] for lbl, tone in segments]
-        self._f_label = font(12, _W.Medium)
-        self._f_value = font(12, _W.DemiBold, mono=mono_value)
+        self._segs: list[list] = [[lbl, "", tone] for lbl, tone in segments]   # [label, (unused), tone]
+        self._f = font(12, _W.Medium)
+        self._fm = QtGui.QFontMetrics(self._f)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
 
-    def set(self, i: int = 0, value: str | None = None, tone: str | None = None,
-            color: str | None = None, label: str | None = None) -> None:
-        seg = self._segs[i]
-        new = [seg[0] if label is None else label, seg[1] if value is None else value,
-               seg[2] if tone is None else tone, color if color is not None else seg[3]]
-        if new != seg:
-            resize = (new[0], len(new[1])) != (seg[0], len(seg[1]))
-            self._segs[i] = new
-            if resize:
-                self.updateGeometry()
+    def set(self, i: int, tone: str) -> None:
+        if self._segs[i][2] != tone:
+            self._segs[i][2] = tone
             self.update()
 
-    def _seg_width(self, seg) -> int:
-        w = 13 + 6 + QtGui.QFontMetrics(self._f_label).horizontalAdvance(seg[0])
-        if seg[1]:
-            w += 6 + QtGui.QFontMetrics(self._f_value).horizontalAdvance(seg[1])
-        return w + 14
+    def _seg_width(self, text: str) -> int:
+        return 13 + self._fm.horizontalAdvance(text) + 14
 
     def sizeHint(self) -> QtCore.QSize:  # noqa: N802
-        return QtCore.QSize(sum(self._seg_width(s) for s in self._segs), 22)
+        return QtCore.QSize(sum(self._seg_width(s[0]) for s in self._segs), 22)
 
     def minimumSizeHint(self) -> QtCore.QSize:  # noqa: N802
         return self.sizeHint()
@@ -318,23 +325,16 @@ class StatusPill(QtWidgets.QWidget):
     def paintEvent(self, _e) -> None:  # noqa: N802
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        p.setFont(self._f)
         cy = self.height() / 2
         x = 0.0
-        for text, value, tone, override in self._segs:
-            c = QtGui.QColor(override or _TONE_COLORS.get(tone, TEXT_3))
+        for text, _v, tone in self._segs:
             p.setPen(QtCore.Qt.PenStyle.NoPen)
-            p.setBrush(c)
+            p.setBrush(QtGui.QColor(_TONE_COLORS.get(tone, TEXT_3)))
             p.drawEllipse(QtCore.QPointF(x + 4, cy), 3.2, 3.2)
-            p.setFont(self._f_label)
             p.setPen(QtGui.QColor(TEXT_2))
-            fm = QtGui.QFontMetrics(self._f_label)
-            tx = x + 13
-            p.drawText(QtCore.QPointF(tx, cy + fm.capHeight() / 2), text)
-            if value:
-                p.setFont(self._f_value)
-                p.setPen(QtGui.QColor(TEXT))
-                p.drawText(QtCore.QPointF(tx + fm.horizontalAdvance(text) + 6, cy + fm.capHeight() / 2), value)
-            x += self._seg_width([text, value, tone, override])
+            p.drawText(QtCore.QPointF(x + 13, cy + self._fm.capHeight() / 2), text)
+            x += self._seg_width(text)
 
 
 class OnAirChip(QtWidgets.QWidget):
@@ -497,7 +497,7 @@ class SectionStrip(QtWidgets.QWidget):
         self.glow = glow
         self._samples: deque[tuple[float, str, float]] = deque(maxlen=int(self.WINDOW_S / self.SAMPLE_S) + 2)
         self._last = -1e9
-        self._f = font(11, _W.Medium)
+        self._f = font(11.5, _W.Medium)
         self.setMinimumHeight(66)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
 
@@ -602,11 +602,9 @@ class CueButton(QtWidgets.QPushButton):
         self._lit = False
         self.glow = glow
         self._f_title = font(12.5, _W.DemiBold)
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)   # Space must stay the strobe shortcut
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        press_target(self)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.setFixedHeight(64)
-        self.setAccessibleName(f"{title} ({key})" if key else title)
+        self.setAccessibleName(f"{title} ({key})" if key else title)   # height: QPushButton#cue in theme.py
         if glow is not None:
             glow.changed.connect(self._glow_changed)
 
@@ -642,7 +640,8 @@ class CueButton(QtWidgets.QPushButton):
             p.drawRoundedRect(r.adjusted(-0.5, -0.5, 0.5, 2.5), theme.R_SM + 1, theme.R_SM + 1)
             fill = QtGui.QColor(g)
             fill.setAlphaF(0.92)
-            p.setPen(QtGui.QPen(g, 1))
+            # a white edge: "lit" reads even when the glow itself is dim
+            p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 210), 1.5))
             p.setBrush(fill)
             ink = self.glow.ink() if self.glow is not None else QtGui.QColor(ON_TEXT)
         else:
@@ -666,7 +665,7 @@ class CueButton(QtWidgets.QPushButton):
         p.setPen(ink)
         p.drawText(inner, int(_ALIGN.AlignLeft | _ALIGN.AlignTop | QtCore.Qt.TextFlag.TextWordWrap), self._title)
         sub = QtGui.QColor(ink)
-        sub.setAlphaF(0.6 if lit else 1.0)
+        sub.setAlphaF(0.85 if lit else 1.0)
         if self._icon_name:
             draw_tinted(p, self._icon_name, inner.left(), inner.bottom() - 16, 16,
                         sub if lit else QtGui.QColor(TEXT_3))
@@ -681,13 +680,10 @@ class BlackoutKey(QtWidgets.QPushButton):
         super().__init__("Blackout", parent)
         self.setObjectName("blackout")
         self.setCheckable(True)
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(74)
+        press_target(self)                   # height: QPushButton#blackout in theme.py
         self.setAccessibleName("Blackout (B)")
         self._f_title = font(20, _W.DemiBold, display=True)
         self._f_sub = font(12.5)
-        self.toggled.connect(self.update)
 
     def paintEvent(self, _e) -> None:  # noqa: N802
         p = QtGui.QPainter(self)
@@ -731,16 +727,8 @@ class BlackoutKey(QtWidgets.QPushButton):
         p.setPen(QtGui.QColor("#3A3D44" if on else TEXT_2))
         p.drawText(QtCore.QPointF(tx, r.center().y() + fm.descent() + 12),
                    "Press again to bring them back" if on else "All lights off, instantly")
-        if on:
-            kr = QtCore.QRectF(r.right() - 18 - 20, r.center().y() - 10, 20, 20)
-            p.setPen(QtGui.QPen(QtGui.QColor("#C2C5CA"), 1))
-            p.setBrush(QtGui.QColor("#D5D7DB"))
-            p.drawRoundedRect(kr, 5, 5)
-            p.setFont(font(10.5, _W.Medium, mono=True))
-            p.setPen(QtGui.QColor("#3A3D44"))
-            p.drawText(kr, _ALIGN.AlignCenter, "B")
-        else:
-            draw_keycap(p, r.right() - 18, r.center().y(), "B")
+        draw_keycap(p, r.right() - 18, r.center().y(), "B", ink=QtGui.QColor("#3A3D44") if on else None,
+                    plate=("#D5D7DB", "#C2C5CA") if on else None)
 
 
 class GlowFader(QtWidgets.QSlider):
@@ -758,9 +746,7 @@ class GlowFader(QtWidgets.QSlider):
         self.glow = glow
         self.small = small
         self.mono = mono
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(24 if small else 40)
+        press_target(self)                   # height: QSlider#glowFader(Sm) in theme.py
         if glow is not None and not mono:
             glow.changed.connect(self.update)
 
@@ -838,16 +824,8 @@ class ToggleRow(QtWidgets.QCheckBox):
         self.before_on = None
         self._f_title = font(13 if compact else 14, _W.DemiBold)
         self._f_sub = font(12 if compact else 12.5)
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        press_target(self)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.toggled.connect(self.update)
-
-    def set_sub(self, sub: str) -> None:
-        if sub != self._sub:
-            self._sub = sub
-            self.updateGeometry()
-            self.update()
 
     def nextCheckState(self) -> None:  # noqa: N802 (Qt override: clicks only)
         if not self.isChecked() and self.before_on is not None and not self.before_on():
@@ -857,8 +835,8 @@ class ToggleRow(QtWidgets.QCheckBox):
     def hitButton(self, _pos) -> bool:  # noqa: N802
         return True
 
-    def _text_width(self) -> int:
-        return max(80, self.width() - 34 - 12 - (32 if self._key else 0))
+    def _text_width(self, w: int | None = None) -> int:
+        return max(80, (self.width() if w is None else w) - 34 - 12 - (32 if self._key else 0))
 
     def sizeHint(self) -> QtCore.QSize:  # noqa: N802
         return QtCore.QSize(240, self.heightForWidth(240))
@@ -870,7 +848,7 @@ class ToggleRow(QtWidgets.QCheckBox):
         return True
 
     def heightForWidth(self, w: int) -> int:  # noqa: N802
-        tw = max(80, w - 34 - 12 - (32 if self._key else 0))
+        tw = self._text_width(w)
         h = QtGui.QFontMetrics(self._f_title).height()
         if self._sub:
             h += 2 + QtGui.QFontMetrics(self._f_sub).boundingRect(
@@ -907,8 +885,7 @@ class NavButton(QtWidgets.QAbstractButton):
         self.setText(text)
         self.setObjectName("nav")
         self.setCheckable(True)
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)   # never steals Space from the strobe shortcut
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        press_target(self)
         self.setFixedHeight(32)
         self.icon_name = icon_name
         self.glow = glow
@@ -975,13 +952,11 @@ class ProSwitch(QtWidgets.QAbstractButton):
         self.setText("Pro controls")
         self.setObjectName("proSwitch")
         self.setCheckable(True)
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        press_target(self)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_Hover)
         self._f = font(13, _W.DemiBold)
         self.setFixedHeight(34)
         self.setAccessibleName("Pro controls")
-        self.toggled.connect(self.update)
 
     def sizeHint(self) -> QtCore.QSize:  # noqa: N802
         return QtCore.QSize(12 + 16 + 10 + QtGui.QFontMetrics(self._f).horizontalAdvance(self.text()) + 10 + 34 + 8, 34)
@@ -1032,36 +1007,31 @@ class VenueTile(QtWidgets.QWidget):
 class Sheet(QtWidgets.QWidget):
     """A confirmation sheet over part of the window (not a modal dialog).
 
-    It covers its parent with a scrim and asks; every button in it is
-    NoFocus, so B, Space and the other show keys keep doing what they do
-    while it is up, and nothing outside the parent is blocked: the Blackout
-    key stays reachable. "Not now", a click outside it, or Esc (the
+    It covers its parent with a scrim and asks, leaving a hole over
+    ``keep_clear`` (the rack with the Blackout key, which stays reachable).
+    Every button in it is NoFocus, so B, Space and the other show keys keep
+    doing what they do while it is up. "Not now", a click outside it, or Esc (the
     window's ``keyPressEvent``) closes it. The confirm button is
     off until every check is ticked."""
 
-    def __init__(self, parent: QtWidgets.QWidget, area=None) -> None:
+    def __init__(self, parent: QtWidgets.QWidget, keep_clear=None) -> None:
         super().__init__(parent)
         self.setObjectName("sheetScrim")
-        self.area = area or (lambda: parent.rect())   # the part of the parent it covers
+        self.keep_clear = keep_clear or QtCore.QRect     # parent coords; an empty rect = cover it all
+        parent.installEventFilter(self)                 # follow the parent's size
         self.hide()
         self._on_ok = None
         self.card = QtWidgets.QFrame(self)
         self.card.setObjectName("sheet")
         self.card.setFixedWidth(460)
-        theme.set_css(self.card, f"QFrame#sheet {{ background:{SURFACE}; border:1px solid {theme.LINE_2};"
-                                 f" border-radius:18px; }}")
         v = QtWidgets.QVBoxLayout(self.card)
         v.setContentsMargins(24, 24, 24, 24)
         v.setSpacing(14)
         self.tile = QtWidgets.QLabel()
-        self.tile.setFixedSize(36, 36)
-        self.tile.setAlignment(_ALIGN.AlignCenter)
         v.addWidget(self.tile)
-        self.title = label("", "h2")
-        theme.set_css(self.title, "font-size: 28px;")
+        self.title = label("", "sheetTitle")
         v.addWidget(self.title)
-        self.body = label("", "body2", wrap=True)
-        theme.set_css(self.body, "font-size: 14px;")
+        self.body = label("", "sheetBody", wrap=True)
         v.addWidget(self.body)
         self.checks_box = QtWidgets.QVBoxLayout()
         self.checks_box.setSpacing(8)
@@ -1071,8 +1041,7 @@ class Sheet(QtWidgets.QWidget):
         self.b_no.setObjectName("ghost")
         self.b_ok = QtWidgets.QPushButton("Continue")
         for b in (self.b_no, self.b_ok):
-            b.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-            b.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            press_target(b)
         v.addSpacing(4)
         v.addLayout(hbox(self.b_no, self.b_ok, stretch_at=0))
         self.b_no.clicked.connect(self.close_sheet)
@@ -1082,19 +1051,14 @@ class Sheet(QtWidgets.QWidget):
             danger: bool = False) -> None:
         self.title.setText(title)
         self.body.setText(body)
-        tone = DANGER if danger else WARN
-        self.tile.setPixmap(icons.pixmap(icon_name, tone, 19))
-        theme.set_css(self.tile, f"background:{theme.rgba(tone, 0.10)}; border:1px solid {theme.rgba(tone, 0.30)};"
-                                 f" border-radius:{theme.R_SM}px;")
+        tile(icon_name, DANGER if danger else WARN, 0.10, 0.30, lbl=self.tile)
         for c in self.checks:
             self.checks_box.removeWidget(c)
             c.deleteLater()
         self.checks = []
         for text in checks:
-            c = QtWidgets.QCheckBox(text)
+            c = press_target(QtWidgets.QCheckBox(text))
             c.setObjectName("checkLine")
-            c.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-            c.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
             c.toggled.connect(self._sync)
             self.checks_box.addWidget(c)
             self.checks.append(c)
@@ -1104,7 +1068,7 @@ class Sheet(QtWidgets.QWidget):
         self.b_ok.style().polish(self.b_ok)
         self._on_ok = on_ok
         self._sync()
-        self.setGeometry(self.area())
+        self._cover()
         self.show()
         self.raise_()
 
@@ -1121,13 +1085,28 @@ class Sheet(QtWidgets.QWidget):
         self._on_ok = None
         self.hide()
 
-    def resizeEvent(self, _e) -> None:  # noqa: N802
-        self.card.adjustSize()
-        self.card.move((self.width() - self.card.width()) // 2, max(16, (self.height() - self.card.height()) // 2))
+    def _cover(self) -> None:
+        self.setGeometry(self.parentWidget().rect())
+        hole = self.keep_clear()
+        self.setMask(QtGui.QRegion(self.rect()).subtracted(QtGui.QRegion(hole)) if hole.isValid()
+                     else QtGui.QRegion(self.rect()))
+        self._place_card()
 
-    def showEvent(self, e) -> None:  # noqa: N802
-        super().showEvent(e)
-        self.resizeEvent(None)
+    def _place_card(self) -> None:
+        """Centred in the part of the page left of the hole."""
+        hole = self.keep_clear()
+        right = hole.left() - theme.SP2 if hole.isValid() else self.width()
+        self.card.adjustSize()
+        self.card.move(max(16, (right - self.card.width()) // 2), max(16, (self.height() - self.card.height()) // 2))
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt override)
+        if event.type() == QtCore.QEvent.Type.Resize and not self.isHidden():
+            self._cover()
+        return False
+
+    def resizeEvent(self, _e) -> None:  # noqa: N802
+        self._place_card()
+
 
     def mousePressEvent(self, e) -> None:  # noqa: N802
         if not self.card.geometry().contains(e.position().toPoint()):
@@ -1146,16 +1125,12 @@ class AppHeader(QtWidgets.QFrame):
         super().__init__(parent)
         self.setObjectName("header")
         self.setFixedHeight(56)
-        theme.set_css(self, f"QFrame#header {{ background:{theme.SIDEBAR}; border:none;"
-                            f" border-bottom:1px solid {theme.LINE}; }}")
         h = QtWidgets.QHBoxLayout(self)
         h.setContentsMargins(theme.SP5, 0, theme.SP4, 0)
         h.setSpacing(theme.SP2)
-        logo = QtWidgets.QLabel()
-        logo.setPixmap(icons.pixmap("logo", TEXT, 22))
-        h.addWidget(logo)
-        h.addSpacing(2)
-        h.addWidget(label("LiveReact", "wordmark"))
+        brand = brand_row()
+        brand.takeAt(brand.count() - 1)      # no stretch here: the subtitle follows
+        h.addLayout(brand)
         if subtitle:
             h.addSpacing(6)
             h.addWidget(label(subtitle, "body2"))
@@ -1176,8 +1151,6 @@ class Footer(QtWidgets.QFrame):
         super().__init__(parent)
         self.setObjectName("footer")
         self.setFixedHeight(32)
-        theme.set_css(self, f"QFrame#footer {{ background:{theme.SIDEBAR}; border:none;"
-                            f" border-top:1px solid {theme.LINE}; }}")
         self.row = QtWidgets.QHBoxLayout(self)
         self.row.setContentsMargins(theme.SP5, 0, theme.SP5, 0)
         self.row.setSpacing(theme.SP4)
@@ -1193,10 +1166,3 @@ def shell(header: QtWidgets.QWidget, body: QtWidgets.QWidget, footer: QtWidgets.
     if footer is not None:
         v.addWidget(footer)
     return w
-
-
-__all__ = [
-    "AppHeader", "BeatLeds", "BlackoutKey", "Card", "CueButton", "Dot", "Footer", "GlowFader", "Meter", "NavButton",
-    "OnAirChip", "ProSwitch", "SectionStrip", "Sheet", "StatusLine", "StatusPill", "ToggleRow",
-    "VenueTile", "hair", "hbox", "heading", "icon_label", "label", "overline", "panel", "segmented", "shell",
-]

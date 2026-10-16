@@ -45,6 +45,8 @@ class StageView(FloorPlanView):
         self._glow_t = 0.0
         self._glow_pending = False
         self._f_chip = font(12.5, _W.Medium)
+        self._fm_chip = QtGui.QFontMetricsF(self._f_chip)
+        self._hud_px: QtGui.QPixmap | None = None     # the HUD, rendered when it changes
         glow.changed.connect(self._glow_changed)
 
     def sizeHint(self) -> QtCore.QSize:  # noqa: N802 (Qt override)
@@ -65,6 +67,7 @@ class StageView(FloorPlanView):
             top = min(vp.height() * 0.30, 120)
             target = QtCore.QRectF(vp).adjusted(24, top, -24, -48)
         if target.width() < 40 or target.height() < 40:
+            self.setSceneRect(QtCore.QRectF())       # track the scene again
             super()._fit()
             return
         k = min(target.width() / r.width(), target.height() / r.height())
@@ -75,18 +78,25 @@ class StageView(FloorPlanView):
         self.resetTransform()
         self.scale(k, k)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self._hud_px = None
+        # round the top corners to the stage frame's
+        r = QtCore.QRectF(self.rect())
+        rad = theme.R_LG - 1
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(r.adjusted(0, 0, 0, rad), rad, rad)
+        self.setMask(QtGui.QRegion(path.toFillPolygon().toPolygon()))
+
     # ------------------------------------------------------------ state
     def _glow_changed(self) -> None:
-        now = time.monotonic()
-        if now - self._glow_t >= _GLOW_REPAINT_S:
-            self._glow_t = now
-            self.resetCachedContent()
-            self.viewport().update()
+        if time.monotonic() - self._glow_t >= _GLOW_REPAINT_S:
+            self._repaint_glow()
         elif not self._glow_pending:
             self._glow_pending = True
-            QtCore.QTimer.singleShot(int(_GLOW_REPAINT_S * 1000), self._glow_late)
+            QtCore.QTimer.singleShot(int(_GLOW_REPAINT_S * 1000), self._repaint_glow)
 
-    def _glow_late(self) -> None:
+    def _repaint_glow(self) -> None:
         self._glow_pending = False
         self._glow_t = time.monotonic()
         self.resetCachedContent()
@@ -98,6 +108,7 @@ class StageView(FloorPlanView):
         state = ((title, sub), left, right, veil)
         if state != (self._hud, self._left, self._right, self._veil):
             self._hud, self._left, self._right, self._veil = state
+            self._hud_px = None
             self.viewport().update()
 
     def hud_text(self) -> tuple[str, str]:
@@ -124,11 +135,23 @@ class StageView(FloorPlanView):
         p.restore()
 
     def drawForeground(self, p: QtGui.QPainter, rect) -> None:  # noqa: N802
+        # Fixtures repaint every refresh; the HUD only when it changes.
+        if self._hud_px is None:
+            self._hud_px = self._render_hud()
         p.save()
         p.resetTransform()
+        p.drawPixmap(0, 0, self._hud_px)
+        p.restore()
+
+    def _render_hud(self) -> QtGui.QPixmap:
+        vp = QtCore.QRectF(self.viewport().rect())
+        dpr = self.viewport().devicePixelRatioF()
+        px = QtGui.QPixmap(max(1, round(vp.width() * dpr)), max(1, round(vp.height() * dpr)))
+        px.setDevicePixelRatio(dpr)
+        px.fill(QtCore.Qt.GlobalColor.transparent)
+        p = QtGui.QPainter(px)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
-        vp = QtCore.QRectF(self.viewport().rect())
         if self._veil:
             p.fillRect(vp, QtGui.QColor(4, 4, 5, 178))
         fade = QtGui.QLinearGradient(0, 0, 0, vp.height() * 0.46)
@@ -139,8 +162,7 @@ class StageView(FloorPlanView):
         title, sub = self._hud
         x, y = 28.0, 26.0
         if title:
-            size = max(34.0, min(64.0, vp.width() * 0.058))
-            f = font(size, _W.DemiBold, display=True)
+            f = font(max(34.0, min(64.0, vp.width() * 0.058)), _W.DemiBold, display=True)
             p.setFont(f)
             fm = QtGui.QFontMetricsF(f)
             p.setPen(QtGui.QColor(TEXT))
@@ -153,29 +175,25 @@ class StageView(FloorPlanView):
             p.setPen(QtGui.QColor(TEXT_2))
             p.drawText(QtCore.QRectF(x, y + 8, vp.width() - 2 * x, fm.height() * 2 + 4),
                        int(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.TextFlag.TextWordWrap), sub)
-        # chips
         cy = vp.height() - 16 - 26
         cx = 16.0
         for text in self._left:
             cx += self._chip(p, cx, cy, text, "") + 6
         rx = vp.width() - 16
         for text, tone in reversed(self._right):
-            w = self._chip_w(text, tone)
-            self._chip(p, rx - w, cy, text, tone)
-            rx -= w + 6
-        p.restore()
+            rx -= self._chip(p, rx, cy, text, tone, right=True) + 6
+        p.end()
+        return px
 
-    def _chip_w(self, text: str, tone: str) -> float:
-        return QtGui.QFontMetricsF(self._f_chip).horizontalAdvance(text) + 20 + (13 if tone else 0)
-
-    def _chip(self, p: QtGui.QPainter, x: float, y: float, text: str, tone: str) -> float:
-        """A glass chip; ``tone`` ("ok" / "off") adds a status dot."""
-        w = self._chip_w(text, tone)
-        r = QtCore.QRectF(x, y, w, 26)
+    def _chip(self, p: QtGui.QPainter, x: float, y: float, text: str, tone: str, right: bool = False) -> float:
+        """A glass chip at ``x`` (its right edge when ``right``); ``tone`` adds
+        a status dot. Returns its width."""
+        w = self._fm_chip.horizontalAdvance(text) + 20 + (13 if tone else 0)
+        r = QtCore.QRectF(x - w if right else x, y, w, 26)
         p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 28), 1))
         p.setBrush(QtGui.QColor(8, 9, 10, 170))
         p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), theme.R_XS, theme.R_XS)
-        tx = x + 10
+        tx = r.left() + 10
         if tone:
             c = QtGui.QColor(theme.OK if tone == "ok" else theme.TEXT_3)
             p.setPen(QtCore.Qt.PenStyle.NoPen)
@@ -184,6 +202,5 @@ class StageView(FloorPlanView):
             tx += 13
         p.setFont(self._f_chip)
         p.setPen(QtGui.QColor(TEXT))
-        fm = QtGui.QFontMetricsF(self._f_chip)
-        p.drawText(QtCore.QPointF(tx, r.center().y() + fm.capHeight() / 2), text)
+        p.drawText(QtCore.QPointF(tx, r.center().y() + self._fm_chip.capHeight() / 2), text)
         return w

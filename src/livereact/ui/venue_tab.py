@@ -237,7 +237,7 @@ class VenueTab(QtWidgets.QWidget):
                 w.deleteLater()
         self._target_boxes.clear()
         for col, cap in enumerate(("", "X", "Y", "HEIGHT")):
-            self._targets_form.addWidget(label(cap, "overline"), 0, col)
+            self._targets_form.addWidget(label(cap, "label"), 0, col)
         for row, (name, p) in enumerate(sorted(self.rig.venue.targets.items()), start=1):
             self._targets_form.addWidget(label(name, "value"), row, 0)
             boxes = (_ft_box(p.x), _ft_box(p.y), _ft_box(p.z))

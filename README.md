@@ -119,20 +119,32 @@ geometry, and the **laser profile** (`fixtures/rig.py`, `LASER_PROFILES`):
 | `accent` | One sweep per 8-bar block during a PEAK | `engines/laser.py` | `josh_rig.json` (default when unset) |
 | `feature` | Two lasers as the main light, lit for the whole set | `engines/laser_feature.py` | `bar_rig.json` |
 | `trigger` | Lasers as punctuation: dark by default, 2-bar moments on drop hits and sustained peaks; **J** fires one now, **K** holds | `engines/laser_trigger.py` | `testing_setup.json` (garage truss rig) |
-| `show` | Lasers lit all set; a "Laser Show" console tab with follow-the-music / rotate / hold modes | `engines/laser_show.py` | `sophias_thai*.json` |
-| `manual` | Nothing listens to the music; scene cue buttons (OFF + Rainbow, Slow Rainbow, Rainbow Dots, Blue Sweep, White, Green) on the Show tab, off at launch | `engines/laser_manual.py` | `junior_crib.json` |
+| `show` | Lasers lit all set; follow-the-music / rotate / hold modes and the looks in the console's Pro controls (Lasers) | `engines/laser_show.py` | `sophias_thai*.json` |
+| `manual` | Nothing listens to the music; scene cue buttons (OFF + Rainbow, Slow Rainbow, Rainbow Dots, Blue Sweep, White, Green) in the console's Pro controls (Lasers), off at launch | `engines/laser_manual.py` | `junior_crib.json` |
 
 After a drop, moving heads run `scenes/movement.py`'s tempo-locked shapes
 inside a per-head **motion box** (pan/tilt boundaries captured live from the
-Venue tab) around the calibrated crowd aim.
+Lights page, Room) around the calibrated crowd aim.
 
 ### The console
 
-Four tabs when `--visualize` is on: **Show** (energy state, manual caps,
-blackout, laser arm, cue buttons on `manual` rigs, floor-plan mini-map),
-**Laser Show** (only on `show` rigs), **Venue** (editable floor plan in feet,
-per-fixture position/height/facing, moving-head calibration: jog live, set aim,
-capture motion-box bounds, save rig), and **Rig Config**.
+With `--visualize`, a sidebar picks the page:
+
+- **Live**: the floor plan lit by the show with a plain-language status
+  ("Listening.", "Blackout."), the beat, what the music is doing and the last
+  two minutes as sections; Brightness and the **Blackout** key (B).
+  **Pro controls** (the switch top right, remembered between launches) adds
+  Moments (build C, drop D, strobe burst Space, next look →, freeze F, tap T),
+  Lasers (arm L, hit J, hold K, and the `show` / `manual` rig controls), Feel
+  (strobe limit, warm/cool, Synth Sync S) and Under the hood (BPM, section,
+  link dots, activity). While Pro controls are hidden only B works from the
+  keyboard. The first time lasers are armed in a run that started with them
+  off, the console asks to confirm the mounting first.
+- **Lights**: Room (editable floor plan in feet, per-fixture
+  position/height/facing, moving-head calibration: jog live, set aim, capture
+  motion-box bounds, save rig) and Addresses (the rig table).
+- **Phone remote** and **Safety**: what the phone console and the safety rules
+  do, in plain words.
 
 ### Phone console
 
@@ -219,7 +231,7 @@ src/livereact/
   merge/                 priority merge + manual caps + safety clamps
   fixtures/              fixture profiles, rig loader/saver, venue geometry + head calibration
   output/                backend interface, null/log backend, Enttec serial, 40 Hz writer
-  ui/                    PySide6 console (Show / Laser Show / Venue / Rig Config), floor plan, visualizer
+  ui/                    PySide6 console (Live / Lights / Phone remote / Safety), floor plan, visualizer
   remote/                opt-in phone console (--phone): stdlib web page that can only make the show safer
   recorder.py, diagnostics.py, network.py, tap_tempo.py, dynamics.py
 rigs/                    rig JSON files (fixtures, addresses, venue geometry, laser profile)

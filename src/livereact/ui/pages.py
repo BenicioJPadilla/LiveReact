@@ -16,7 +16,7 @@ from ..core.metronome import PDL_LOST_HOLD_BARS
 from ..core.silence import HOLD_S
 from ..engines.reactive import STROBE_MAX_BURST_S, STROBE_MIN_SPACING_S, STROBE_TOGGLE_MAX_HZ
 from . import icons, theme
-from .widgets import _c, hbox, icon_label, label, segmented
+from .widgets import StatusLine, heading, hbox, icon_label, label, panel, segmented, tile
 
 _ALIGN = QtCore.Qt.AlignmentFlag
 
@@ -37,29 +37,6 @@ def page_head(title: str, lead: str, eyebrow: str = "") -> QtWidgets.QVBoxLayout
     return v
 
 
-def _page(parent=None) -> tuple[QtWidgets.QScrollArea, QtWidgets.QVBoxLayout]:
-    """A scrolling page with the v2 page padding."""
-    inner = QtWidgets.QWidget()
-    v = QtWidgets.QVBoxLayout(inner)
-    v.setContentsMargins(theme.SP8, 28, theme.SP8, 48)
-    v.setSpacing(theme.SP6)
-    area = QtWidgets.QScrollArea(parent)
-    area.setWidgetResizable(True)
-    area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-    area.setWidget(inner)
-    return area, v
-
-
-def _tile(icon_name: str, tone: str) -> QtWidgets.QLabel:
-    t = QtWidgets.QLabel()
-    t.setFixedSize(36, 36)
-    t.setAlignment(_ALIGN.AlignCenter)
-    t.setPixmap(icons.pixmap(icon_name, tone, 19))
-    theme.set_css(t, f"background:{theme.rgba(tone, 0.08)}; border:1px solid {theme.rgba(tone, 0.25)};"
-                     f" border-radius:{theme.R_SM}px;")
-    return t
-
-
 def _rules(lines: list[str]) -> QtWidgets.QVBoxLayout:
     v = QtWidgets.QVBoxLayout()
     v.setSpacing(10)
@@ -74,13 +51,8 @@ def _rules(lines: list[str]) -> QtWidgets.QVBoxLayout:
     return v
 
 
-def _panel(margins=(22, 22, 22, 22), spacing: int = 16) -> tuple[QtWidgets.QFrame, QtWidgets.QVBoxLayout]:
-    f = QtWidgets.QFrame()
-    f.setObjectName("panel")
-    v = QtWidgets.QVBoxLayout(f)
-    v.setContentsMargins(*margins)
-    v.setSpacing(spacing)
-    return f, v
+def _panel(margins=(22, 22, 22, 22), spacing: int = 16) -> tuple[QtWidgets.QFrame, QtWidgets.QBoxLayout]:
+    return panel(margins, spacing)
 
 
 class LightsHeader(QtWidgets.QWidget):
@@ -144,7 +116,7 @@ class PhonePage(QtWidgets.QScrollArea):
 
         # off: how to turn it on
         self.off_row, ov = _panel((20, 18, 20, 20), 6)
-        ov.addLayout(hbox(_dot_label("Phone remote is off", "off"), stretch_at=1))
+        ov.addLayout(hbox(StatusLine("Phone remote is off", "off", role="strong"), stretch_at=1))
         ov.addWidget(label("Turn on Phone console in the launch window, or start LiveReact with --phone.",
                            "body2", wrap=True))
         left.addWidget(self.off_row)
@@ -152,7 +124,7 @@ class PhonePage(QtWidgets.QScrollArea):
         call, cv = _panel((18, 18, 18, 18), 0)
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(14)
-        row.addWidget(_tile("shieldok", theme.OK), 0, _ALIGN.AlignTop)
+        row.addWidget(tile("shieldok", theme.OK), 0, _ALIGN.AlignTop)
         txt = QtWidgets.QVBoxLayout()
         txt.setSpacing(4)
         txt.addWidget(label("Your phone can only make things calmer.", "strong"))
@@ -183,7 +155,7 @@ class PhonePage(QtWidgets.QScrollArea):
         ):
             row = QtWidgets.QHBoxLayout()
             row.setSpacing(12)
-            row.addWidget(_tile(icon_name, theme.TEXT_2), 0, _ALIGN.AlignTop)
+            row.addWidget(tile(icon_name, theme.TEXT_2), 0, _ALIGN.AlignTop)
             t = QtWidgets.QVBoxLayout()
             t.setSpacing(2)
             t.addWidget(label(title, "strong"))
@@ -199,13 +171,6 @@ class PhonePage(QtWidgets.QScrollArea):
         self.l_phone.setText(url or "")
         self.phone_row.setVisible(bool(url))
         self.off_row.setVisible(not url)
-
-
-def _dot_label(text: str, tone: str) -> QtWidgets.QWidget:
-    from .widgets import StatusLine
-    s = StatusLine(text, tone)
-    s.text.setObjectName("strong")
-    return s
 
 
 class _StrobeZones(QtWidgets.QWidget):
@@ -231,7 +196,7 @@ class _StrobeZones(QtWidgets.QWidget):
         p.setPen(QtCore.Qt.PenStyle.NoPen)
         p.fillRect(QtCore.QRectF(0, 0, x(self.max_hz) - 1, 12), QtGui.QColor(theme.OK))
         p.fillRect(QtCore.QRectF(x(self.max_hz) + 1, 0, x(10) - x(self.max_hz) - 2, 12), QtGui.QColor(theme.SURFACE_3))
-        p.fillRect(QtCore.QRectF(x(10) + 1, 0, w - x(10), 12), _c(theme.DANGER, 0.55))
+        p.fillRect(QtCore.QRectF(x(10) + 1, 0, w - x(10), 12), theme.qcolor(theme.DANGER, 0.55))
         hatch = QtGui.QPen(QtGui.QColor(theme.DANGER), 4)
         p.setPen(hatch)
         xx = x(10) - 12
@@ -248,15 +213,14 @@ class _StrobeZones(QtWidgets.QWidget):
             p.drawText(QtCore.QPointF(tx, 28), text)
 
 
-def _key(color: QtGui.QColor | str, text: str) -> QtWidgets.QWidget:
+def _key(color: str, text: str) -> QtWidgets.QWidget:
     w = QtWidgets.QWidget()
     h = QtWidgets.QHBoxLayout(w)
     h.setContentsMargins(0, 0, 0, 0)
     h.setSpacing(6)
     sw = QtWidgets.QLabel()
     sw.setFixedSize(8, 8)
-    c = QtGui.QColor(color)
-    theme.set_css(sw, f"background: rgba({c.red()},{c.green()},{c.blue()},{c.alpha()}); border-radius: 2px;")
+    theme.set_css(sw, f"background: {color}; border-radius: 2px;")
     h.addWidget(sw)
     h.addWidget(label(text, "body2"))
     return w
@@ -264,16 +228,13 @@ def _key(color: QtGui.QColor | str, text: str) -> QtWidgets.QWidget:
 
 # What each laser profile does at launch and when the signal drops
 # (app.py arms "show" and "manual" at launch; engines/laser*.py).
+_OFF_AT_LAUNCH = ("Lasers start off, every time",
+                  ["They are off when the app opens. Only this computer can turn them on (L).",
+                   "They go dark if the music signal drops."])
 _LASER_COPY = {
-    "accent": ("Lasers start off, every time",
-               ["They are off when the app opens. Only this computer can turn them on (L).",
-                "They go dark if the music or DJ Link signal drops."]),
-    "feature": ("Lasers start off, every time",
-                ["They are off when the app opens. Only this computer can turn them on (L).",
-                 "They go dark if the music signal drops."]),
-    "trigger": ("Lasers start off, every time",
-                ["They are off when the app opens. Only this computer can turn them on (L).",
-                 "They go dark if the music signal drops."]),
+    "accent": (_OFF_AT_LAUNCH[0], [_OFF_AT_LAUNCH[1][0], "They go dark if the music or DJ Link signal drops."]),
+    "feature": _OFF_AT_LAUNCH,
+    "trigger": _OFF_AT_LAUNCH,
     "show": ("This rig's laser show starts on",
              ["The laser switch is on when the app opens. Press L to switch it off.",
               "If the signal drops, the laser show keeps running on its own clock."]),
@@ -366,10 +327,7 @@ class SafetyPage(QtWidgets.QScrollArea):
 
 def _section_label(icon_name: str, text: str) -> QtWidgets.QWidget:
     w = QtWidgets.QWidget()
-    h = QtWidgets.QHBoxLayout(w)
+    h = heading(text, icon_name, role="label", color=theme.TEXT_2, size=18, spacing=10)
     h.setContentsMargins(0, 0, 0, 0)
-    h.setSpacing(10)
-    h.addWidget(icon_label(icon_name, theme.TEXT_2, 18))
-    h.addWidget(label(text, "label"))
-    h.addStretch(1)
+    w.setLayout(h)
     return w

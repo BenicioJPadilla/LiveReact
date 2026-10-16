@@ -20,10 +20,11 @@ Layout (design v2, ui/theme.py; lr-design/prototype-v2.html):
     LIGHTS    the Venue floor plan + calibration, or the Rig Config table
     PHONE / SAFETY   what the phone console and the safety rules do
 
-Pro controls hide Josh-level controls from everyone else. While they are
-hidden, only B (Blackout) works from the keyboard; every other shortcut
-comes back with them, unchanged. The switch is remembered between launches
-(QSettings) when the console is opened by ``run_console``.
+Pro controls hide Josh-level controls from everyone else. Every keyboard
+shortcut works whether they are shown or not (Josh's muscle memory), and
+anything latched by a key (Freeze, the laser hold, a held build or an armed
+drop) shows on the stage either way. The switch is remembered between
+launches (QSettings) when the console is opened by ``run_console``.
 
 Every control keeps the attribute name it had before (tests/test_console.py
 finds them that way). Refresh does no more work than before: it reads the
@@ -55,7 +56,7 @@ from .venue_tab import VenueTab
 from .widgets import (
     BeatLeds, BlackoutKey, CueButton, GlowFader, Meter, NavButton, OnAirChip, ProSwitch,
     SECTION_NAMES, SectionStrip, Sheet, StatusLine, StatusPill, ToggleRow, VenueTile,
-    hair, hbox, heading, icon_label, label,
+    brand_row, hair, hbox, heading, icon_label, label, press_target, segmented,
 )
 
 log = logging.getLogger(__name__)
@@ -64,12 +65,11 @@ _ALIGN = QtCore.Qt.AlignmentFlag
 
 # Activity lines (Under the hood): a tone bar down the left edge carries the
 # status; the text itself stays readable graphite / white.
-_TONES = {
-    "ok": f"color:{TEXT}; background:{theme.SURFACE_2}; border:none; border-left:2px solid {OK};",
-    "bad": f"color:{TEXT}; background:{theme.SURFACE_2}; border:none; border-left:2px solid {DANGER};",
-    "muted": f"color:{TEXT_2}; background:{theme.SURFACE_2}; border:none; border-left:2px solid {TEXT_3};",
-    "warn": f"color:{TEXT}; background:{theme.SURFACE_2}; border:none; border-left:2px solid {WARN};",
-}
+_TONES = {tone: f"color:{ink}; background:{theme.SURFACE_2}; border:none; border-left:2px solid {bar};"
+          for tone, ink, bar in (("ok", TEXT, OK), ("bad", TEXT, DANGER), ("muted", TEXT_2, TEXT_3),
+                                 ("warn", TEXT, WARN))}
+# the chips in Under the hood: bright when something is on, quiet otherwise
+_CHIP = {c: chip_css(c) for c in (TEXT, TEXT_2, TEXT_3)}
 
 # The plain-language read of the music, per ShowSnapshot.bucket.
 _READ = {
@@ -108,7 +108,6 @@ def _mirror_check(w: QtWidgets.QAbstractButton, on: bool) -> None:
         w.blockSignals(True)
         w.setChecked(on)
         w.blockSignals(False)
-        w.update()
 
 
 def _mirror_slider(s: QtWidgets.QSlider, val: QtWidgets.QLabel, value: float) -> None:
@@ -123,12 +122,28 @@ def _mirror_slider(s: QtWidgets.QSlider, val: QtWidgets.QLabel, value: float) ->
 
 
 def _look_button(text: str, role: str = "look") -> QtWidgets.QPushButton:
-    b = QtWidgets.QPushButton(text)
+    b = press_target(QtWidgets.QPushButton(text))
     b.setObjectName(role)            # #look / #lookOff in ui/theme.py
     b.setCheckable(True)
-    b.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-    b.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
     return b
+
+
+def _lights(n: int) -> str:
+    return f"{n} light{'s' if n != 1 else ''}"
+
+
+def _look_grid(names: list[str], buttons: dict, parent) -> tuple[QtWidgets.QButtonGroup, QtWidgets.QGridLayout]:
+    """Exclusive look / scene chips, three to a row, into ``buttons`` by name."""
+    grid = QtWidgets.QGridLayout()
+    grid.setSpacing(4)
+    group = QtWidgets.QButtonGroup(parent)
+    group.setExclusive(True)
+    for i, name in enumerate(names):
+        b = _look_button("Off" if name == "OFF" else name, "lookOff" if name == "OFF" else "look")
+        buttons[name] = b
+        group.addButton(b)
+        grid.addWidget(b, i // 3, i % 3)
+    return group, grid
 
 
 def _clock(seconds: float) -> str:
@@ -231,10 +246,9 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         vh.addWidget(VenueTile(self.glow))
         txt = QtWidgets.QVBoxLayout()
         txt.setSpacing(0)
-        self.l_venue = label(name, "strong")
-        set_css(self.l_venue, "font-size: 13px;")
+        self.l_venue = label(name, "venueName")
         txt.addWidget(self.l_venue)
-        txt.addWidget(label(f"{n} light{'s' if n != 1 else ''}", "hint"))
+        txt.addWidget(label(_lights(n), "hint"))
         vh.addLayout(txt, 1)
         venue.setToolTip(rig_path or "The built-in default rig")
         v.addWidget(venue)
@@ -264,19 +278,10 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.nav_live.setChecked(True)
         v.addStretch(1)
 
-        brand = QtWidgets.QWidget()
-        bh = QtWidgets.QHBoxLayout(brand)
-        bh.setContentsMargins(8, 10, 8, 2)
-        bh.setSpacing(8)
-        from . import icons
-        logo = QtWidgets.QLabel()
-        logo.setPixmap(icons.pixmap("logo", TEXT, 20))
-        bh.addWidget(logo)
-        bh.addWidget(label("LiveReact", "wordmark"))
-        bh.addStretch(1)
-        bh.addWidget(label("Demo" if self._demo else "Live show", "modeBadge"))
+        brand = brand_row("Demo" if self._demo else "Live show", size=20)
+        brand.setContentsMargins(8, 10, 8, 2)
         v.addWidget(hair())
-        v.addWidget(brand)
+        v.addLayout(brand)
         return side
 
     def _tab_changed(self, idx: int) -> None:
@@ -320,9 +325,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
 
         # --force-start skipped the gear gate: say so for the whole set.
         note = self.app.config.force_start_note
-        self.l_forced = label(note or "", "body", wrap=True)
-        set_css(self.l_forced, f"background:{theme.rgba(DANGER, 0.08)}; border:1px solid {theme.rgba(DANGER, 0.32)};"
-                               f" border-radius:{theme.R_SM}px; padding:10px 14px;")
+        self.l_forced = label(note or "", "dangerNote", wrap=True)
         v.addWidget(self.l_forced)
         self.l_forced.setVisible(bool(note))
 
@@ -353,39 +356,33 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         v.addLayout(grid, 1)
         # The confirmation sheet covers the page but not the rack column: the
         # Blackout key stays reachable while it is up.
-        self.sheet = Sheet(page, area=lambda: QtCore.QRect(
-            0, 0, self._rack.geometry().left() - theme.SP2, page.height()))
+        self.sheet = Sheet(page, keep_clear=lambda: self._rack.geometry())
 
         area = QtWidgets.QScrollArea()
         area.setWidgetResizable(True)
         area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         area.setWidget(page)
-        self.live_page = area
         return area
 
     def _build_stage(self) -> QtWidgets.QFrame:
         frame = QtWidgets.QFrame()
         frame.setObjectName("stage")
-        set_css(frame, f"QFrame#stage {{ background:{theme.ROOM}; border:1px solid {theme.LINE_2};"
-                       f" border-radius:{theme.R_LG}px; }}")
         v = QtWidgets.QVBoxLayout(frame)
         v.setContentsMargins(1, 1, 1, 1)
         v.setSpacing(0)
         self.rig_view.setMinimumHeight(200)
-        self.rig_view.installEventFilter(self)
         v.addWidget(self.rig_view, 1)
 
         deck = QtWidgets.QFrame()
         deck.setObjectName("deck")
-        set_css(deck, f"QFrame#deck {{ background:{theme.DECK}; border:none; border-top:1px solid {theme.LINE};"
-                      f" border-bottom-left-radius:{theme.R_LG - 1}px; border-bottom-right-radius:{theme.R_LG - 1}px; }}")
         dh = QtWidgets.QHBoxLayout(deck)
         dh.setContentsMargins(20, 16, 20, 18)
         dh.setSpacing(24)
         now = QtWidgets.QVBoxLayout()
         now.setSpacing(3)
         self.beat_leds = BeatLeds(self.glow)
-        now.addWidget(self.beat_leds)
+        self.l_deck_bpm = label("", "hint")
+        now.addLayout(hbox(self.beat_leds, self.l_deck_bpm, spacing=10, stretch_at=2))
         now.addSpacing(6)
         self.l_read_title = label("", "readTitle")
         self.l_read_text = label("", "readText", wrap=True)
@@ -405,16 +402,6 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         dh.addLayout(track, 1)
         v.addWidget(deck)
         return frame
-
-    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt override)
-        # round the stage view's top corners to the frame's
-        if obj is self.rig_view and event.type() == QtCore.QEvent.Type.Resize:
-            r = QtCore.QRectF(self.rig_view.rect())
-            path = QtGui.QPainterPath()
-            rad = theme.R_LG - 1
-            path.addRoundedRect(r.adjusted(0, 0, 0, rad), rad, rad)
-            self.rig_view.setMask(QtGui.QRegion(path.toFillPolygon().toPolygon()))
-        return super().eventFilter(obj, event)
 
     def _build_rack(self) -> QtWidgets.QWidget:
         m = self.app.manual
@@ -557,8 +544,12 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         fv.addLayout(hbox(label("Strobe limit", "body2"), self.l_strobe_v, stretch_at=1))
         fv.addWidget(self.s_strobe)
         fv.addSpacing(4)
-        fv.addLayout(hbox(label("Warm", "body2"), self.l_warm_v, label("Cool", "body2"), stretch_at=1))
-        fv.itemAt(fv.count() - 1).layout().insertStretch(3, 1)
+        warm = hbox(label("Warm", "body2"))
+        warm.addStretch(1)
+        warm.addWidget(self.l_warm_v)
+        warm.addStretch(1)
+        warm.addWidget(label("Cool", "body2"))
+        fv.addLayout(warm)
         fv.addWidget(self.s_warm)
         fv.addSpacing(4)
         # Synth Sync (Josh, 2026-09-15): wash follows the synths/stabs (the mid
@@ -587,6 +578,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         # Energy bucket (core/show_state.py's debounced `bucket`): the single
         # most useful "what does the show think is happening" readout.
         self.l_bucket = label("--", "bucket")
+        set_css(self.l_bucket, _CHIP[TEXT])
         self.l_scene = label("--", "value")
         # Laser profile + mood (2026-10-01): on the bar's feature rig the
         # lasers are the main light, so what they are doing sits here too.
@@ -631,11 +623,14 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         # FAIL-01: Pro DJ Link went quiet mid-set; the show holds its look.
         self.l_pdl_lost = label("", "banner", wrap=True)
         self.l_idle = label("○ Automation is running the show. Nothing needs you right now.", "idle", wrap=True)
-        # each line sits under the column it is about
-        for lbl, col in ((self.l_pdl_lost, hv), (self.l_auto_blackout, hv), (self.l_cue, mv), (self.l_arm, mv),
-                         (self.l_laser_flash, lv), (self.l_synth, fv)):
+        # each line sits under the column it is about: the link and silence
+        # lines here, the rest above their column's closing stretch
+        for lbl in (self.l_pdl_lost, self.l_auto_blackout):
             lbl.hide()
-            col.insertWidget(col.count() - 1, lbl)     # above the column's closing stretch
+            hv.addWidget(lbl)
+        for lbl, col in ((self.l_cue, mv), (self.l_arm, mv), (self.l_laser_flash, lv), (self.l_synth, fv)):
+            lbl.hide()
+            col.insertWidget(col.count() - 1, lbl)
         hv.addWidget(self.l_idle)
         hv.addStretch(1)
 
@@ -677,15 +672,8 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             from ..engines.laser_manual import manual_scene_names as scene_names
             eng = self.app.laser_engine
             lv.addWidget(label("Scenes", "label"))
-            grid = QtWidgets.QGridLayout()
-            grid.setSpacing(4)
-            self._laser_scene_group = QtWidgets.QButtonGroup(parent)
-            self._laser_scene_group.setExclusive(True)
-            for i, name in enumerate(["OFF"] + scene_names()):
-                b = _look_button("Off" if name == "OFF" else name, "lookOff" if name == "OFF" else "look")
-                self.laser_scene_buttons[name] = b
-                self._laser_scene_group.addButton(b)
-                grid.addWidget(b, i // 3, i % 3)
+            self._laser_scene_group, grid = _look_grid(["OFF"] + scene_names(), self.laser_scene_buttons, parent)
+            for name, b in self.laser_scene_buttons.items():
                 if name == "OFF":
                     b.clicked.connect(eng.off)
                 else:
@@ -696,36 +684,17 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             # Laser SHOW profile (2026-10-08, engines/laser_show.py): the mode
             # (follow the music / rotate / hold one look), the looks (pressing
             # one holds it) and the drop accent. ManualParams fields only.
-            seg = QtWidgets.QFrame()
-            seg.setObjectName("seg")
-            sh = QtWidgets.QHBoxLayout(seg)
-            sh.setContentsMargins(3, 3, 3, 3)
-            sh.setSpacing(2)
-            self.rb_laser_follow = QtWidgets.QRadioButton("Follow music")
-            self.rb_laser_rotate = QtWidgets.QRadioButton("Rotate")
-            self.rb_laser_hold = QtWidgets.QRadioButton("Hold one")
+            seg, _group, (self.rb_laser_follow, self.rb_laser_rotate, self.rb_laser_hold) = segmented(
+                ["Follow music", "Rotate", "Hold one"], parent, cls=QtWidgets.QRadioButton)
             self.rb_laser_follow.setToolTip("break: Slow Rainbow, build: Tension ramp, armed: chop, "
                                             "drop: Fan 8 bars then Rainbow, peak: Ping-Pong")
             self.rb_laser_rotate.setToolTip("The static scenes in turn every 16 bars, from the picked one.")
             self.rb_laser_hold.setToolTip("Manual override: show the picked look and nothing else.")
             self._laser_mode_buttons = {MODE_FOLLOW: self.rb_laser_follow, MODE_ROTATE: self.rb_laser_rotate,
                                         MODE_HOLD: self.rb_laser_hold}
-            for rb in self._laser_mode_buttons.values():
-                rb.setObjectName("segItem")
-                rb.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-                rb.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-                sh.addWidget(rb, 1)
             self._laser_mode_buttons.get(m.laser_mode, self.rb_laser_follow).setChecked(True)
             lv.addWidget(seg)
-            grid = QtWidgets.QGridLayout()
-            grid.setSpacing(4)
-            self._laser_look_group = QtWidgets.QButtonGroup(parent)
-            self._laser_look_group.setExclusive(True)
-            for i, name in enumerate(look_names()):
-                b = _look_button(name)
-                self.laser_look_buttons[name] = b
-                self._laser_look_group.addButton(b)
-                grid.addWidget(b, i // 3, i % 3)
+            self._laser_look_group, grid = _look_grid(look_names(), self.laser_look_buttons, parent)
             if m.laser_scene in self.laser_look_buttons:
                 self.laser_look_buttons[m.laser_scene].setChecked(True)
             lv.addLayout(grid)
@@ -752,25 +721,26 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         def sc(key, fn):
             return QtGui.QShortcut(QtGui.QKeySequence(key), self, activated=fn)
 
-        # B works always; the rest are Pro controls and only work while shown.
+        # Every shortcut works with the Pro controls shown or hidden.
         sc("B", self.b_black.toggle)
-        self._pro_shortcuts = [
-            sc("F", self.b_freeze.toggle),
-            sc(QtCore.Qt.Key.Key_Right, self.app.phrase_engine.skip),
-            sc("T", self._do_tap),
-            sc("S", self.cb_synth.toggle),
-            sc("L", self._laser_key),
-            sc("K", self.b_laser_cue.toggle),
-            sc("J", self.b_laser_hit.click),
-            sc("C", self.app.metronome.cue_build),
-            sc("D", self.app.metronome.arm_drop),
-            sc(QtCore.Qt.Key.Key_Space, self._strobe_burst),
-        ]
+        for key, fn in (
+            ("F", self.b_freeze.toggle),
+            (QtCore.Qt.Key.Key_Right, self.app.phrase_engine.skip),
+            ("T", self._do_tap),
+            ("S", self.cb_synth.toggle),
+            ("L", self._laser_key),
+            ("K", self.b_laser_cue.toggle),
+            ("J", self.b_laser_hit.click),
+            ("C", self.app.metronome.cue_build),
+            ("D", self.app.metronome.arm_drop),
+            (QtCore.Qt.Key.Key_Space, self._strobe_burst),
+        ):
+            sc(key, fn)
 
     def _set_pro(self, on: bool) -> None:
         self.pro_rack.setVisible(on)
-        for s in self._pro_shortcuts:
-            s.setEnabled(on)
+        if not on:
+            self.sheet.close_sheet()
         if self._settings is not None:
             self._settings.setValue("pro", on)
 
@@ -798,11 +768,6 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             self.cb_laser.setChecked(False)
         elif self._laser_gate():
             self.cb_laser.setChecked(True)
-
-    def resizeEvent(self, e) -> None:  # noqa: N802 (Qt override)
-        super().resizeEvent(e)
-        if not self.sheet.isHidden():
-            QtCore.QTimer.singleShot(0, lambda: self.sheet.setGeometry(self.sheet.area()))
 
     def keyPressEvent(self, e) -> None:  # noqa: N802 (Qt override)
         if e.key() == QtCore.Qt.Key.Key_Escape and self.sheet.isVisible():
@@ -836,14 +801,15 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         """The status bar and Under the hood: the parts of refresh that are pure display."""
         bpm = f"{snap.bpm:.1f}"
         self.l_bpm.setText(bpm)
+        self.l_deck_bpm.setText(f"{bpm} BPM")
         self.l_beat.setText(str(snap.bar))
         self.l_deck.setText(str(snap.master_deck) if snap.master_deck else "--")
         scene = self.app.phrase_engine.current_scene_name.replace(" -> ", " → ")
         self.l_scene.setText(scene)
-        self.l_look.setText(scene)
+        if self._changed("look", scene):
+            self.l_look.setText(self.l_look.fontMetrics().elidedText(scene, QtCore.Qt.TextElideMode.ElideRight, 220))
+            self.l_look.setToolTip(scene)
         self.l_bucket.setText(snap.bucket.upper())
-        if self._changed("bucket", snap.bucket):
-            set_css(self.l_bucket, chip_css(TEXT))
         low, mid, high = band_levels(snap)
         self.pb_low.setValue(int(low * 100))
         self.pb_mid.setValue(int(mid * 100))
@@ -894,7 +860,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         if not hardware:
             lights = ("Demo, nothing sent to the lights" if self._demo else "No light adapter", "off" if self._demo else "bad")
         elif dmx_ok:
-            lights = (f"Sending to {n} light{'s' if n != 1 else ''}", "ok")
+            lights = (f"Sending to {_lights(n)}", "ok")
         else:
             lights = ("Light adapter not sending", "bad")
         self.st_lights.set(*lights)
@@ -912,7 +878,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         elif silent:
             title, sub = "Waiting for music.", "Play something and the lights will pick it up."
         elif m.freeze:
-            title, sub = "Frozen.", "The look is held. Turn off Freeze to follow the music again."
+            title, sub = "Frozen.", "The look is held. Press F to follow the music again."
         elif lost:
             title, sub = "Holding the look.", "DJ Link went quiet. The lights keep this look until it comes back."
         else:
@@ -925,8 +891,13 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             left.append("Drop on the next downbeat" if met.drop_cut_pending else "Drop armed")
         if self.app.reactive_engine.synth_sync_active:
             left.append("Following the synths")
-        right = ((self.l_look.text(), ""),
-                 ("Lasers on", "ok") if m.laser_enable else ("Lasers off", "off"))
+        if m.freeze and title != "Frozen.":
+            left.append("Frozen (F)")
+        if m.laser_cue:
+            left.append("Lasers held (K)")
+        lasers = (("Lasers armed, blacked out", "off") if m.laser_enable and m.blackout else
+                  ("Lasers on", "ok") if m.laser_enable else ("Lasers off", "off"))
+        right = ((self._last["look"], ""), lasers)
         self.rig_view.set_hud(title, sub, tuple(left), right, m.blackout)
         self.b_cue.set_lit(met.build_cue_active)
         self.b_arm.set_lit(met.drop_armed)
@@ -1035,7 +1006,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             mode = getattr(laser, "mode", "")
             self.l_laser.setText(f"SHOW · {scene_name.upper()}" + (" · ACCENT" if accent else ""))
             lit = scene_name.lower() not in ("off", "dark")
-            set_css(self.l_laser, chip_css(TEXT if lit else TEXT_3))
+            set_css(self.l_laser, _CHIP[TEXT if lit else TEXT_3])
             if manual.blackout:
                 text, tone = "○ LASERS BLACKED OUT (B)", "bad"
             elif not manual.laser_enable:
@@ -1060,10 +1031,10 @@ class ConsoleWindow(QtWidgets.QMainWindow):
                 b.setChecked(True)
             rb = self._laser_mode_buttons.get(mode)
             if rb is not None and not rb.isChecked():
-                rb.blockSignals(True); rb.setChecked(True); rb.blockSignals(False)
+                _mirror_check(rb, True)
         elif mood is None:
             self.l_laser.setText("ACCENT")
-            set_css(self.l_laser, chip_css(TEXT_2))
+            set_css(self.l_laser, _CHIP[TEXT_2])
             if laser.manual_cued and not manual.laser_enable:
                 _say(self.l_laser_flash, "○ LASER CUED but not armed · press L to arm", "bad")
             elif laser.manual_cued and laser.source == "manual":
@@ -1079,7 +1050,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         elif trigger is not None:
             lit = bool(laser.active)
             self.l_laser.setText(f"TRIGGER · {mood.upper()} · {laser.budget:.0%} of {int(DUTY_WINDOW_S)} s")
-            set_css(self.l_laser, chip_css(TEXT if lit else TEXT_2))
+            set_css(self.l_laser, _CHIP[TEXT if lit else TEXT_2])
             if not manual.laser_enable:
                 _say(self.l_laser_flash, "○ LASERS NOT ARMED · press L (trigger profile: 2-bar moments on the drop / "
                                          "PEAK blocks / a big wub; J = hit now, K = hold)", "bad")
@@ -1094,7 +1065,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             # Feature profile: the lasers ARE the light here, so "not armed"
             # is the loudest thing the console can say.
             self.l_laser.setText(f"FEATURE · {mood.upper()}")
-            set_css(self.l_laser, chip_css(TEXT_3 if mood == MOOD_OFF else TEXT))
+            set_css(self.l_laser, _CHIP[TEXT_3 if mood == MOOD_OFF else TEXT])
             colors = f"{laser_color_name(laser.color_l)} / {laser_color_name(laser.color_r)}"
             if not manual.laser_enable:
                 _say(self.l_laser_flash, "○ LASERS NOT ARMED · press L (feature profile: the lasers are the light)", "bad")

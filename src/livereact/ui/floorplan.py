@@ -311,6 +311,7 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         self._captions: dict[str, _Caption] = {}
         self._layout_dirty = False
         self._dragging: set[str] = set()
+        self._last_uni: bytes | None = None
         self._scene.selectionChanged.connect(self._on_selection)
         self.refresh_layout()
 
@@ -376,10 +377,12 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             room = self._scene.addRect(0, 0, w_px, l_px, QtGui.QPen(QtCore.Qt.PenStyle.NoPen), QtGui.QBrush(_ROOM_FILL))
             room.setZValue(-1)
         axis_font = _font(7)
-        # grid: every foot light, every 5 ft bold
+        # grid: every foot light, every 5 ft bold (not on the stage)
         step = ft_to_m(1.0) * PX_PER_M
         n_x, n_y = int(v.width_m / ft_to_m(1.0)) + 1, int(v.length_m / ft_to_m(1.0)) + 1
-        for i in range(n_x + 1 if not self.stage else 0):
+        if self.stage:
+            n_x = n_y = -1
+        for i in range(n_x + 1):
             x = i * step
             if x > w_px + 0.5:
                 break
@@ -387,7 +390,7 @@ class FloorPlanView(QtWidgets.QGraphicsView):
             self._grid.append(self._scene.addLine(x, 0, x, l_px, pen))
             if i % 5 == 0:
                 t = self._scene.addSimpleText(f"{i}′"); t.setFont(axis_font); t.setBrush(_TEXT); t.setPos(x - 5, l_px + 5)
-        for j in range(n_y + 1 if not self.stage else 0):
+        for j in range(n_y + 1):
             y = l_px - j * step
             if y < -0.5:
                 break
@@ -470,6 +473,7 @@ class FloorPlanView(QtWidgets.QGraphicsView):
         self._mark_stacks()
         self._scene.blockSignals(False)
         self._layout_dirty = True
+        self._last_uni = None
         self._fit()
         self.update_from_universe(self.rig.boot_universe())
 
@@ -671,6 +675,11 @@ class FloorPlanView(QtWidgets.QGraphicsView):
 
     # ------------------------------------------------------------ live frame
     def update_from_universe(self, uni: bytes) -> None:
+        # The stage is never edited: a frame like the last one (a held look,
+        # Freeze, Blackout) changes nothing on it.
+        if self.stage and uni == self._last_uni and not self._layout_dirty:
+            return
+        self._last_uni = bytes(uni) if self.stage else None
         v = self.venue()
         for fx in self.rig.fixtures:
             key = self._key(fx)

@@ -53,7 +53,7 @@ LINE_3_SOLID = "#3D3F44"
 
 TEXT = "#EDEEF0"
 TEXT_2 = "#A2A6AE"
-TEXT_3 = "#6F737B"
+TEXT_3 = "#878B93"      # 4.6:1 on SURFACE_2: the dimmest text read mid-set
 ON_TEXT = "#0C0D0F"      # ink on a white (primary / lit) surface
 
 OK = "#4FD89A"
@@ -88,6 +88,18 @@ _ICON_DIR = os.path.join(_HERE, "icons")
 def rgba(color: str, alpha: float) -> str:
     c = QtGui.QColor(color)
     return f"rgba({c.red()},{c.green()},{c.blue()},{int(round(alpha * 255))})"
+
+
+def qcolor(color: str, alpha: float | None = None) -> QtGui.QColor:
+    """A QColor from a token, including the hairlines' ``rgba(r,g,b,a)``."""
+    if color.startswith("rgba("):
+        r, g, b, a = (int(x) for x in color[5:-1].split(","))
+        q = QtGui.QColor(r, g, b, a)
+    else:
+        q = QtGui.QColor(color)
+    if alpha is not None:
+        q.setAlphaF(alpha)
+    return q
 
 
 def chip_css(color: str = TEXT_2) -> str:
@@ -142,6 +154,21 @@ QToolTip {{
 
 /* ---- shell ---- */
 QFrame#sidebar {{ background: {SIDEBAR}; border: none; border-right: 1px solid {LINE}; }}
+QFrame#header {{ background: {SIDEBAR}; border: none; border-bottom: 1px solid {LINE}; }}
+QFrame#footer {{ background: {SIDEBAR}; border: none; border-top: 1px solid {LINE}; }}
+QFrame#stage {{ background: {ROOM}; border: 1px solid {LINE_2}; border-radius: {R_LG}px; }}
+QFrame#deck {{
+    background: {DECK}; border: none; border-top: 1px solid {LINE};
+    border-bottom-left-radius: {R_LG - 1}px; border-bottom-right-radius: {R_LG - 1}px;
+}}
+QFrame#sheet {{ background: {SURFACE}; border: 1px solid {LINE_2}; border-radius: 18px; }}
+QLabel#sheetTitle {{ font-family: {disp}; font-size: 28px; font-weight: 600; color: {TEXT}; }}
+QLabel#sheetBody {{ color: {TEXT_2}; font-size: 14px; }}
+QLabel#dangerNote {{
+    color: {TEXT}; font-size: 13.5px; background: {rgba(DANGER, 0.08)};
+    border: 1px solid {rgba(DANGER, 0.32)}; border-radius: {R_SM}px; padding: 10px 14px;
+}}
+QLabel#venueName {{ color: {TEXT}; font-size: 13px; font-weight: 600; }}
 QLabel#wordmark {{ font-family: {disp}; font-size: 17px; font-weight: 600; color: {TEXT}; }}
 QLabel#modeBadge {{
     font-size: 11.5px; font-weight: 500; color: {TEXT_3};
@@ -157,26 +184,21 @@ QLabel#lead {{ color: {TEXT_2}; font-size: 15px; }}
 QLabel#h2 {{ font-family: {disp}; font-size: 20px; font-weight: 600; color: {TEXT}; }}
 QLabel#h3 {{ font-family: {disp}; font-size: 16px; font-weight: 600; color: {TEXT}; }}
 QLabel#cardTitle {{ font-family: {disp}; font-size: 16px; font-weight: 600; color: {TEXT}; }}
-QLabel#label, QLabel#overline {{ color: {TEXT_2}; font-size: 12.5px; font-weight: 500; }}
+QLabel#label {{ color: {TEXT_2}; font-size: 12.5px; font-weight: 500; }}
 QLabel#hint {{ color: {TEXT_3}; font-size: 12.5px; }}
 QLabel#body {{ color: {TEXT}; font-size: 13.5px; }}
 QLabel#body2 {{ color: {TEXT_2}; font-size: 13px; }}
 QLabel#strong {{ color: {TEXT}; font-size: 14px; font-weight: 600; }}
 QLabel#value {{ color: {TEXT}; font-size: 13px; font-weight: 500; }}
-QLabel#valueMono {{ color: {TEXT}; font-family: {mono}; font-size: 12.5px; font-weight: 500; }}
 QLabel#footNote {{ color: {TEXT_3}; font-size: 12.5px; }}
 QLabel#readTitle {{ font-family: {disp}; font-size: 22px; font-weight: 600; color: {TEXT}; }}
 QLabel#readText {{ color: {TEXT_2}; font-size: 13px; }}
 QLabel#bpm {{ font-family: {disp}; font-size: 40px; font-weight: 600; color: {TEXT}; }}
 QLabel#bpmUnit {{ color: {TEXT_3}; font-size: 12.5px; }}
 QLabel#bucket {{ font-size: 12px; font-weight: 600; padding: 2px 8px; }}
-QLabel#code, QLabel#url {{
+QLabel#url {{
     font-family: {mono}; font-size: 13px; color: {TEXT};
     background: {WELL}; border: 1px solid {LINE_2}; border-radius: {R_SM}px; padding: 10px 12px;
-}}
-QLabel#address {{
-    font-family: {mono}; font-size: 12.5px; color: {TEXT};
-    background: {WELL}; border: 1px solid {LINE_2}; border-radius: 5px; padding: 1px 6px;
 }}
 QLabel#health, QLabel#footerMono {{ color: {TEXT_3}; font-family: {mono}; font-size: 11px; }}
 QLabel#footerText {{ color: {TEXT_3}; font-size: 12px; }}
@@ -197,9 +219,6 @@ QFrame#hair {{ background: {LINE}; border: none; min-height: 1px; max-height: 1p
 QFrame#vhair {{ background: {LINE}; border: none; min-width: 1px; max-width: 1px; }}
 QFrame#notice {{
     background: {rgba(WARN, 0.07)}; border: 1px solid {rgba(WARN, 0.22)}; border-radius: {R_SM}px;
-}}
-QFrame#callout {{
-    background: {panel_bg}; border: 1px solid {LINE}; border-radius: {R_MD}px;
 }}
 
 /* ---- activity lines (Under the hood) ---- */
@@ -257,7 +276,7 @@ QPushButton#lookOff {{
 QPushButton#lookOff:checked {{ background: {rgba(DANGER, 0.16)}; border-color: {DANGER}; }}
 
 /* the painted controls (widgets.py) take only their frame from here */
-QPushButton#cue, QPushButton#danger, QPushButton#blackout, QAbstractButton#nav,
+QPushButton#cue, QPushButton#blackout, QAbstractButton#nav,
 QAbstractButton#proSwitch, QCheckBox#toggleRow {{
     background: transparent; border: none; padding: 0;
 }}

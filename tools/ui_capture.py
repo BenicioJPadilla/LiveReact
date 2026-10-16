@@ -276,19 +276,17 @@ def frametime(seconds: float, rig: str | None, pro: bool = False) -> None:
     win.resize(1920, 1080)
     win.show()
     glow_ms: list[float] = []
-    src = getattr(win, "glow_source", None)
-    if src is not None:              # design v2: the glow has its own UI timer
-        if pro:
-            win.pro_switch.click()
-        orig_glow = src.tick
+    if pro:
+        win.pro_switch.click()
+    orig_glow = win.glow_source.tick
 
-        def timed_glow() -> None:
-            t0 = time.perf_counter()
-            orig_glow()
-            glow_ms.append((time.perf_counter() - t0) * 1000)
+    def timed_glow() -> None:
+        t0 = time.perf_counter()
+        orig_glow()
+        glow_ms.append((time.perf_counter() - t0) * 1000)
 
-        src.timer.timeout.disconnect()
-        src.timer.timeout.connect(timed_glow)
+    win.glow_source.timer.timeout.disconnect()
+    win.glow_source.timer.timeout.connect(timed_glow)
 
     refresh_ms: list[float] = []
     orig_refresh = win.refresh

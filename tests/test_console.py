@@ -620,18 +620,26 @@ def test_a_forced_start_shows_a_warning_banner_for_the_set(qapp):
 
 # --- design v2 (2026-10-16): Pro controls, the laser sheet, the glow ------------
 
-def test_pro_controls_hide_the_rack_and_gate_every_shortcut_but_blackout(qapp):
+def test_pro_controls_hide_the_rack_but_every_shortcut_keeps_working(qapp):
     from PySide6 import QtGui
     from livereact.ui.console import ConsoleWindow
 
-    win = ConsoleWindow(_app())
-    shortcuts = {sc.key().toString(): sc for sc in win.findChildren(QtGui.QShortcut)}
+    app = _app()
+    win = ConsoleWindow(app)
+    shortcuts = win.findChildren(QtGui.QShortcut)
     assert not win.pro_switch.isChecked() and win.pro_rack.isHidden()
-    assert shortcuts["B"].isEnabled()
-    assert not any(sc.isEnabled() for k, sc in shortcuts.items() if k != "B")
+    assert shortcuts and all(sc.isEnabled() for sc in shortcuts)
+    # a key latched with the rack hidden still shows on the stage
+    app.manual.freeze = True
+    app.manual.blackout = True
+    app.manual.laser_cue = True
+    win.refresh()
+    left = win.rig_view._left
+    assert "Frozen (F)" in left and "Lasers held (K)" in left
+    assert ("Lasers on", "ok") not in win.rig_view._right    # blacked out
     win.pro_switch.click()
     assert not win.pro_rack.isHidden()
-    assert all(sc.isEnabled() for sc in shortcuts.values())
+    assert all(sc.isEnabled() for sc in shortcuts)
 
 
 def test_arming_lasers_asks_first_when_the_run_started_disarmed(qapp):
@@ -709,7 +717,7 @@ def test_glow_follows_the_output_colour_and_holds_the_hue_when_dark(qapp):
     c = glow.color()
     assert seen, "the glow never moved"
     for got, want in zip((c.red(), c.green(), c.blue()), lift(hue)):
-        assert abs(got - want * (0.72 + 0.28 * lit)) <= 12
+        assert abs(got - want) <= 12
     # a deep blue is lifted just enough to show in a dark booth, hue kept
     r, g, b = lift((0.0, 0.0, 255.0))
     assert b == 255 and r == g and 0.2126 * r + 0.7152 * g + 0.0722 * b >= MIN_LUMA * 255 - 0.01
