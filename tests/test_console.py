@@ -584,19 +584,23 @@ def test_dmx_dot_uses_output_ok_when_the_writer_has_it(qapp):
     assert win.pill_conn._segs[3][2] == "bad"
 
 
-def test_phone_url_label_appears_when_the_app_has_one(qapp):
+def test_phone_url_label_appears_when_the_app_has_one(qapp, monkeypatch):
     from PySide6 import QtCore
     from livereact.ui.console import ConsoleWindow
 
     app = _app()
+    url = {"value": None}
+    # App.phone_url is a read-only property once the phone console is merged;
+    # patch the class so this works with and without it.
+    monkeypatch.setattr(type(app), "phone_url", property(lambda self: url["value"]), raising=False)
     win = ConsoleWindow(app)
     win.refresh()
     assert win.phone_row.isHidden()
-    app.phone_url = "http://192.168.1.20:8765/?k=7F3K9Q"
+    url["value"] = "http://192.168.1.20:8765/?k=7F3K9Q"
     win.refresh()
     assert not win.phone_row.isHidden()
     assert win.l_phone.text() == "http://192.168.1.20:8765/?k=7F3K9Q"
     assert win.l_phone.textInteractionFlags() & QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
-    app.phone_url = None
+    url["value"] = None
     win.refresh()
     assert win.phone_row.isHidden()
