@@ -38,6 +38,11 @@ from .show_state import ShowSnapshot, ShowState
 log = logging.getLogger(__name__)
 
 PDL_STALE_AFTER = 1.0    # seconds without a PDL message -> not fresh
+PDL_LOST_HOLD_BARS = 64  # FAIL-01: hold the look this long after DJ Link drops (~2 min at
+                         # 128 BPM), then treat the night as audio-only again. A pulled cable
+                         # gets plugged back within that; a DJ who switched to vinyl or a
+                         # laptop after a CDJ was used at soundcheck must not freeze rotation
+                         # for the rest of the night.
 MIDI_STALE_AFTER = 1.0   # seconds without a MIDI message -> not fresh
 AUDIO_STALE_AFTER = 1.0  # seconds without an AudioLevelMessage -> not fresh
 ENERGY_SMOOTHING = 0.05  # EMA factor per tick (~0.2 s time constant at 100 Hz) —
@@ -654,6 +659,10 @@ class Metronome(threading.Thread):
 
         # freshness tracking
         self._last_beat_time: float | None = None  # PDL freshness keys off master BEATS, not status packets
+        # FAIL-01 (2026-10-16): a master beat from a real CDJ/XDJ player has
+        # been heard this run. Tap tempo (player 0, ui/console.py) doesn't
+        # count: an audio-only night with taps never "had" DJ Link to lose.
+        self._pdl_seen = False
         self._last_midi_time: float | None = None
         self._last_audio_time: float | None = None
         self._last_log = clock.monotonic()
@@ -727,6 +736,8 @@ class Metronome(threading.Thread):
         self._beat_anchor = msg.timestamp  # hard resync: phase = 0 at this beat
         self._beat_phase = 0.0
         self._last_beat_time = msg.timestamp
+        if msg.player > 0:
+            self._pdl_seen = True
 
     def _on_status(self, msg: StatusMessage) -> None:
         self._on_air = msg.on_air
@@ -1557,6 +1568,12 @@ class Metronome(threading.Thread):
     def _is_pdl_fresh(self, now: float) -> bool:
         return self._last_beat_time is not None and (now - self._last_beat_time) < PDL_STALE_AFTER
 
+    def _is_pdl_lost(self, now: float) -> bool:
+        """FAIL-01: DJ Link was heard and has stopped, for less than the hold."""
+        if not self._pdl_seen or self._is_pdl_fresh(now):
+            return False
+        return now - self._last_beat_time < PDL_LOST_HOLD_BARS * SECONDS_PER_BAR
+
     def _is_midi_fresh(self, now: float) -> bool:
         return self._last_midi_time is not None and (now - self._last_midi_time) < MIDI_STALE_AFTER
 
@@ -1617,6 +1634,7 @@ class Metronome(threading.Thread):
             in_transition=now < self._transition_until,
             free_running=not self._is_pdl_fresh(now),
             pdl_fresh=self._is_pdl_fresh(now),
+            pdl_lost=self._is_pdl_lost(now),
             midi_fresh=self._is_midi_fresh(now),
             audio_fresh=self._is_audio_fresh(now),
         )
