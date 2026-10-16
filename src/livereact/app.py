@@ -230,21 +230,26 @@ class App:
 
     # ------------------------------------------------------------------ wiring
     def _build_backend(self) -> OutputBackend:
-        """NullLog in demo; the Enttec in hardware mode, falling back to NullLog
-        (with a warning) if no device is present so the app still runs."""
+        """NullLog in demo; the Enttec in hardware mode, ALWAYS, whether or not
+        it's plugged in yet (2026-10-16): the writer's reopen loop finds it
+        when it appears, so a late or replugged Enttec needs no relaunch.
+        NullLog only if pyserial itself is missing."""
         if self.config.demo:
             return NullLogBackend(log_every=int(self.config.dmx_rate_hz))
         try:
             from serial.tools import list_ports
 
             from .output.enttec import EnttecSerialBackend, select_enttec_port
-
-            if select_enttec_port(list_ports.comports()):
-                return EnttecSerialBackend()
-            log.warning("Hardware mode: no Enttec detected; output will be logged only.")
         except Exception:  # noqa: BLE001
-            log.exception("Hardware mode: Enttec backend unavailable — logging output only.")
-        return NullLogBackend(log_every=int(self.config.dmx_rate_hz))
+            log.exception("Hardware mode: pyserial unavailable, so DMX output is logged only.")
+            return NullLogBackend(log_every=int(self.config.dmx_rate_hz))
+        try:
+            if not select_enttec_port(list_ports.comports()):
+                log.warning("Hardware mode: no Enttec plugged in yet. DMX output starts "
+                            "by itself when it is (no relaunch needed).")
+        except Exception:  # noqa: BLE001 - a port scan failing is not a reason to give up
+            log.exception("Hardware mode: serial port scan failed; will keep trying.")
+        return EnttecSerialBackend()
 
     def _build_sources(self) -> list:
         """DemoDataSource in demo; real PDL + MIDI listeners in hardware mode."""

@@ -186,6 +186,11 @@ class ShowSnapshot:
     # --- health / confidence ---
     free_running: bool = True            # clock free-running (no recent master beat)
     pdl_fresh: bool = False              # a PDL message arrived recently
+    # FAIL-01: DJ Link beats were heard earlier this run and stopped less than
+    # PDL_LOST_HOLD_BARS ago (a pulled cable, a CDJ restart). False on an
+    # audio-only night, where PDL was never there: that show runs on the
+    # free-running clock by design, and so does a long loss after the hold.
+    pdl_lost: bool = False
     midi_fresh: bool = False             # a MIDI message arrived recently
     audio_fresh: bool = False            # an AudioLevelMessage arrived recently
 
