@@ -61,6 +61,10 @@ class AppConfig:
     norm_seed: bool = True  # seed the energy normalizer from the last real session's
         # persisted range (config.py energy_norm, 2026-09-17); `--no-norm-seed` for a
         # cold start (new venue, re-gained mixer). Demo mode never reads or writes it.
+    phone_port: int | None = None  # serve the phone console (remote/) on this port;
+        # None = off. Opt-in via `--phone [PORT]`: a token-protected page on the venue
+        # Wi-Fi that can only make the show safer (blackout on, dim, strobe cap down,
+        # disarm lasers).
 
 
 class App:
@@ -158,6 +162,9 @@ class App:
             self.metronome, self.show_engine, self.writer,
         ]
 
+        # --- optional phone console (remote/), started in start() ---
+        self.phone = None  # remote.PhoneServer while serving
+
         # --- optional session recording (for hardware testing / feedback) ---
         self.recorder = None
         if self.config.record and self.config.session_dir:
@@ -223,21 +230,26 @@ class App:
 
     # ------------------------------------------------------------------ wiring
     def _build_backend(self) -> OutputBackend:
-        """NullLog in demo; the Enttec in hardware mode, falling back to NullLog
-        (with a warning) if no device is present so the app still runs."""
+        """NullLog in demo; the Enttec in hardware mode, ALWAYS, whether or not
+        it's plugged in yet (2026-10-16): the writer's reopen loop finds it
+        when it appears, so a late or replugged Enttec needs no relaunch.
+        NullLog only if pyserial itself is missing."""
         if self.config.demo:
             return NullLogBackend(log_every=int(self.config.dmx_rate_hz))
         try:
             from serial.tools import list_ports
 
             from .output.enttec import EnttecSerialBackend, select_enttec_port
-
-            if select_enttec_port(list_ports.comports()):
-                return EnttecSerialBackend()
-            log.warning("Hardware mode: no Enttec detected; output will be logged only.")
         except Exception:  # noqa: BLE001
-            log.exception("Hardware mode: Enttec backend unavailable — logging output only.")
-        return NullLogBackend(log_every=int(self.config.dmx_rate_hz))
+            log.exception("Hardware mode: pyserial unavailable, so DMX output is logged only.")
+            return NullLogBackend(log_every=int(self.config.dmx_rate_hz))
+        try:
+            if not select_enttec_port(list_ports.comports()):
+                log.warning("Hardware mode: no Enttec plugged in yet. DMX output starts "
+                            "by itself when it is (no relaunch needed).")
+        except Exception:  # noqa: BLE001 - a port scan failing is not a reason to give up
+            log.exception("Hardware mode: serial port scan failed; will keep trying.")
+        return EnttecSerialBackend()
 
     def _build_sources(self) -> list:
         """DemoDataSource in demo; real PDL + MIDI listeners in hardware mode."""
@@ -278,8 +290,50 @@ class App:
                 source.start()
             except Exception:  # noqa: BLE001 - a failed input must not abort startup
                 log.exception("Input source %r failed to start; continuing without it", source.name)
+        self._start_phone()
+
+    @property
+    def phone_url(self) -> str | None:
+        """The phone console's URL (token included) for the console to show,
+        or None when off. Filled a moment after start(): address discovery
+        runs on its own thread."""
+        urls = self.phone.urls if self.phone is not None else []
+        return urls[0] if urls else None
+
+    def _start_phone(self) -> None:
+        """Start the phone console if asked for. Never fatal: a busy port or
+        any other failure logs and the show runs without it."""
+        port = self.config.phone_port
+        if port is None:
+            return
+        from .remote import PhoneConsole, PhoneServer
+
+        server = None
+        try:
+            server = PhoneServer(PhoneConsole(self), port)  # binds: OSError if busy
+            server.start()
+        except Exception as e:  # noqa: BLE001 - the show must start regardless
+            if isinstance(e, OSError):
+                log.error("Phone console: cannot listen on port %s (%s); carrying on without it", port, e)
+            else:
+                log.exception("Phone console failed to start; carrying on without it")
+            if server is not None:
+                server.stop()  # release the port if it was bound
+            return
+        self.phone = server
+
+    def _stop_phone(self) -> None:
+        if self.phone is None:
+            return
+        try:
+            self.phone.stop()
+        except Exception:  # noqa: BLE001 - must not block the rest of shutdown
+            log.exception("Error stopping the phone console")
 
     def shutdown(self) -> None:
+        # First, and before the early return: a signal sets stop_event before
+        # shutdown() runs, and the listening socket should still be closed.
+        self._stop_phone()
         if self.stop_event.is_set():
             return
         log.info("Shutting down...")

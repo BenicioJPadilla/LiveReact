@@ -106,8 +106,13 @@ class ShowEngine(threading.Thread):
             if contribution is not None:
                 contributions.append(contribution)
 
-        if self.manual.freeze:
-            return None  # hold the last published frame
+        # Freeze holds the last published frame, but blackout wins over it
+        # (2026-10-16): the operator's kill switch (B, or the phone console)
+        # must reach the rig even mid-hold, and a held frame may contain a
+        # lit laser. With blackout set, fall through so finalize publishes
+        # its all-zero frame.
+        if self.manual.freeze and not self.manual.blackout:
+            return None
 
         now = self.clock.monotonic()
         dt = (now - self._last_tick_t) if self._last_tick_t is not None else 1.0 / self.hz
