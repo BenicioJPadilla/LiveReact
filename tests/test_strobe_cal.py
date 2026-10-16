@@ -477,7 +477,6 @@ def test_hardware_enttec_gets_a_write_timeout(monkeypatch):
         def __init__(self, port, baudrate, timeout, write_timeout=None, **kwargs):
             self.port, self.write_timeout = port, write_timeout
 
-
         def close(self) -> None:
             pass
 
