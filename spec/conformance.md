@@ -103,7 +103,8 @@ explicitly out of scope:
   off) is now a hard off for every strobe source: the Reactive engine
   zeroes its rate at the source, `finalize` zeroes every native strobe
   channel and drops the burst, and the show engine strips strobe from a
-  frozen frame. A 0 % `strobe_cap` counts as off too (`merge.py`
+  frozen frame; the laser `show` profile's Armed chop and drop accent
+  (CH1 on/off at up to ~4 Hz) hold steady. A 0 % `strobe_cap` counts as off too (`merge.py`
   `strobe_allowed`). Persisted in config.json (saved the moment it
   changes) and the supervisor's live state; restores may switch it off,
   never on. Blackout still wins. Tests: `tests/test_strobe_off.py`.

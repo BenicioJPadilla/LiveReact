@@ -479,7 +479,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.s_bright.valueChanged.connect(lambda x: self.l_bright_v.setText(f"{x}%"))
         self.l_bright_v.setText(f"{self.s_bright.value()}%")
         self.b_black.toggled.connect(self._set_blackout)
-        self.cb_strobe.toggled.connect(lambda on: setattr(m, "strobe_enabled", on))
+        self.cb_strobe.toggled.connect(self._set_strobe_allowed)
         return col
 
     # ------------------------------------------------------------------ pro rack
@@ -803,6 +803,12 @@ class ConsoleWindow(QtWidgets.QMainWindow):
     def _set_blackout(self, on: bool) -> None:
         self.app.manual.blackout = on
 
+    def _set_strobe_allowed(self, on: bool) -> None:
+        self.app.manual.strobe_enabled = on
+        save = getattr(self.app, "save_strobe_latch", None)
+        if save is not None:
+            save()  # on disk now, so a crash a moment later can't undo it
+
     def _do_tap(self) -> None:
         now = self.app.clock.monotonic()
         bpm = self.tap.tap(now)
@@ -921,8 +927,10 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             left.append("Frozen (F)")
         if m.laser_cue:
             left.append("Lasers held (K)")
-        if not strobe_allowed(m):
+        if not m.strobe_enabled:
             left.append("Strobe off (X)")
+        elif not strobe_allowed(m):
+            left.append("Strobe off (limit 0 %)")
         lasers = (("Lasers armed, blacked out", "off") if m.laser_enable and m.blackout else
                   ("Lasers on", "ok") if m.laser_enable else ("Lasers off", "off"))
         right = ((self._last["look"], ""), lasers)
@@ -963,7 +971,8 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         if not m.strobe_enabled:
             _say(self.l_strobe_state, "● STROBE OFF · no strobe at all, automatic included", "warn")
         elif not allowed:
-            _say(self.l_strobe_state, "● STROBE OFF · the strobe limit is at 0 %", "warn")
+            _say(self.l_strobe_state, "● STROBE OFF · the strobe limit is at 0 %. Raise it in "
+                 "Pro controls, Feel, to strobe again", "warn")
         else:
             _say(self.l_strobe_state, "")
         self.st_strobe.set("Strobe allowed" if allowed else "Strobe OFF", "ok" if allowed else "warn")

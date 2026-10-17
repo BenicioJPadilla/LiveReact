@@ -212,7 +212,7 @@ def test_choose_quit_exits_0_without_starting(venue, monkeypatch):
     assert not (venue / "recordings").exists()
 
 
-def test_choose_is_skipped_for_an_engine_child(monkeypatch):
+def test_choose_is_skipped_for_an_engine_child(monkeypatch, tmp_path):
     """The supervisor's child (``--engine-child``, defined on another branch)
     never shows the dialog, even if --choose reached its command line."""
     from livereact.ui import launch_dialog
@@ -221,6 +221,7 @@ def test_choose_is_skipped_for_an_engine_child(monkeypatch):
     ns = cli._build_parser().parse_args(["--choose", "--demo", "--duration", "0.1"])
     ns.engine_child = True
     monkeypatch.setattr(cli, "_parse_args", lambda argv: ns)
+    monkeypatch.chdir(tmp_path)  # the demo run saves config.json / logs/ in the current folder
     assert cli.main(["--choose", "--demo", "--duration", "0.1", "--engine-child"]) == 0
 
 

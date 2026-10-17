@@ -69,7 +69,7 @@ from ..clock import Clock
 from ..core.show_state import ShowSnapshot
 from ..fixtures.profiles import Laser
 from ..fixtures.rig import Rig
-from ..merge.merge import Contribution, ManualParams
+from ..merge.merge import Contribution, ManualParams, strobe_allowed
 from ..scenes.base import EnergyBucket
 from .envelope import NORMALIZE_TAU_S, BandEnvelope
 from .laser import laser_color_for_palette
@@ -280,6 +280,13 @@ class LaserShowEngine:
             return True
         return abs(snap.bar - self._look_since_bar) >= MIN_DWELL_BARS
 
+    def _may_flash(self) -> bool:
+        """The Armed chop and the drop accent switch CH1 on/off at up to
+        ~4 Hz: a flashing light, so "Strobe off" (merge.py strobe_allowed,
+        2026-10-17) holds them steady (lit, the look without its chop).
+        The arm switch and blackout still gate the laser as before."""
+        return self.manual is None or strobe_allowed(self.manual)
+
     def _render(self, look: str, snap: ShowSnapshot, now: float, n: int) -> list[tuple[tuple[int, ...], bool]]:
         """Per-laser (bytes, lit) for a look. Index 0 = the first laser in
         the rig (L), 1 = the second (R); more lasers alternate by parity."""
@@ -299,7 +306,7 @@ class LaserShowEngine:
             ramp = max(0.0, min(1.0, max(ramp_t, ramp_r)))
             values = _line(ramp, Laser.COLOR_BLUE)
             lit = True
-            if look == LOOK_ARMED:
+            if look == LOOK_ARMED and self._may_flash():
                 per_beat = ARMED_ROLL_CHOPS_PER_BEAT if snap.drop_arm_source == "roll" else ARMED_CHOPS_PER_BEAT
                 lit = self._chop(now, self._beat_s(snap) / per_beat)
             return [(values, lit)] * n
@@ -409,7 +416,7 @@ class LaserShowEngine:
         self.scene_index = LOOKS.index(look)
         lasers = rig.by_role("laser")
         rendered = self._render(look, snap, now, max(1, len(lasers)))
-        if self.accent:
+        if self.accent and self._may_flash():
             period = self._beat_s(snap) / ACCENT_FLASHES_PER_BEAT
             phase = ((now - self._accent_start) % period) / period
             if phase >= 0.5:

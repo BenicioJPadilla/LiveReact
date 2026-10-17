@@ -310,11 +310,12 @@ class App:
         """Save config.json now if strobe was switched off or back on since
         the last save (2026-10-17). "Strobe off" must hold across a restart,
         and live runs end with kill -9, which skips the shutdown save.
-        Returns True if it saved."""
+        Returns True if it saved; a failed save is retried on the next check."""
         state = self._strobe_latch_state()
         if not self.config.config_path or state == self._strobe_saved:
             return False
-        app_config.save_from(self.manual, self.config.config_path)
+        if not app_config.save_from(self.manual, self.config.config_path):
+            return False  # logged by save_from; tried again on the next check
         self._strobe_saved = state
         log.info("Strobe %s; saved to %s", "allowed" if state[1] else "OFF", self.config.config_path)
         return True

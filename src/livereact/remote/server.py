@@ -179,6 +179,9 @@ class PhoneConsole:
             # (merge.py strobe_allowed). Freeze is left alone: the show
             # engine strips strobe from a held frame by itself.
             m.strobe_enabled = False
+            save = getattr(self.app, "save_strobe_latch", None)
+            if save is not None:
+                save()  # on disk now, not on the latch's next poll
             return self._done(action, client, "strobe OFF (every strobe, automatic included)")
 
         if action in self._LEVELS:

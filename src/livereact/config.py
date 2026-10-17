@@ -53,7 +53,15 @@ def load_into(manual, path: str = DEFAULT_PATH) -> bool:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError) as exc:
-        log.warning("Ignoring unreadable config %s: %s", path, exc)
+        # Strobe off is the one setting that must not fail open: an
+        # unreadable file may well have held it (a power cut mid-write).
+        manual.strobe_enabled = False
+        log.warning("Ignoring unreadable config %s: %s -- strobe loads OFF until switched back on",
+                    path, exc)
+        return False
+    if not isinstance(data, dict):
+        manual.strobe_enabled = False
+        log.warning("Ignoring config %s (not a JSON object) -- strobe loads OFF until switched back on", path)
         return False
     defaults = {field: getattr(manual, field) for field in _PERSIST}
     non_default = []
@@ -76,33 +84,45 @@ def load_into(manual, path: str = DEFAULT_PATH) -> bool:
     return True
 
 
-def save_from(manual, path: str = DEFAULT_PATH, energy_norm: dict | None = None) -> None:
+# One writer at a time (2026-10-17): the strobe latch, the metronome's seed
+# save and shutdown run on different threads, and each one reads the switch
+# values and the carried-over seed before replacing the file -- unlocked, a
+# slower writer could land last and put back a stale strobe_enabled.
+_SAVE_LOCK = threading.Lock()
+
+
+def save_from(manual, path: str = DEFAULT_PATH, energy_norm: dict | None = None) -> bool:
     """Write the persistable settings from ``manual`` to ``path``.
 
     ``energy_norm`` (see `save_energy_norm_seed`) is written alongside when
     given; when it's None the file's existing seed is carried over untouched,
     so a demo run or a session that never finished warming up can't erase a
     good seed from the last real set.
+
+    Returns True once the file is on disk. Atomic (temp file, fsync,
+    replace), so a reader never sees half a file.
     """
-    data = {field: getattr(manual, field) for field in _PERSIST}
-    if energy_norm is None:
-        energy_norm = _read(path).get(ENERGY_NORM_KEY)
-    if energy_norm is not None:
-        data[ENERGY_NORM_KEY] = energy_norm
-    # Atomic (2026-10-17): the strobe latch, the metronome's periodic seed
-    # save and shutdown can all write this file, and a reader must never see
-    # half of one. Per-thread temp name, so two writers never share one.
-    tmp = f"{path}.{threading.get_ident()}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-        os.replace(tmp, path)
-    except OSError as exc:
-        log.warning("Could not save config %s: %s", path, exc)
+    with _SAVE_LOCK:
+        data = {field: getattr(manual, field) for field in _PERSIST}
+        if energy_norm is None:
+            energy_norm = _read(path).get(ENERGY_NORM_KEY)
+        if energy_norm is not None:
+            data[ENERGY_NORM_KEY] = energy_norm
+        tmp = f"{path}.tmp"
         try:
-            os.remove(tmp)
-        except OSError:
-            pass
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+            return True
+        except OSError as exc:
+            log.warning("Could not save config %s: %s", path, exc)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return False
 
 
 # --- normalizer seed (2026-09-17) --------------------------------------------

@@ -34,7 +34,8 @@ from livereact.merge.merge import (Contribution, ManualParams, finalize, merge_c
 from livereact.output.null_log import NullLogBackend
 from livereact.remote import PhoneConsole, PhoneServer
 
-SONG_S = 72  # through the armed build (46-56 s) and the first drop phrase tails
+SONG_S = 72  # through the build strobe (45-53 s) and the first drop phrase tail (70.6 s)
+BURST_AT = 60  # a Space burst, mid-drop
 
 
 def _strobe_channels(rig) -> list[int]:
@@ -47,9 +48,11 @@ def _strobe_channels(rig) -> list[int]:
     return out
 
 
-def _run_song(app: App, seconds: int = SONG_S, at=None) -> dict:
+def _run_song(app: App, seconds: int = SONG_S, at=None, burst: bool = True) -> dict:
     """Step ``app`` through the scripted song on its FakeClock, like
     golden_frames.run_rig. ``at(app, t)`` runs before every input tick.
+    ``burst``: the operator presses Space (a burst on each light's own
+    strobe channel) at BURST_AT, so native strobe channels are exercised.
     Returns what the automatic strobe did and every published frame."""
     clock = app.clock
     demo = app.sources[0]
@@ -64,6 +67,10 @@ def _run_song(app: App, seconds: int = SONG_S, at=None) -> dict:
             app.metronome.cue_build()
         if step == gf.ARM_DROP_AT * gf.GRID_HZ:
             app.metronome.arm_drop()
+        if burst and step == BURST_AT * gf.GRID_HZ:
+            app.manual.strobe_burst = True          # Space on the laptop ...
+        if burst and step == (BURST_AT + 0.4) * gf.GRID_HZ:
+            app.manual.strobe_burst = False         # ... released 0.4 s later (ui/console.py)
         if step % gf.INPUT_EVERY == 0:
             if at is not None:
                 at(app, t)
@@ -105,6 +112,7 @@ def test_the_scripted_song_does_fire_the_automatic_strobe():
     tail really do strobe, so the "never fires" tests below mean something."""
     run = _run_song(_app())
     assert run["strobe_ticks"] > 60  # seconds of build strobe at 60 Hz
+    assert run["native_strobe_frames"] > 0  # the Space burst lit a strobe channel
 
 
 @pytest.mark.parametrize("how", ["switch", "phone", "limit at 0"])
@@ -139,16 +147,16 @@ def test_strobe_off_output_is_exactly_the_show_without_its_strobe():
         return c
 
     on.reactive_engine.tick = tick
-    run_on = _run_song(on)
+    run_on = _run_song(on, burst=False)
 
     off = _app()
     off.manual.strobe_enabled = False
-    run_off = _run_song(off)
+    run_off = _run_song(off, burst=False)
 
     forced = _app()
     real_rate = forced.reactive_engine._snare_accent_strobe_rate
     forced.reactive_engine._snare_accent_strobe_rate = lambda snap: real_rate(snap) * 0.0
-    run_forced = _run_song(forced)
+    run_forced = _run_song(forced, burst=False)
 
     assert run_off["frames"] == run_forced["frames"]
     assert len(run_on["frames"]) == len(run_off["frames"]) == len(strobing)
@@ -355,8 +363,8 @@ def test_strobe_off_survives_a_restart_without_a_clean_shutdown(tmp_path):
     first = _app(config_path=path)
     assert first.manual.strobe_enabled is True
     assert first.save_strobe_latch() is False          # nothing changed yet
-    PhoneConsole(first).apply({"action": "strobe", "value": False})
-    assert first.save_strobe_latch() is True
+    PhoneConsole(first).apply({"action": "strobe", "value": False})  # saves at once
+    assert first.save_strobe_latch() is False                         # already on disk
     assert json.loads((tmp_path / "config.json").read_text())["strobe_enabled"] is False
     # no shutdown(): the process is killed here
     second = _app(config_path=path)
@@ -432,3 +440,67 @@ def test_crash_relaunch_restores_strobe_off_and_never_switches_it_on(tmp_path):
     manual = ManualParams(strobe_enabled=False)
     supervisor.restore_live_state(manual, str(tmp_path / "on.json"))
     assert manual.strobe_enabled is False
+
+
+# ------------------------------------------------------------------ laser chops
+
+
+def test_strobe_off_holds_the_laser_chop_steady():
+    """The laser SHOW profile's Armed chop and drop accent switch CH1 on and
+    off at up to ~4 Hz: a flashing light. With strobe off they hold steady
+    (the arm switch and blackout still gate the lasers as before)."""
+    def flashes(strobe_on: bool) -> int:
+        app = _app(rig_path=str(gf.RIGS_DIR / "sophias_thai.json"))
+        assert app.rig.laser_profile == "show"
+        app.manual.laser_enable = True
+        app.manual.strobe_enabled = strobe_on
+        frames = _run_song(app)["frames"]
+        worst = 0
+        for laser in app.rig.by_role("laser"):
+            ch1 = [f[laser.offset] > 0 for f in frames]
+            toggles = [i for i in range(1, len(ch1)) if ch1[i] != ch1[i - 1]]
+            j = 0
+            for i in range(len(toggles)):
+                while toggles[i] - toggles[j] >= 60:  # any one second of 60 Hz frames
+                    j += 1
+                worst = max(worst, i - j + 1)
+        return worst
+
+    assert flashes(True) >= 4      # the control: the chop really flashes
+    assert flashes(False) <= 1     # strobe off: at most one change in any second
+
+
+# ------------------------------------------------------------------ saves that fail
+
+
+def test_a_failed_strobe_save_is_retried(tmp_path):
+    """A full disk or a missing folder must not leave the latch believing
+    strobe off is on disk: it keeps trying until the save lands."""
+    folder = tmp_path / "not-yet"
+    path = folder / "config.json"
+    app = _app(config_path=str(path))
+    app.manual.strobe_enabled = False
+    assert app.save_strobe_latch() is False and not path.exists()
+    folder.mkdir()
+    assert app.save_strobe_latch() is True
+    assert json.loads(path.read_text())["strobe_enabled"] is False
+
+
+def test_phone_strobe_off_is_on_disk_before_the_reply(tmp_path):
+    path = tmp_path / "config.json"
+    app = _app(config_path=str(path))
+    assert PhoneConsole(app).apply({"action": "strobe", "value": False})[0] == 200
+    assert json.loads(path.read_text())["strobe_enabled"] is False
+
+
+@pytest.mark.parametrize("content", ["", "{not json", "[1, 2]"])
+def test_an_unreadable_config_loads_strobe_off(tmp_path, content):
+    """A power cut can leave config.json empty or torn; it may have held
+    strobe off, so strobe fails safe (the other settings fall back to
+    their defaults, as before)."""
+    path = tmp_path / "config.json"
+    path.write_text(content)
+    manual = ManualParams()
+    assert app_config.load_into(manual, str(path)) is False
+    assert manual.strobe_enabled is False
+    assert manual.master_brightness == 1.0
