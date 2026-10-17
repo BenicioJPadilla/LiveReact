@@ -114,7 +114,7 @@ class App:
         # real/hardware mode leaves them disarmed until the operator arms (safety).
         if self.config.demo:
             self.manual.laser_enable = True
-        self._strobe_saved = self._strobe_latch_state()  # see save_strobe_latch
+        self._strobe_saved = self._strobe_latch_state()  # as loaded; see save_strobe_latch
         self.phrase_engine = PhraseEngine(SceneCatalog(full=self.config.full_catalog))
         self.reactive_engine = ReactiveLayerEngine(self.clock, manual=self.manual,  # manual: Synth Sync toggle
                                                    roll_sink=self.metronome.note_roll)  # a roll arms the drop
@@ -311,13 +311,21 @@ class App:
         the last save (2026-10-17). "Strobe off" must hold across a restart,
         and live runs end with kill -9, which skips the shutdown save.
         Returns True if it saved; a failed save is retried on the next check."""
-        state = self._strobe_latch_state()
-        if not self.config.config_path or state == self._strobe_saved:
+        path = self.config.config_path
+        if not path:
             return False
-        if not app_config.save_from(self.manual, self.config.config_path):
+        # What the FILE holds (whichever writer landed last: this latch, the
+        # phone, the console or the metronome's seed save), or what was
+        # loaded at launch if nothing has been written since.
+        written = app_config.last_saved(path)
+        on_disk = self._strobe_saved if written is None else (
+            written.get("strobe_enabled") is True,
+            written.get("strobe_enabled") is True and written.get("strobe_cap", 1.0) > 0.0)
+        if self._strobe_latch_state() == on_disk:
+            return False
+        if not app_config.save_from(self.manual, path):
             return False  # logged by save_from; tried again on the next check
-        self._strobe_saved = state
-        log.info("Strobe %s; saved to %s", "allowed" if state[1] else "OFF", self.config.config_path)
+        log.info("Strobe %s; saved to %s", "allowed" if strobe_allowed(self.manual) else "OFF", path)
         return True
 
     def _strobe_latch_loop(self) -> None:

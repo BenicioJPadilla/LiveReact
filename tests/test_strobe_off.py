@@ -504,3 +504,20 @@ def test_an_unreadable_config_loads_strobe_off(tmp_path, content):
     assert app_config.load_into(manual, str(path)) is False
     assert manual.strobe_enabled is False
     assert manual.master_brightness == 1.0
+
+
+def test_a_stale_concurrent_save_cannot_leave_the_file_on_while_the_switch_is_off(tmp_path):
+    """Review finding: a save that read OFF but wrote ON (strobe toggled back
+    on while it waited for the file lock), followed by another toggle to OFF,
+    must still end with OFF on disk. The latch compares against what the
+    file holds, not against what it last asked for."""
+    path = tmp_path / "config.json"
+    app = _app(config_path=str(path))
+    app.manual.strobe_enabled = False
+    assert app.save_strobe_latch() is True
+    app.manual.strobe_enabled = True
+    app_config.save_from(app.manual, str(path))      # another writer lands ON
+    app.manual.strobe_enabled = False                # and the operator switches it off again
+    assert app.save_strobe_latch() is True
+    assert json.loads(path.read_text())["strobe_enabled"] is False
+    assert app.save_strobe_latch() is False          # in sync now

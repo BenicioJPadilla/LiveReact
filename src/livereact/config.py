@@ -89,6 +89,18 @@ def load_into(manual, path: str = DEFAULT_PATH) -> bool:
 # values and the carried-over seed before replacing the file -- unlocked, a
 # slower writer could land last and put back a stale strobe_enabled.
 _SAVE_LOCK = threading.Lock()
+# path -> the settings last written there, recorded under _SAVE_LOCK. The
+# strobe latch (app.py) compares the live switch against THIS, not against
+# its own memory of what it asked for: with several writers, only the file
+# knows which one landed last.
+_LAST_SAVED: dict[str, dict] = {}
+
+
+def last_saved(path: str) -> dict | None:
+    """The settings this process last wrote to ``path``, or None."""
+    with _SAVE_LOCK:
+        saved = _LAST_SAVED.get(path)
+        return dict(saved) if saved is not None else None
 
 
 def save_from(manual, path: str = DEFAULT_PATH, energy_norm: dict | None = None) -> bool:
@@ -115,6 +127,7 @@ def save_from(manual, path: str = DEFAULT_PATH, energy_norm: dict | None = None)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, path)
+            _LAST_SAVED[path] = data
             return True
         except OSError as exc:
             log.warning("Could not save config %s: %s", path, exc)
