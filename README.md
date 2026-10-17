@@ -5,7 +5,7 @@ the music (real audio analysis from the DJ board's USB audio interface, plus
 Pro DJ Link beat-grid timing and read-only MIDI from a Pioneer XDJ-XZ when
 present), classifies the set's energy (BREAK / BUILD / DROP / PEAK / OUTRO),
 and drives a DMX rig through an Enttec DMX USB Pro at 40 Hz. **Automation is
-the default**; a human only nudges brightness, strobe cap, blackout, and
+the default**; a human only nudges brightness, strobe cap, strobe on/off, blackout, and
 (on some rigs) laser cues.
 
 It has run real sets: a bar residency, a Thai-restaurant set (two lasers + a
@@ -58,7 +58,7 @@ Known rough edges, tracked in the repo rather than hidden:
 
 # A live night: hardware, recording, a specific rig. Any --hardware run is
 # supervised: if the engine crashes it is relaunched within ~1 s, with the
-# operator's blackout / brightness / strobe cap / laser disarm restored
+# operator's blackout / brightness / strobe cap / strobe off / laser disarm restored
 # (logs/supervisor.log says when and why). --no-supervise turns that off.
 python -m livereact --hardware --visualize --record --rig rigs/junior_crib.json --audio-device 1
 #   or, with the .venv313 interpreter and a per-night log:
@@ -132,13 +132,17 @@ With `--visualize`, a sidebar picks the page:
 
 - **Live**: the floor plan lit by the show with a plain-language status
   ("Listening.", "Blackout."), the beat, what the music is doing and the last
-  two minutes as sections; Brightness and the **Blackout** key (B).
+  two minutes as sections; Brightness, **Strobe allowed** (X) and the
+  **Blackout** key (B). Strobe allowed off stops every strobe, the automatic
+  one included, and the status bar, stage and switch say so; it stays off
+  (across a crash relaunch or a restart) until someone switches it back on.
+  Blackout still wins over everything.
   **Pro controls** (the switch top right, remembered between launches) adds
   Moments (build C, drop D, strobe burst Space, next look →, freeze F, tap T),
   Lasers (arm L, hit J, hold K, and the `show` / `manual` rig controls), Feel
   (strobe limit, warm/cool, Synth Sync S) and Under the hood (BPM, section,
-  link dots, activity). While Pro controls are hidden only B works from the
-  keyboard. The first time lasers are armed in a run that started with them
+  link dots, activity). Every key works with Pro controls hidden too.
+  The first time lasers are armed in a run that started with them
   off, the console asks to confirm the mounting first.
 - **Lights**: Room (editable floor plan in feet, per-fixture
   position/height/facing, moving-head calibration: jog live, set aim, capture
@@ -156,7 +160,10 @@ on the laptop's network so a phone on the same Wi-Fi can make the show
   so use `--phone` with `--visualize`: headless, only a restart clears it (a
   warning is logged).
 - **Dim**: brightness can only go down (-10 %, 50 %, 25 %).
-- **Strobe**: the strobe cap can only go down (cap 50 %, strobe off).
+- **Strobe off**: a hard stop for every strobe, the automatic one included,
+  until Strobe allowed (X) is switched back on at the laptop. **Cap 50 %**
+  lowers the strobe limit (it can only go down). The page shows STROBE OFF
+  while it is off.
 - **Lasers**: disarm only, never arm.
 
 Blackout and disarm also release FREEZE, since a held frame may contain a lit

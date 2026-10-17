@@ -172,6 +172,7 @@ def test_all_shortcuts_present(qapp):
     win = ConsoleWindow(app)
     keys = {sc.key().toString() for sc in win.findChildren(QtGui.QShortcut)}
     expected = {"B", "F", "T", "S", "L", "K", "C", "D", "J",  # J = LASER HIT (2026-10-06, trigger profile)
+                "X",  # X = Strobe allowed (2026-10-17)
                 QtGui.QKeySequence(QtCore.Qt.Key.Key_Right).toString(),
                 QtGui.QKeySequence(QtCore.Qt.Key.Key_Space).toString()}
     assert keys == expected
@@ -741,3 +742,69 @@ def test_stage_and_deck_say_what_is_happening(qapp):
     if not app.show_engine.silence.active:
         assert win.rig_view.hud_text()[0] == "Frozen."
     assert win.chip_onair.word() == "Demo"     # demo is never called live
+
+
+def test_strobe_allowed_switch_and_x_key_drive_the_hard_strobe_off(qapp):
+    """2026-10-17: Strobe allowed sits on the Live rack (Pro controls or
+    not), X flips it, and turning it off stops every strobe (merge.py
+    strobe_allowed; tests/test_strobe_off.py proves the output side)."""
+    from PySide6 import QtGui
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    win.refresh()
+    assert win.cb_strobe.isChecked() and app.manual.strobe_enabled is True
+    assert win.st_strobe.text.text() == "Strobe allowed"
+    assert win.b_burst.isEnabled()
+    win.cb_strobe.toggle()
+    assert app.manual.strobe_enabled is False
+    win.show()
+    win._set_pro(False)  # a safety key: works with the Pro controls hidden too
+    for sc in win.findChildren(QtGui.QShortcut):
+        if sc.key() == QtGui.QKeySequence("X"):
+            sc.activated.emit()
+    assert app.manual.strobe_enabled is True
+    for sc in win.findChildren(QtGui.QShortcut):
+        if sc.key() == QtGui.QKeySequence("X"):
+            sc.activated.emit()
+    assert app.manual.strobe_enabled is False
+    win.refresh()
+    assert win.st_strobe.text.text() == "Strobe OFF"
+    assert "STROBE OFF" in win.l_strobe_state.text() and not win.l_strobe_state.isHidden()
+    assert not win.b_burst.isEnabled()
+    win._strobe_burst()  # Space while off: nothing pending
+    assert app.manual.strobe_burst is False
+
+
+def test_strobe_off_from_the_phone_shows_on_the_console(qapp):
+    """The phone writes ManualParams directly; the switch, the status bar
+    and the stage HUD follow, and a later X press switches it back ON
+    (not a stale no-op)."""
+    from livereact.remote import PhoneConsole
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    win = ConsoleWindow(app)
+    win.refresh()
+    assert PhoneConsole(app).apply({"action": "strobe", "value": False})[0] == 200
+    win.refresh()
+    assert not win.cb_strobe.isChecked()
+    assert win.st_strobe.text.text() == "Strobe OFF"
+    win.cb_strobe.toggle()
+    assert app.manual.strobe_enabled is True
+    # a 0 % strobe limit also means off, and says why
+    app.manual.strobe_cap = 0.0
+    win.refresh()
+    assert win.cb_strobe.isChecked()
+    assert win.st_strobe.text.text() == "Strobe OFF"
+    assert "0 %" in win.l_strobe_state.text()
+
+
+def test_a_relaunch_with_strobe_off_starts_the_console_switch_off(qapp):
+    from livereact.ui.console import ConsoleWindow
+
+    app = _app()
+    app.manual.strobe_enabled = False  # restored by supervisor / config before the window exists
+    win = ConsoleWindow(app)
+    assert not win.cb_strobe.isChecked()

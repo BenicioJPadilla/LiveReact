@@ -96,6 +96,17 @@ explicitly out of scope:
   caveat. Not re-graded row-by-row below; `LATENCY-02`'s "never
   dimmer-toggle" reading is superseded for the same reason (its <6 Hz
   dimmer-toggle allowance is exactly what the 4 Hz cap satisfies).
+  **Update 2026-10-17 (strobe off):** because the automated strobe is a
+  dimmer toggle, `strobe_cap` (a cap on the native strobe channels) never
+  reached it, so the phone's "Strobe off" left it running. `ManualParams.
+  strobe_enabled` ("Strobe allowed": console switch, X key, phone Strobe
+  off) is now a hard off for every strobe source: the Reactive engine
+  zeroes its rate at the source, `finalize` zeroes every native strobe
+  channel and drops the burst, and the show engine strips strobe from a
+  frozen frame. A 0 % `strobe_cap` counts as off too (`merge.py`
+  `strobe_allowed`). Persisted in config.json (saved the moment it
+  changes) and the supervisor's live state; restores may switch it off,
+  never on. Blackout still wins. Tests: `tests/test_strobe_off.py`.
 - **Fog fail-closed**: nothing to fix — no fog subsystem exists at all
   (confirmed absent in Stage 4); out of scope for a "fix" pass.
 Tests: 223 passed (+3 new/updated), 5 failed (unchanged, Stage 2's

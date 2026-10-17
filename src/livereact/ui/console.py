@@ -45,6 +45,7 @@ from ..engines.color import band_levels
 from ..engines.laser_feature import MOOD_OFF, laser_color_name
 from ..engines.laser_show import MODE_FOLLOW, MODE_HOLD, MODE_ROTATE, look_names
 from ..engines.laser_trigger import DUTY_WINDOW_S
+from ..merge.merge import strobe_allowed
 from ..tap_tempo import TapTempo
 from . import theme
 from .glow import Glow, GlowSource
@@ -335,8 +336,9 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.st_music = StatusLine("Listening for music", "off")
         self.st_lights = StatusLine("", "off")
         self.st_phone = StatusLine("Phone remote off", "off")
+        self.st_strobe = StatusLine("Strobe allowed", "ok")
         self.pro_switch = ProSwitch()
-        for w in (self.chip_onair, self.st_music, self.st_lights, self.st_phone):
+        for w in (self.chip_onair, self.st_music, self.st_lights, self.st_strobe, self.st_phone):
             bar.addWidget(w)
         bar.addStretch(1)
         bar.addWidget(self.pro_switch)
@@ -440,6 +442,26 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         rv.addLayout(look)
         v.addWidget(rack)
 
+        # Strobe allowed (2026-10-17, photosensitivity safety): off is a hard
+        # stop for every strobe, the automatic one included (merge.py
+        # strobe_allowed). Always on screen, Pro controls or not, like
+        # Blackout. The phone can switch it off at any time and a relaunch
+        # restores it: start from the model, refresh() keeps it in step.
+        strobe = QtWidgets.QFrame()
+        strobe.setObjectName("panel")
+        sv = QtWidgets.QVBoxLayout(strobe)
+        sv.setContentsMargins(18, 12, 18, 12)
+        sv.setSpacing(6)
+        self.cb_strobe = ToggleRow("Strobe allowed", "Off stops every strobe, automatic included, "
+                                   "until you switch it back on.", key="X", compact=True)
+        self.cb_strobe.setAccessibleName("Strobe allowed")
+        self.cb_strobe.setChecked(m.strobe_enabled)
+        sv.addWidget(self.cb_strobe)
+        self.l_strobe_state = label("", "banner", wrap=True)
+        self.l_strobe_state.hide()
+        sv.addWidget(self.l_strobe_state)
+        v.addWidget(strobe)
+
         # Blackout: one press kills every fixture; again brings the show back.
         # A crash relaunch restores blackout before the window exists, and the
         # phone console writes it at any time: start from the model, and
@@ -457,6 +479,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         self.s_bright.valueChanged.connect(lambda x: self.l_bright_v.setText(f"{x}%"))
         self.l_bright_v.setText(f"{self.s_bright.value()}%")
         self.b_black.toggled.connect(self._set_blackout)
+        self.cb_strobe.toggled.connect(lambda on: setattr(m, "strobe_enabled", on))
         return col
 
     # ------------------------------------------------------------------ pro rack
@@ -723,6 +746,7 @@ class ConsoleWindow(QtWidgets.QMainWindow):
 
         # Every shortcut works with the Pro controls shown or hidden.
         sc("B", self.b_black.toggle)
+        sc("X", self.cb_strobe.toggle)  # Strobe allowed: on / off
         for key, fn in (
             ("F", self.b_freeze.toggle),
             (QtCore.Qt.Key.Key_Right, self.app.phrase_engine.skip),
@@ -787,6 +811,8 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             self.app.input_queue.put(BeatMessage(now, self._tap_beat, bpm, is_master=True, player=0))
 
     def _strobe_burst(self) -> None:
+        if not strobe_allowed(self.app.manual):
+            return  # strobe off: finalize would drop it anyway; don't leave a burst pending
         self.app.manual.strobe_burst = True
         QtCore.QTimer.singleShot(400, lambda: setattr(self.app.manual, "strobe_burst", False))
 
@@ -895,6 +921,8 @@ class ConsoleWindow(QtWidgets.QMainWindow):
             left.append("Frozen (F)")
         if m.laser_cue:
             left.append("Lasers held (K)")
+        if not strobe_allowed(m):
+            left.append("Strobe off (X)")
         lasers = (("Lasers armed, blacked out", "off") if m.laser_enable and m.blackout else
                   ("Lasers on", "ok") if m.laser_enable else ("Lasers off", "off"))
         right = ((self._last["look"], ""), lasers)
@@ -930,6 +958,17 @@ class ConsoleWindow(QtWidgets.QMainWindow):
         _mirror_check(self.b_freeze, m.freeze)
         _mirror_check(self.cb_laser, m.laser_enable)
         _mirror_check(self.cb_synth, m.synth_sync)
+        _mirror_check(self.cb_strobe, m.strobe_enabled)
+        allowed = strobe_allowed(m)
+        if not m.strobe_enabled:
+            _say(self.l_strobe_state, "● STROBE OFF · no strobe at all, automatic included", "warn")
+        elif not allowed:
+            _say(self.l_strobe_state, "● STROBE OFF · the strobe limit is at 0 %", "warn")
+        else:
+            _say(self.l_strobe_state, "")
+        self.st_strobe.set("Strobe allowed" if allowed else "Strobe OFF", "ok" if allowed else "warn")
+        if self.b_burst.isEnabled() != allowed:
+            self.b_burst.setEnabled(allowed)
         # A MIDI "laser_cue" control writes manual.laser_cue directly.
         _mirror_check(self.b_laser_cue, m.laser_cue)
         _mirror_slider(self.s_bright, self.l_bright_v, m.master_brightness)

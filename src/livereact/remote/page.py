@@ -42,6 +42,10 @@ PAGE_HTML = """<!doctype html>
   #blackout { min-height: 110px; font-size: 30px; background: #a00000; color: #fff; }
   #blackout:disabled { background: #3a0000; color: #c88; }
   #disarm { background: #4b2a00; }
+  #strobeoff { background: #4b2a00; }
+  #strobe { text-align: center; font-weight: 700; padding: 8px; border-radius: 10px; margin-top: 6px; }
+  #strobe.off { background: #003a1a; color: #8f8; }
+  #strobe.on { background: #3a2a00; color: #fc6; }
   #note { color: #f99; text-align: center; min-height: 1.3em; margin: 8px 0; }
   #msg { text-align: center; min-height: 1.3em; color: #fc6; margin: 8px 0; }
   #used { color: #888; font-size: 15px; }
@@ -51,6 +55,7 @@ PAGE_HTML = """<!doctype html>
 <body>
 <div id="status">Connecting...</div>
 <div id="dmx"></div>
+<div id="strobe"></div>
 <div id="scene"></div>
 
 <button id="blackout">BLACKOUT</button>
@@ -58,7 +63,7 @@ PAGE_HTML = """<!doctype html>
 
 <div class="row">
   <div class="read"><b id="r-bright">-</b><small>brightness</small></div>
-  <div class="read"><b id="r-strobe">-</b><small>strobe cap</small></div>
+  <div class="read"><b id="r-strobe">-</b><small>strobe</small></div>
   <div class="read"><b id="r-laser">-</b><small>lasers</small></div>
 </div>
 
@@ -70,9 +75,9 @@ PAGE_HTML = """<!doctype html>
 </div>
 
 <h2>Strobe</h2>
+<div class="row"><button id="strobeoff">STROBE OFF</button></div>
 <div class="row">
   <button data-act="strobe_cap" data-value="0.5">Cap 50 %</button>
-  <button data-act="strobe_cap" data-value="0">Strobe off</button>
 </div>
 
 <h2>Lasers</h2>
@@ -82,13 +87,14 @@ PAGE_HTML = """<!doctype html>
 <h2>Used from the phone</h2>
 <div id="used">Nothing yet.</div>
 
-<footer>This page can only make the show safer: blackout on, dim, cap strobe,
-disarm lasers. Undoing any of it is done on the laptop.</footer>
+<footer>This page can only make the show safer: blackout on, dim, cap or
+switch off strobe, disarm lasers. Undoing any of it is done on the laptop.</footer>
 
 <script>
 "use strict";
 var KEY = new URLSearchParams(location.search).get("k") || "";
-var LABELS = { blackout: "Blackout", brightness: "Dim", strobe_cap: "Strobe cap", lasers: "Disarm lasers" };
+var LABELS = { blackout: "Blackout", brightness: "Dim", strobe_cap: "Strobe cap", strobe: "Strobe off",
+              lasers: "Disarm lasers" };
 var last = null, lastOk = 0, skew = 0;
 function $(id) { return document.getElementById(id); }
 function pct(x) { return Math.round(x * 100) + " %"; }
@@ -118,7 +124,15 @@ function render(s) {
   st.className = dark ? "dark" : "";
   $("scene").textContent = s.scene || "";
   $("r-bright").textContent = pct(s.master_brightness);
-  $("r-strobe").textContent = pct(s.strobe_cap);
+  // A missing strobe_allowed (an older laptop build) reads as "not known
+  // to be off", so the banner never claims an off it can't confirm.
+  var strobeOff = s.strobe_allowed === false;
+  $("r-strobe").textContent = strobeOff ? "OFF" : pct(s.strobe_cap);
+  $("strobe").textContent = strobeOff ? "STROBE OFF: no strobe at all, automatic included"
+                                      : "Strobe allowed (up to " + pct(s.strobe_cap) + ")";
+  $("strobe").className = strobeOff ? "off" : "on";
+  $("strobeoff").disabled = strobeOff;
+  $("strobeoff").textContent = strobeOff ? "Strobe is off" : "STROBE OFF";
   $("r-laser").textContent = s.laser_enable ? "ARMED" : "off";
 
   var b = $("blackout");
@@ -169,6 +183,7 @@ function poll() {
 
 $("blackout").onclick = function () { send({ action: "blackout", value: true }); };
 $("disarm").onclick = function () { send({ action: "lasers", value: false }); };
+$("strobeoff").onclick = function () { send({ action: "strobe", value: false }); };
 var btns = document.querySelectorAll("button[data-act]");
 for (var i = 0; i < btns.length; i++) {
   btns[i].onclick = function () {

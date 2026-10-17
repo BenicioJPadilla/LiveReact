@@ -128,8 +128,9 @@ class PhonePage(QtWidgets.QScrollArea):
         txt = QtWidgets.QVBoxLayout()
         txt.setSpacing(4)
         txt.addWidget(label("Your phone can only make things calmer.", "strong"))
-        txt.addWidget(label("It can black out, dim, lower the strobe limit and switch lasers off. Releasing a "
-                            "blackout, turning lasers on or raising anything needs this computer, so a lost "
+        txt.addWidget(label("It can black out, dim, lower the strobe limit, switch strobe off and switch lasers "
+                            "off. Releasing a blackout, turning strobe or lasers on or raising anything needs "
+                            "this computer, so a lost "
                             "phone can't make the room less safe.", "body2", wrap=True))
         row.addLayout(txt, 1)
         cv.addLayout(row)
@@ -149,8 +150,9 @@ class PhonePage(QtWidgets.QScrollArea):
         for icon_name, title, text in (
                 ("power", "Blackout", "Turns every light off. Only this computer brings them back."),
                 ("sun", "Dim", "Down 10 %, or to 50 % or 25 %. Never brighter."),
-                ("flash", "Strobe limit", "Lower it to 50 % or 0 %. This caps the lights' own strobe channel; "
-                                          "the automatic strobe keeps its own limit."),
+                ("flash", "Strobe off", "Stops every strobe, the automatic one included, until Strobe "
+                                        "allowed (X) is switched back on here. Cap 50 % lowers the "
+                                        "strobe limit."),
                 ("laser", "Lasers off", "Switches the lasers off. Never on."),
         ):
             row = QtWidgets.QHBoxLayout()
@@ -162,7 +164,7 @@ class PhonePage(QtWidgets.QScrollArea):
             t.addWidget(label(text, "body2", wrap=True))
             row.addLayout(t, 1)
             pv.addLayout(row)
-        pv.addWidget(label("It also shows the brightness, strobe limit and laser switch, and what was used "
+        pv.addWidget(label("It also shows the brightness, whether strobe is on, the laser switch, and what was used "
                            "from the phone.", "hint", wrap=True))
         return f
 
@@ -275,6 +277,8 @@ class SafetyPage(QtWidgets.QScrollArea):
             f"Drop and peak flashes come in bursts of {_n(STROBE_MAX_BURST_S)} seconds at most, "
             f"at least {_n(STROBE_MIN_SPACING_S)} seconds apart.",
             "The strobe limit fader caps the Space burst and each light's own strobe channel.",
+            "Strobe allowed off (X, or Strobe off on the phone) stops every strobe, the automatic one "
+            "included, and stays off after a restart until you switch it back on. Blackout still wins.",
             "Put a strobe warning sign at the door.",
         ]))
         note = QtWidgets.QFrame()

@@ -21,6 +21,8 @@ from ..merge.merge import (
     finalize,
     merge_contributions,
     merge_contributions_ex,
+    strip_strobe,
+    strobe_allowed,
 )
 from .frame_buffer import UNIVERSE_SIZE
 from ..scenes.base import SAFE_DEFAULT
@@ -112,6 +114,14 @@ class ShowEngine(threading.Thread):
         # lit laser. With blackout set, fall through so finalize publishes
         # its all-zero frame.
         if self.manual.freeze and not self.manual.blackout:
+            # Strobe off wins over freeze too (2026-10-17): a held frame may
+            # have a fixture's own strobe channel running (a Space burst),
+            # which would keep flashing. Re-publish it with those at 0.
+            if not strobe_allowed(self.manual):
+                held = self.frame_buffer.latest()
+                safe = strip_strobe(held, self.rig)
+                if safe != held:
+                    self.frame_buffer.publish(safe)
             return None
 
         now = self.clock.monotonic()
