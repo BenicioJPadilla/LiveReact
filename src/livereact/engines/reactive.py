@@ -29,7 +29,7 @@ from ..core.show_state import ShowSnapshot
 from ..dynamics import musical_bar_position
 from ..fixtures.profiles import Par, WashBar
 from ..fixtures.rig import Rig
-from ..merge.merge import Contribution, ManualParams
+from ..merge.merge import Contribution, ManualParams, strobe_allowed
 from ..scenes.base import EnergyBucket
 from ..scenes.catalog import BREAK_MAX
 from ..core.rise import RISE_FULL, RISE_ON
@@ -612,6 +612,13 @@ class ReactiveLayerEngine:
         wash_level = self._bucket_wash_level(snap)  # also records DROP entry (phrase origin for strobe)
         self.strobe_flash_dmx = STROBE_FLASH_DMX  # _build_strobe_rate lowers it early in a build
         strobe = self._snare_accent_strobe_rate(snap)
+        if self.manual is not None and not strobe_allowed(self.manual):
+            # Strobe off (2026-10-17, photosensitivity safety): the automatic
+            # strobe is a dimmer toggle, which finalize's strobe-channel cap
+            # can't see, so it stops HERE. The detectors and gates above
+            # still ran, so the roll still arms the drop and switching strobe
+            # back on picks up mid-moment without a stale state.
+            strobe = 0.0
         self.synth_level = self._synth_env.update(snap.audio_band_mid_abs, snap.audio_fresh)
         self.synth_sync_active = bool(self.manual is not None and self.manual.synth_sync and snap.audio_fresh)
         if (not self.synth_sync_active and snap.audio_fresh

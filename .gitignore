@@ -19,6 +19,7 @@ env/
 # Local runtime artifacts
 *.log
 config.json
+config.json.tmp
 last-launch.json
 midi_map.json
 recordings/

@@ -32,7 +32,7 @@ from .engines.transition import TransitionEngine
 from .scenes.catalog import SceneCatalog
 from .fixtures.rig import Rig, load_rig
 from .inputs.demo import DemoDataSource
-from .merge.merge import ManualParams
+from .merge.merge import ManualParams, strobe_allowed
 from .output.base import OutputBackend
 from .output.null_log import NullLogBackend
 from .output.writer import DmxWriter
@@ -114,6 +114,7 @@ class App:
         # real/hardware mode leaves them disarmed until the operator arms (safety).
         if self.config.demo:
             self.manual.laser_enable = True
+        self._strobe_saved = self._strobe_latch_state()  # as loaded; see save_strobe_latch
         self.phrase_engine = PhraseEngine(SceneCatalog(full=self.config.full_catalog))
         self.reactive_engine = ReactiveLayerEngine(self.clock, manual=self.manual,  # manual: Synth Sync toggle
                                                    roll_sink=self.metronome.note_roll)  # a roll arms the drop
@@ -295,6 +296,44 @@ class App:
             except Exception:  # noqa: BLE001 - a failed input must not abort startup
                 log.exception("Input source %r failed to start; continuing without it", source.name)
         self._start_phone()
+        if self.config.config_path:
+            threading.Thread(target=self._strobe_latch_loop, name="strobe-latch", daemon=True).start()
+
+    # How often the strobe switch is checked for a change to save (a dict
+    # compare when nothing changed, like supervisor.py's live-state save).
+    STROBE_LATCH_INTERVAL_S = 0.1
+
+    def _strobe_latch_state(self) -> tuple[bool, bool]:
+        return bool(self.manual.strobe_enabled), strobe_allowed(self.manual)
+
+    def save_strobe_latch(self) -> bool:
+        """Save config.json now if strobe was switched off or back on since
+        the last save (2026-10-17). "Strobe off" must hold across a restart,
+        and live runs end with kill -9, which skips the shutdown save.
+        Returns True if it saved; a failed save is retried on the next check."""
+        path = self.config.config_path
+        if not path:
+            return False
+        # What the FILE holds (whichever writer landed last: this latch, the
+        # phone, the console or the metronome's seed save), or what was
+        # loaded at launch if nothing has been written since.
+        written = app_config.last_saved(path)
+        on_disk = self._strobe_saved if written is None else (
+            written.get("strobe_enabled") is True,
+            written.get("strobe_enabled") is True and written.get("strobe_cap", 1.0) > 0.0)
+        if self._strobe_latch_state() == on_disk:
+            return False
+        if not app_config.save_from(self.manual, path):
+            return False  # logged by save_from; tried again on the next check
+        log.info("Strobe %s; saved to %s", "allowed" if strobe_allowed(self.manual) else "OFF", path)
+        return True
+
+    def _strobe_latch_loop(self) -> None:
+        while not self.stop_event.wait(self.STROBE_LATCH_INTERVAL_S):
+            try:
+                self.save_strobe_latch()
+            except Exception:  # noqa: BLE001 - a full disk must not touch the show
+                log.exception("Could not save the strobe switch")
 
     @property
     def phone_url(self) -> str | None:

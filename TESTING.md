@@ -648,7 +648,7 @@ change.
 ## Test 8: phone console (2026-10-16)
 
 A phone on the venue Wi-Fi can make the show **safer** and nothing else:
-blackout on, dim, lower the strobe cap, disarm lasers. Everything it does is
+blackout on, dim, lower the strobe cap, switch strobe off, disarm lasers. Everything it does is
 undone on the laptop.
 
 1. Put the laptop and the phone on the **same Wi-Fi**.
@@ -671,9 +671,11 @@ undone on the laptop.
    if the lights stay dark after one B, press B again.
 7. **Dim**: press -10 %, then 50 %, then 25 %, and watch the rig dim each
    time. Raise it back with the laptop's brightness slider.
-8. **Strobe off**: press it during a strobe (or press Space on the laptop
-   for a strobe burst): no strobe. Restore with the laptop's strobe cap
-   slider.
+8. **Strobe off**: press it during a strobe: the automatic build strobe
+   (arm a drop with **D** during a build) and a Space burst on the laptop.
+   Neither may flash at all; the page shows STROBE OFF and the console's
+   status bar says "Strobe OFF". Quit and relaunch: it is still off.
+   Restore with **X** (or the Strobe allowed switch) on the laptop.
 9. **Disarm lasers** (arm with **L** first, on a track where they fire):
    lasers go dark. Re-arm on the laptop (the checkbox may still look ticked:
    press L until the lasers come back).

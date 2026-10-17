@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +24,13 @@ DEFAULT_PATH = "config.json"
 # those apart (see engines/laser.py) -- so arming is a per-run, per-track
 # operator act (console checkbox / L), never carried over. A stale key in
 # an old config.json is simply ignored.
-_PERSIST = ("master_brightness", "strobe_cap", "warm_cool_bias")
+#
+# `strobe_enabled` (2026-10-17): "strobe off" is a photosensitivity-safety
+# switch and must hold across a restart until someone turns it back on, so
+# it persists -- and App saves the file the moment it changes (live runs
+# end with kill -9, which skips the shutdown save). Anything but a real
+# `true` in the file loads as OFF: a corrupt safety latch fails safe.
+_PERSIST = ("master_brightness", "strobe_cap", "warm_cool_bias", "strobe_enabled")
 
 
 def load_into(manual, path: str = DEFAULT_PATH) -> bool:
@@ -46,12 +53,24 @@ def load_into(manual, path: str = DEFAULT_PATH) -> bool:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError) as exc:
-        log.warning("Ignoring unreadable config %s: %s", path, exc)
+        # Strobe off is the one setting that must not fail open: an
+        # unreadable file may well have held it (a power cut mid-write).
+        manual.strobe_enabled = False
+        log.warning("Ignoring unreadable config %s: %s -- strobe loads OFF until switched back on",
+                    path, exc)
+        return False
+    if not isinstance(data, dict):
+        manual.strobe_enabled = False
+        log.warning("Ignoring config %s (not a JSON object) -- strobe loads OFF until switched back on", path)
         return False
     defaults = {field: getattr(manual, field) for field in _PERSIST}
     non_default = []
     for field in _PERSIST:
         if field in data:
+            if field == "strobe_enabled" and data[field] is not True:
+                if data[field] is not False:
+                    log.warning("%s: strobe_enabled=%r is not true/false; loading strobe OFF", path, data[field])
+                data[field] = False
             setattr(manual, field, data[field])
             if data[field] != defaults[field]:
                 non_default.append(f"{field}={data[field]!r} (default {defaults[field]!r})")
@@ -65,24 +84,58 @@ def load_into(manual, path: str = DEFAULT_PATH) -> bool:
     return True
 
 
-def save_from(manual, path: str = DEFAULT_PATH, energy_norm: dict | None = None) -> None:
+# One writer at a time (2026-10-17): the strobe latch, the metronome's seed
+# save and shutdown run on different threads, and each one reads the switch
+# values and the carried-over seed before replacing the file -- unlocked, a
+# slower writer could land last and put back a stale strobe_enabled.
+_SAVE_LOCK = threading.Lock()
+# path -> the settings last written there, recorded under _SAVE_LOCK. The
+# strobe latch (app.py) compares the live switch against THIS, not against
+# its own memory of what it asked for: with several writers, only the file
+# knows which one landed last.
+_LAST_SAVED: dict[str, dict] = {}
+
+
+def last_saved(path: str) -> dict | None:
+    """The settings this process last wrote to ``path``, or None."""
+    with _SAVE_LOCK:
+        saved = _LAST_SAVED.get(path)
+        return dict(saved) if saved is not None else None
+
+
+def save_from(manual, path: str = DEFAULT_PATH, energy_norm: dict | None = None) -> bool:
     """Write the persistable settings from ``manual`` to ``path``.
 
     ``energy_norm`` (see `save_energy_norm_seed`) is written alongside when
     given; when it's None the file's existing seed is carried over untouched,
     so a demo run or a session that never finished warming up can't erase a
     good seed from the last real set.
+
+    Returns True once the file is on disk. Atomic (temp file, fsync,
+    replace), so a reader never sees half a file.
     """
-    data = {field: getattr(manual, field) for field in _PERSIST}
-    if energy_norm is None:
-        energy_norm = _read(path).get(ENERGY_NORM_KEY)
-    if energy_norm is not None:
-        data[ENERGY_NORM_KEY] = energy_norm
-    try:
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-    except OSError as exc:
-        log.warning("Could not save config %s: %s", path, exc)
+    with _SAVE_LOCK:
+        data = {field: getattr(manual, field) for field in _PERSIST}
+        if energy_norm is None:
+            energy_norm = _read(path).get(ENERGY_NORM_KEY)
+        if energy_norm is not None:
+            data[ENERGY_NORM_KEY] = energy_norm
+        tmp = f"{path}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+            _LAST_SAVED[path] = data
+            return True
+        except OSError as exc:
+            log.warning("Could not save config %s: %s", path, exc)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return False
 
 
 # --- normalizer seed (2026-09-17) --------------------------------------------

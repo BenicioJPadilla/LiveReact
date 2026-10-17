@@ -12,6 +12,8 @@ untrusted (anyone on the Wi-Fi with the token can send any request they like):
   - blackout:          can only be turned ON (releasing it is the laptop's job)
   - master_brightness: can only go DOWN (clamped to [0, current])
   - strobe_cap:        can only go DOWN (clamped to [0, current])
+  - strobe:            can only be switched OFF (strobe_enabled False: a hard
+                       stop for every strobe, the automatic one included)
   - laser_enable:      can only be set False (disarm), never armed
 
 A request that would raise anything is refused (403) and changes nothing.
@@ -41,6 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from ..merge.merge import strobe_allowed
 from .page import PAGE_HTML
 
 log = logging.getLogger(__name__)
@@ -108,6 +111,9 @@ class PhoneConsole:
             "auto_blackout": bool(getattr(silence, "active", False)),
             "master_brightness": float(m.master_brightness),
             "strobe_cap": float(m.strobe_cap),
+            "strobe_enabled": bool(m.strobe_enabled),
+            # The one the page shows: off by the switch OR a 0 % limit.
+            "strobe_allowed": strobe_allowed(m),
             "laser_enable": bool(m.laser_enable),
             # Same test as the console's DMX dot: a real backend that opened.
             "dmx_open": bool(writer.is_open and writer.backend.name != "null-log"),
@@ -161,6 +167,22 @@ class PhoneConsole:
             # ends; release it so the disarm reaches the rig now.
             m.freeze = False
             return self._done(action, client, "lasers disarmed (freeze released)")
+
+        if action == "strobe":
+            value = body.get("value", False)
+            if not isinstance(value, bool):
+                raise _BadRequest("strobe value must be false")
+            if value:
+                return self._refuse(action, client, "The phone can only switch strobe OFF. "
+                                    "Switching it back on is the laptop's job (X key or Strobe allowed).")
+            # A hard stop for every strobe, the automatic one included
+            # (merge.py strobe_allowed). Freeze is left alone: the show
+            # engine strips strobe from a held frame by itself.
+            m.strobe_enabled = False
+            save = getattr(self.app, "save_strobe_latch", None)
+            if save is not None:
+                save()  # on disk now, not on the latch's next poll
+            return self._done(action, client, "strobe OFF (every strobe, automatic included)")
 
         if action in self._LEVELS:
             field = self._LEVELS[action]

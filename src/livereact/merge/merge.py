@@ -8,8 +8,9 @@ Combine rules per channel kind (docs/05 §3, docs/08 §5):
   - LASER, OTHER  : last-write-wins
 
 Manual params are *biases and caps*, never an "off switch" for automation — except
-the two hard switches, blackout and freeze. Safety clamps (laser fail-safe, strobe
-cap) run on every path and cannot be bypassed.
+the hard switches: blackout, freeze and "strobe allowed" (``strobe_allowed``).
+Safety clamps (laser fail-safe, strobe cap, strobe off) run on every path and
+cannot be bypassed.
 """
 
 from __future__ import annotations
@@ -82,6 +83,14 @@ class ManualParams:
 
     master_brightness: float = 1.0   # 0..1 scales dimmers / par color
     strobe_cap: float = 1.0          # 0..1 max strobe-rate channel value
+    # "Strobe allowed" (2026-10-17, photosensitivity safety): False is a HARD
+    # off for every strobe source -- the automatic dimmer-toggle strobe
+    # (engines/reactive.py), the Space burst and every fixture's own strobe
+    # channel -- until someone turns it back on. Lowering strobe_cap alone
+    # never reached the automatic strobe (it toggles the dimmer, not the
+    # strobe channel). The phone can only turn it off. Persisted (config.py)
+    # and restored after a crash (supervisor.py): an off must survive both.
+    strobe_enabled: bool = True
     laser_enable: bool = False       # lasers stay off until explicitly enabled
     warm_cool_bias: float = 0.0      # -1 warm .. +1 cool
     strobe_burst: bool = False       # momentary operator strobe (within the cap)
@@ -114,6 +123,24 @@ class ManualParams:
     # Never persisted (config.py's _PERSIST leaves it out); cleared whenever
     # the operator leaves the Venue tab or unticks "Jog live".
     calibration: CalibrationPins | None = None
+
+
+def strobe_allowed(manual: ManualParams) -> bool:
+    """May anything strobe right now? False when the operator switched strobe
+    off (``strobe_enabled``) or pulled the strobe limit to 0 -- both mean
+    "no strobe", so both stop the automatic strobe too, not just the
+    fixtures' own strobe channels."""
+    return bool(manual.strobe_enabled) and manual.strobe_cap > 0.0
+
+
+def strip_strobe(frame: bytes, rig: Rig) -> bytes:
+    """``frame`` with every fixture's own strobe channel at 0 (the show
+    engine's freeze path: a held frame must not keep a fixture strobing once
+    strobe is switched off)."""
+    out = bytearray(frame)
+    for fx in rig.fixtures:
+        fx.cap_strobe(out, 0.0)
+    return bytes(out)
 
 
 def merge_contributions_ex(contributions: list[Contribution], rig: Rig) -> tuple[bytearray, frozenset[int]]:
@@ -239,6 +266,11 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
     operator kill or a real no-music failsafe should still win outright)
     but before anything else -- in practice these shouldn't co-occur, since
     a real pending drop implies fresh audio/PDL.
+
+    Strobe off (``strobe_allowed`` False, 2026-10-17): no burst, and every
+    fixture's own strobe channel is forced to 0. The automatic strobe is a
+    dimmer toggle the Reactive engine stops at its source (it reads the same
+    switch); blackout still wins over all of it, above.
     """
     if manual.blackout:
         return bytes(UNIVERSE_SIZE)
@@ -248,12 +280,13 @@ def finalize(merged: bytearray, rig: Rig, manual: ManualParams, auto_blackout: b
         return bytes(UNIVERSE_SIZE)
 
     out = bytearray(merged)
+    allowed = strobe_allowed(manual)
     for fx in rig.fixtures:
         fx.apply_master_brightness(out, manual.master_brightness)
         fx.apply_color_bias(out, manual.warm_cool_bias)
-        if manual.strobe_burst:
+        if manual.strobe_burst and allowed:
             fx.apply_strobe_burst(out, manual.strobe_cap)  # within the cap
-        fx.cap_strobe(out, manual.strobe_cap)              # safety: always cap
+        fx.cap_strobe(out, manual.strobe_cap if allowed else 0.0)  # safety: always cap; strobe off = 0
         fx.cap_brightness_while_strobing(out)               # safety: never full-bright while strobing (Josh, 2026-09-14)
         fx.apply_safety(out, manual.laser_enable)          # laser fail-safe
         if fx.offset not in pinned_movement:

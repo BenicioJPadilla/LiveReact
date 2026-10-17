@@ -16,9 +16,10 @@ or on SIGINT/SIGTERM to the parent, which it passes on to the engine.
 
 What a relaunch must not do is undo the operator: a crash during a blackout
 must not come back lit. The child saves its live safety state (blackout,
-brightness, strobe cap, laser arm) to ``logs/live-state.json`` twice a
-second, and a relaunched child restores it. Lasers are restored DISarmed if
-they were disarmed, but never armed by the restore.
+brightness, strobe cap, strobe allowed, laser arm) to ``logs/live-state.json``
+ten times a second, and a relaunched child restores it. Lasers are restored
+DISarmed if they were disarmed, and strobe OFF if it was off, but the restore
+never arms a laser or switches strobe back on.
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ STOP_GRACE_S = 5.0       # after passing on a stop signal, wait this long before
 WATCHDOG_INTERVAL_S = 0.5
 STATE_SAVE_INTERVAL_S = 0.1  # a dict compare when nothing changed; a blackout pressed just
                              # before a crash must still be there after the relaunch
-SAFETY_FIELDS = ("blackout", "master_brightness", "strobe_cap", "laser_enable")
+SAFETY_FIELDS = ("blackout", "master_brightness", "strobe_cap", "strobe_enabled", "laser_enable")
 
 
 def child_command(argv: list[str]) -> list[str]:
@@ -191,6 +192,8 @@ def restore_live_state(manual, path: str = STATE_FILE) -> str | None:
             setattr(manual, field, float(value))
     if saved.get("laser_enable") is False:
         manual.laser_enable = False  # a restore may disarm, never arm
+    if saved.get("strobe_enabled") is False:
+        manual.strobe_enabled = False  # a restore may switch strobe off, never on
     return ", ".join(f"{f}={getattr(manual, f)!r}" for f in SAFETY_FIELDS)
 
 
